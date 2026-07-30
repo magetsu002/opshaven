@@ -23,4 +23,4 @@ printf '%s\n' "restrict,no-agent-forwarding,no-port-forwarding,no-pty,no-X11-for
 chown opshaven:opshaven /home/opshaven/.ssh/authorized_keys
 chmod 600 /home/opshaven/.ssh/authorized_keys
 
-echo "Restricted OpsHaven SSH account installed. Add only reviewed exact sudo rules from docs/operations.md."
+echo "Restricted OpsHaven SSH account installed. Add only reviewed exact sudo rules described in docs/setup.md."
