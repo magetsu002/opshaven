@@ -30,3 +30,13 @@ Only after exact-head certification:
 4. Publish release notes containing the commit, gate results, supported tools, security boundaries, and known limitations.
 
 Do not create, move, or reuse the tag when any gate is skipped, unavailable, or inconclusive.
+
+## Reproducible command
+
+From a clean candidate checkout with Docker and OpenSSH installed:
+
+```sh
+npm run certify
+```
+
+The command refuses a dirty tree, clones the exact candidate locally, installs dependencies without lifecycle scripts, runs all validation and security gates, starts the built MCP server as a real process, checks package contents, and runs the disposable restricted-SSH environment. `OPSHAVEN_SKIP_INTEGRATION=1` exists only for partial diagnostics and exits nonzero so it cannot be mistaken for release certification.

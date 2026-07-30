@@ -32,7 +32,9 @@
     "test:security": "npm run test:compile && node --test .test-dist/tests/adversarial.test.js .test-dist/tests/approval.test.js .test-dist/tests/redaction.test.js .test-dist/tests/ssh.test.js",
     "security:scan": "node scripts/security-scan.mjs",
     "security": "npm run test:security && npm run security:scan && npm audit --audit-level=high",
-    "docs:check": "node scripts/check-docs.mjs"
+    "docs:check": "node scripts/check-docs.mjs",
+    "smoke": "node scripts/mcp-smoke.mjs",
+    "certify": "sh scripts/certify.sh"
   },
   "devDependencies": {
     "@types/node": "22.15.3",
