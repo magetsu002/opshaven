@@ -114,7 +114,7 @@ export interface OpsHavenConfig {
 const ID = /^[a-z][a-z0-9._-]{0,63}$/;
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9@_.:-]{0,127}$/;
 const SAFE_REF = /^(?!-)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._/-]{1,160}$/;
-const ABSOLUTE_SAFE_PATH = /^\/(?:[A-Za-z0-9._-]+\/?)+$/;
+const ABSOLUTE_SAFE_PATH = /^\/[A-Za-z0-9._/-]{1,4095}$/;
 
 function text(value: unknown, label: string, pattern?: RegExp): string {
   if (typeof value !== "string" || value.length === 0 || (pattern && !pattern.test(value))) throw new OpsHavenError("CONFIG_INVALID", `${label} is invalid.`);
