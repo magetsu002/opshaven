@@ -1,0 +1,31 @@
+name: import-v1-history
+
+on:
+  push:
+    branches:
+      - feat/v1
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Import exact local milestone history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat .bootstrap/part* | base64 --decode | xz --decompress > /tmp/opshaven.fast-export
+          mkdir /tmp/opshaven-import
+          git -C /tmp/opshaven-import init
+          git -C /tmp/opshaven-import fast-import < /tmp/opshaven.fast-export
+          test "$(git -C /tmp/opshaven-import rev-parse refs/heads/main)" = "dbdd746e1a3d3aa4384c37b3d0600ae2861f9ca7"
+          git -C /tmp/opshaven-import remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C /tmp/opshaven-import push --force origin refs/heads/main:refs/heads/feat/v1
