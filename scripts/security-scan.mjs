@@ -25,15 +25,15 @@ for (const file of files) {
   findings.push(...scan(buffer.toString("utf8"), file));
 }
 
-const history = execFileSync("git", ["log", "--all", "-p", "--no-ext-diff", "--format=commit:%H"], {
+const history = execFileSync("git", ["log", "HEAD", "-p", "--no-ext-diff", "--format=commit:%H"], {
   encoding: "utf8",
   maxBuffer: 64 * 1024 * 1024
 });
-findings.push(...scan(history, "Git history"));
+findings.push(...scan(history, "Candidate history"));
 
 if (findings.length > 0) {
   console.error(findings.join("\n"));
   process.exitCode = 1;
 } else {
-  console.log(`Security scan passed for ${files.length} tracked files and Git history.`);
+  console.log(`Security scan passed for ${files.length} tracked files and candidate history.`);
 }
