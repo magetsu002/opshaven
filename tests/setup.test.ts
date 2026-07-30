@@ -14,6 +14,14 @@ describe("setup and diagnostics", () => {
     assert.ok(!output.includes("ALL=(ALL)"));
   });
 
+  it("keeps the restricted account password-unusable without locking public-key authentication", async () => {
+    const bootstrap = await readFile("scripts/bootstrap-dispatcher.sh", "utf8");
+    const fixture = await readFile("integration/Dockerfile", "utf8");
+    assert.ok(bootstrap.includes("usermod --password '*'"));
+    assert.ok(fixture.includes("usermod --password '*'"));
+    assert.ok(!bootstrap.includes("passwd -l"));
+  });
+
   it("reports host-key, file, approval, executable, and audit status without values", async () => {
     const config = parseConfig(JSON.parse(await readFile("examples/opshaven.config.json", "utf8")) as unknown);
     const report = await runDoctor(config, {
