@@ -34,6 +34,7 @@ jobs:
           git -C /tmp/opshaven-import fast-import < /tmp/opshaven.fast-export
           test "$(git -C /tmp/opshaven-import rev-parse refs/heads/main)" = "dbdd746e1a3d3aa4384c37b3d0600ae2861f9ca7"
           git -C /tmp/opshaven-import symbolic-ref HEAD refs/heads/main
+          git -C /tmp/opshaven-import reset --hard refs/heads/main
           git -C /tmp/opshaven-import filter-branch --force \
             --index-filter 'git rm -r --cached --ignore-unmatch .github/workflows' \
             -- refs/heads/main
