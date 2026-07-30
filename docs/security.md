@@ -1,30 +1,81 @@
-# Security requirements
+# Security
 
-## Local files
+OpsHaven is designed to give AI agents useful VPS access without giving them a shell.
 
-- SSH identity and approval private/HMAC files: owner-only regular files, mode `0600`.
-- known-hosts and approval public key: regular non-symlink files.
-- configuration: regular non-symlink file with trusted ownership.
-- audit and approval directories: private to the local operator.
+This guide covers the main security assumptions for running it safely.
 
-Generate local approval material with `scripts/bootstrap-local.sh`. Transfer only the Ed25519 public key to the VPS.
+## Local machine
 
-## SSH account
+Keep the local OpsHaven files private:
 
-Use one dedicated non-root account per trust domain. Install both key-level restrictions and an sshd `Match User` forced command. Do not enable password authentication, PTY, agent forwarding, TCP forwarding, X11 forwarding, tunneling, or a public MCP listener.
+* SSH private keys and approval signing material should be owned by the local user and use mode `0600`.
+* Configuration, known-hosts, and approval public keys should be regular files, not symlinks.
+* Audit and approval directories should only be accessible to the operator.
 
-Possession of the restricted SSH key alone is insufficient for mutation: the VPS verifies a separate signed approval and consumes its nonce.
+Generate the local approval keys with:
 
-## Secrets
+```bash
+scripts/bootstrap-local.sh
+```
 
-Runtime configuration status reads only configured environment-file key names and returns presence booleans. It never returns values. Do not configure secret-bearing probe query strings or credential-bearing URLs. Logs are still untrusted and are redacted twice.
+Only copy the generated public approval key to the VPS.
 
-`secretFingerprints` should contain SHA-256 fingerprints of specific planted or high-risk secret values, never the secret values themselves.
+## Restricted SSH account
 
-## Dependency posture
+Use a dedicated non-root SSH account for OpsHaven.
 
-The runtime has no npm dependencies. TypeScript is a pinned development dependency. CI runs type checking, tests, a production dependency audit, repository/history secret scanning, and a real restricted-SSH integration fixture.
+The account should have:
 
-## Reporting
+* public-key authentication only
+* a forced command
+* no interactive shell
+* no PTY
+* no agent, TCP, X11, or tunnel forwarding
+* narrowly scoped sudo access where required
 
-Security reports should describe the affected boundary and reproduction using generic fixtures. Never place real infrastructure identifiers or secret material in an issue.
+Use both SSH key restrictions and an `sshd` `Match User` rule. This keeps the account restricted even if one layer is misconfigured.
+
+The SSH key alone cannot approve changes. Mutating operations also require a separate signed approval that the VPS verifies and consumes once.
+
+## Secrets and logs
+
+OpsHaven should avoid reading secrets whenever possible.
+
+Runtime configuration checks return only whether configured variables are present. They never return variable values.
+
+Health probes should use credential-free URLs. Do not place passwords, API keys, or tokens in probe paths or query strings.
+
+Logs are treated as untrusted input and are redacted before and after crossing the SSH boundary.
+
+For especially sensitive values, configure their SHA-256 hashes under `secretFingerprints`. Store fingerprints only, never the original values.
+
+## Dependencies and validation
+
+OpsHaven has no production npm dependencies.
+
+Before submitting or releasing changes, run:
+
+```bash
+npm run check
+npm run security
+```
+
+CI also verifies:
+
+* type safety and tests
+* production dependency audit
+* repository and Git-history secret scanning
+* the restricted SSH integration environment
+
+## Reporting a security issue
+
+Please avoid opening a public issue for a vulnerability that could expose secrets, bypass approval, escape the restricted account, or alter unrelated services.
+
+Include:
+
+* the affected boundary
+* the expected and observed behavior
+* a minimal reproduction using generic fixtures
+* the relevant OpsHaven version or commit
+
+Do not include real credentials, hostnames, IP addresses, customer information, or private infrastructure details.
