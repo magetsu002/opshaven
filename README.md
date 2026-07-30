@@ -1,40 +1,89 @@
 # OpsHaven
 
-OpsHaven 1.0.0 is a local, general-purpose MCP server that gives AI agents safe VPS inspection and narrowly controlled operations over restricted SSH.
+OpsHaven is a local MCP server for inspecting and operating Linux VPS deployments through restricted SSH.
+
+It gives AI agents access to predefined infrastructure actions without exposing a general-purpose shell.
+
+## How it works
 
 ```text
 AI client
-→ local stdio MCP server
-→ strict policy and human approval
-→ host-key-pinned restricted SSH
-→ VPS forced-command dispatcher
-→ fixed allowlisted handlers
-→ doubly redacted structured response
-→ tamper-evident audit chain
+→ local MCP server
+→ policy and approval checks
+→ restricted SSH account
+→ VPS operation dispatcher
+→ structured response
+→ audit log
 ```
 
-## Safety model
+OpsHaven uses configured resource IDs instead of arbitrary commands, service names, or filesystem paths.
 
-OpsHaven never exposes a shell, arbitrary command, free-form path, SQL input, deployment script, generic container exec, or unrestricted file read. MCP tools accept only configured logical resource IDs and small typed arguments. Read operations are the default. Every real mutation requires a fresh expiring approval bound to the exact normalized arguments, configured target, policy version, and remote state fingerprint. The remote dispatcher verifies the approval signature independently and prevents replay.
+Read operations are allowed by default. Changes such as restarting a service, deploying a commit, or rolling back a release require explicit approval.
 
-## V1 tools
+## Supported operations
 
-Inspection: `get_host_summary`, `get_deployed_commit`, `get_service_status`, `get_container_status`, `get_runtime_config_status`, `get_reverse_proxy_summary`, `get_firewall_summary`, `run_health_probe`, `get_redacted_logs`, `get_monitoring_status`, `get_backup_status`, and `get_restore_readiness`.
+### Inspection
 
-Controlled mutations: `restart_service`, `deploy_commit`, and `rollback_deployment`.
+- Host and deployed commit information
+- systemd service status
+- Docker and Docker Compose status
+- Runtime configuration presence
+- Nginx configuration summaries
+- Firewall summaries
+- Health probes
+- Redacted logs
+- Monitoring status
+- Backup status
+- Restore readiness
+
+### Controlled changes
+
+- Restart a configured service
+- Deploy an exact Git commit
+- Roll back to a recorded release
+
+## Safety
+
+OpsHaven does not provide arbitrary shell access.
+
+The local server and the VPS dispatcher both validate every request. Runtime configuration checks return presence information only, and logs are bounded and redacted before they reach the AI client.
+
+SSH connections use a dedicated non-root account, pinned host keys, and a forced-command dispatcher.
+
+## Setup
+
+See the [setup guide](docs/setup.md) to:
+
+- install OpsHaven;
+- configure the local MCP server;
+- create the restricted VPS account;
+- register VPS resources;
+- connect an MCP client.
+
+Review the [security guide](docs/security.md) before configuring SSH, sudo, deployment access, or production resources.
 
 ## Development
+
+Requirements:
+
+```text
+Node.js 22 or newer
+```
+
+Install dependencies and run the full validation suite:
 
 ```bash
 npm ci --ignore-scripts --no-audit --no-fund
 npm run release:check
 ```
 
-The server is stdio-only:
+Build and start the local stdio MCP server:
 
 ```bash
 npm run build
 node dist/src/index.js --config /absolute/path/to/local.config.json
 ```
 
-See `docs/setup.md` before connecting an MCP client, `docs/security.md` before configuring trust files or sudo, and `RELEASE_NOTES.md` for the stable V1 scope and limitations.
+## Project links
+
+[Setup](docs/setup.md) · [Security](docs/security.md) · [Contributing](CONTRIBUTING.md) · [License](LICENSE)
