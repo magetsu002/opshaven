@@ -12,8 +12,9 @@ function configPath(): string {
 }
 
 async function main(): Promise<void> {
-  const config = await loadConfig(configPath());
-  const server = new McpServer(new OperationService(config));
+  const path = configPath();
+  const config = await loadConfig(path);
+  const server = new McpServer(new OperationService(config, undefined, path));
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity, terminal: false });
   for await (const line of lines) {
     if (typeof line !== "string" || line.trim().length === 0) continue;

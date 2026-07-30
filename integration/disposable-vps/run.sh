@@ -13,9 +13,11 @@ ssh-keygen -q -t ed25519 -N '' -f "$GEN/id_ed25519"
 cp "$GEN/id_ed25519.pub" "$GEN/authorized_key.pub"
 openssl genpkey -algorithm Ed25519 -out "$GEN/approval-private.pem" >/dev/null 2>&1
 openssl pkey -in "$GEN/approval-private.pem" -pubout -out "$GEN/approval-public.pem" >/dev/null 2>&1
+openssl genpkey -algorithm Ed25519 -out "$GEN/response-private.pem" >/dev/null 2>&1
+openssl pkey -in "$GEN/response-private.pem" -pubout -out "$GEN/response-public.pem" >/dev/null 2>&1
 openssl rand -hex 32 > "$GEN/approval.key"
-chmod 600 "$GEN/id_ed25519" "$GEN/approval-private.pem" "$GEN/approval.key"
-chmod 644 "$GEN/id_ed25519.pub" "$GEN/authorized_key.pub" "$GEN/approval-public.pem"
+chmod 600 "$GEN/id_ed25519" "$GEN/approval-private.pem" "$GEN/response-private.pem" "$GEN/approval.key"
+chmod 644 "$GEN/id_ed25519.pub" "$GEN/authorized_key.pub" "$GEN/approval-public.pem" "$GEN/response-public.pem"
 
 node --input-type=module - "$GEN" <<'NODE'
 import { writeFileSync } from "node:fs";
@@ -77,6 +79,8 @@ const config = {
 writeFileSync(path.join(root, "local.config.json"), JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });
 NODE
 
+cp "$GEN/response-public.pem" "$GEN/local.config.json.response-public.pem"
+chmod 644 "$GEN/local.config.json.response-public.pem"
 node "$DIR/generate-capability.mjs" \
   "$GEN/local.config.json" \
   "$GEN/approval-private.pem" \
@@ -112,22 +116,21 @@ SHELL_RESULT="$("${SSH[@]}" id 2>/dev/null || true)"
 [[ "$SHELL_RESULT" == *'POLICY_DENIED'* ]]
 [[ "$SHELL_RESULT" != *'uid='* ]]
 
-REQUEST='{"version":1,"requestId":"integration-1","operation":"get_host_summary","resourceId":"host.fixture","args":{"resourceId":"host.fixture"},"limits":{"timeoutMs":15000,"maxBytes":131072,"maxLines":1000}}'
-RESPONSE="$(printf '%s\n' "$REQUEST" | "${SSH[@]}")"
-node -e 'const x=JSON.parse(process.argv[1]); if(!x.ok || x.requestId!=="integration-1" || !x.data.uname) process.exit(1)' "$RESPONSE"
+INSPECTION="$(node "$DIR/inspect.mjs" "$GEN/local.config.json")"
+node -e 'const x=JSON.parse(process.argv[1]); if(!x.ok || !x.data?.uname) process.exit(1)' "$INSPECTION"
 
 ssh-keygen -q -t ed25519 -N '' -f "$GEN/fake_host_key"
 printf '[127.0.0.1]:22222 %s\n' "$(cut -d' ' -f1,2 "$GEN/fake_host_key.pub")" > "$GEN/bad_known_hosts"
 set +e
-printf '%s\n' "$REQUEST" | ssh -p 22222 -i "$GEN/id_ed25519" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$GEN/bad_known_hosts" -o ClearAllForwardings=yes -o ForwardAgent=no -o RequestTTY=no opshaven@127.0.0.1 >/dev/null 2>&1
+printf '{}\n' | ssh -p 22222 -i "$GEN/id_ed25519" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$GEN/bad_known_hosts" -o ClearAllForwardings=yes -o ForwardAgent=no -o RequestTTY=no opshaven@127.0.0.1 >/dev/null 2>&1
 BAD_HOST_STATUS=$?
 set -e
 [[ $BAD_HOST_STATUS -ne 0 ]]
 
-OVERSIZED='{"version":1,"requestId":"integration-2","operation":"get_host_summary","resourceId":"host.fixture","args":{"resourceId":"host.fixture"},"limits":{"timeoutMs":15000,"maxBytes":131073,"maxLines":1000}}'
-REJECTED="$(printf '%s\n' "$OVERSIZED" | "${SSH[@]}")"
-node -e 'const x=JSON.parse(process.argv[1]); if(x.ok || x.error?.code!=="POLICY_DENIED") process.exit(1)' "$REJECTED"
+UNSIGNED='{"version":1,"requestId":"integration-unsigned","operation":"get_host_summary","resourceId":"host.fixture","args":{"resourceId":"host.fixture"},"limits":{"timeoutMs":15000,"maxBytes":131072,"maxLines":1000}}'
+REJECTED="$(printf '%s\n' "$UNSIGNED" | "${SSH[@]}")"
+node -e 'const x=JSON.parse(process.argv[1]); if(x.ok || x.error?.code!=="REMOTE_PROTOCOL_INVALID") process.exit(1)' "$REJECTED"
 
 LIFECYCLE="$(node "$DIR/lifecycle.mjs" "$GEN/local.config.json" "$GEN/commits.json")"
 node -e 'const x=JSON.parse(process.argv[1]); if(x.dryRun!=="no-change" || !x.replayRejected || !x.argumentMutationRejected || x.auditRecords < 12) process.exit(1)' "$LIFECYCLE"
-printf 'disposable-vps: shell denial, pinned host keys, bounded inspection, signed capabilities, exact deployment, failed-health restoration, rollback, approval rejection, and audit verification passed\n'
+printf 'disposable-vps: shell denial, pinned host keys, signed capabilities, authenticated requests and responses, exact deployment, failed-health restoration, rollback, approval rejection, and audit verification passed\n'

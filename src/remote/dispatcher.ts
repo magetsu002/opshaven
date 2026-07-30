@@ -3,9 +3,17 @@ import { createHash } from "node:crypto";
 import { assertCapabilityAllows, loadVerifiedCapability } from "../capabilities.js";
 import { loadConfig } from "../config.js";
 import { asOpsHavenError, OpsHavenError } from "../errors.js";
+import { readRegularFile } from "../safe-fs.js";
+import {
+  createAuthenticatedResponse,
+  requestReplayDirectory,
+  responsePrivateKeyPath,
+  verifyAuthenticatedRequest,
+  type AuthenticatedResponseEnvelope,
+} from "./authenticated-protocol.js";
 import { handleInspection } from "./handlers.js";
 import { handleMutation } from "./mutations.js";
-import { parseRemoteRequest, validateRemoteRequest, type RemoteFailure, type RemoteSuccess } from "./protocol.js";
+import { validateRemoteRequest, type RemoteFailure, type RemoteResponse, type RemoteSuccess } from "./protocol.js";
 import { FixedCommandRunner } from "./runner.js";
 
 async function readBoundedInput(maxBytes = 65536): Promise<string> {
@@ -27,25 +35,66 @@ function configPath(argv: readonly string[]): string {
   return argv[3];
 }
 
-export async function dispatch(argv = process.argv, originalCommand = process.env.SSH_ORIGINAL_COMMAND ?? ""): Promise<RemoteSuccess | RemoteFailure> {
+function failure(requestId: string, startedAt: string, error: unknown): RemoteFailure {
+  const safe = asOpsHavenError(error);
+  return {
+    version: 1,
+    requestId,
+    ok: false,
+    error: { code: safe.code, message: safe.message, retryable: safe.retryable },
+    evidence: { startedAt, finishedAt: new Date().toISOString(), truncated: false, redactions: 0 },
+  };
+}
+
+export async function dispatch(
+  argv = process.argv,
+  originalCommand = process.env.SSH_ORIGINAL_COMMAND ?? "",
+): Promise<AuthenticatedResponseEnvelope | RemoteFailure> {
   const startedAt = new Date().toISOString();
+  if (originalCommand.trim().length > 0) return failure("invalid", startedAt, new OpsHavenError("POLICY_DENIED", "Original SSH commands are forbidden."));
   let requestId = "invalid";
   try {
-    if (originalCommand.trim().length > 0) throw new OpsHavenError("POLICY_DENIED", "Original SSH commands are forbidden.");
     const trustedConfigPath = configPath(argv);
     const config = await loadConfig(trustedConfigPath);
     const capability = await loadVerifiedCapability(config, trustedConfigPath, "controlled", process.argv[1] ?? "");
+    const requestPublicKey = await readRegularFile(config.approvals.verificationPublicKeyFile, "Request verification key", { maxBytes: 65536, code: "POLICY_DENIED" });
+    const responsePrivateKey = await readRegularFile(responsePrivateKeyPath(trustedConfigPath), "Response signing key", { maxBytes: 65536, code: "POLICY_DENIED" });
     const raw = await readBoundedInput();
-    if (raw.split(/\r?\n/).filter(Boolean).length !== 1) throw new OpsHavenError("REMOTE_PROTOCOL_INVALID", "Exactly one request envelope is required.");
-    const request = validateRemoteRequest(config, parseRemoteRequest(JSON.parse(raw) as unknown));
-    assertCapabilityAllows(capability, request.operation, request.resourceId, request.limits);
-    requestId = request.requestId;
-    const context = { config, runner: new FixedCommandRunner() };
-    const data = request.operation === "restart_service" || request.operation === "deploy_commit" || request.operation === "rollback_deployment" ? await handleMutation(context, request) : await handleInspection(context, request);
-    return { version: 1, requestId, ok: true, data, evidence: { startedAt, finishedAt: new Date().toISOString(), truncated: data.truncated === true, redactions: typeof data.redactions === "number" ? data.redactions : 0 } };
+    if (raw.split(/\r?\n/).filter(Boolean).length !== 1) throw new OpsHavenError("REMOTE_PROTOCOL_INVALID", "Exactly one authenticated request envelope is required.");
+    const verified = await verifyAuthenticatedRequest(
+      JSON.parse(raw) as unknown,
+      capability,
+      requestPublicKey,
+      requestReplayDirectory(config),
+    );
+    requestId = verified.request.requestId;
+    let response: RemoteResponse;
+    try {
+      const request = validateRemoteRequest(config, verified.request);
+      assertCapabilityAllows(capability, request.operation, request.resourceId, request.limits);
+      const context = { config, runner: new FixedCommandRunner() };
+      const data = request.operation === "restart_service" || request.operation === "deploy_commit" || request.operation === "rollback_deployment"
+        ? await handleMutation(context, request)
+        : await handleInspection(context, request);
+      const success: RemoteSuccess = {
+        version: 1,
+        requestId,
+        ok: true,
+        data,
+        evidence: {
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          truncated: data.truncated === true,
+          redactions: typeof data.redactions === "number" ? data.redactions : 0,
+        },
+      };
+      response = success;
+    } catch (error) {
+      response = failure(requestId, startedAt, error);
+    }
+    return createAuthenticatedResponse(response, verified.requestHash, capability, responsePrivateKey);
   } catch (error) {
-    const safe = asOpsHavenError(error);
-    return { version: 1, requestId, ok: false, error: { code: safe.code, message: safe.message, retryable: safe.retryable }, evidence: { startedAt, finishedAt: new Date().toISOString(), truncated: false, redactions: 0 } };
+    return failure(requestId, startedAt, error);
   }
 }
 

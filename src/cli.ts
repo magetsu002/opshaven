@@ -55,7 +55,7 @@ async function main(): Promise<void> {
     process.stdout.write(`${JSON.stringify({ mcpServers: { opshaven: { command: "opshaven-mcp", args: ["--config", path] } } }, null, 2)}\n`);
     return;
   }
-  const service = new OperationService(config);
+  const service = new OperationService(config, undefined, path);
   const resourceId = required("--resource");
   const ttl = flag("--ttl-seconds");
   const ttlSeconds = ttl === undefined ? undefined : Number(ttl);
