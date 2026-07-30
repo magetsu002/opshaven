@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "policyVersion": "v1",
+  "limits": { "timeoutMs": 15000, "maxBytes": 131072, "maxLines": 1000 },
+  "audit": { "path": "/home/example/.local/state/opshaven/audit.jsonl" },
+  "approvals": {
+    "directory": "/home/example/.local/state/opshaven/approvals",
+    "secretFile": "/home/example/.local/state/opshaven/approval.key",
+    "signingPrivateKeyFile": "/home/example/.local/state/opshaven/approval-private.pem",
+    "verificationPublicKeyFile": "/home/example/.config/opshaven/approval-public.pem",
+    "remoteUsedDirectory": "/home/example/.local/state/opshaven/remote-used",
+    "defaultTtlSeconds": 300
+  },
+  "secretFingerprints": [],
+  "resources": [
+    {
+      "id": "host.example",
+      "kind": "host",
+      "address": "vps.example.invalid",
+      "port": 22,
+      "user": "opshaven",
+      "knownHostsFile": "/home/example/.config/opshaven/known_hosts",
+      "identityFile": "/home/example/.config/opshaven/id_ed25519",
+      "connectTimeoutMs": 5000
+    },
+    { "id": "svc.example", "kind": "service", "hostId": "host.example", "unit": "example.service" }
+  ]
+}
