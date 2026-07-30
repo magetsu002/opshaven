@@ -18,8 +18,24 @@ for (const [name, file] of Object.entries(expectedBins)) {
   const stat = await fs.stat(file).catch(() => null);
   if (!stat?.isFile()) failures.push(`${name}: built entrypoint is missing`);
 }
-const isolatedSource = await fs.readFile("src/remote/read-only-dispatcher.ts", "utf8");
-if (/(?:mutations|authorization|approval|sudo|docker)/i.test(isolatedSource)) failures.push("read-only dispatcher imports a privileged capability");
+const isolatedFiles = [
+  "src/remote/read-only-dispatcher.ts",
+  "src/remote/read-only-protocol.ts",
+  "src/remote/read-only-policy.ts",
+  "src/remote/read-only-handlers.ts",
+];
+const forbidden = [
+  /from\s+["'][^"']*(?:mutations|authorization|approval)[^"']*["']/i,
+  /\b(?:handleMutation|verifyAndConsumeRemoteAuthorization|ApprovalService)\b/,
+  /\/usr\/(?:bin|sbin)\/(?:sudo|docker)\b/,
+  /docker\.sock/i,
+];
+for (const file of isolatedFiles) {
+  const source = await fs.readFile(file, "utf8");
+  for (const pattern of forbidden) {
+    if (pattern.test(source)) failures.push(`${file}: read-only target imports a privileged capability`);
+  }
+}
 if (failures.length) {
   console.error(failures.join("\n"));
   process.exitCode = 1;
