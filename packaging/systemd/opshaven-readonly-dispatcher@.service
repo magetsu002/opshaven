@@ -1,0 +1,38 @@
+[Unit]
+Description=OpsHaven isolated read-only dispatcher (%i)
+Documentation=https://github.com/magetsu002/opshaven/blob/main/docs/confinement.md
+
+[Service]
+Type=exec
+User=opshaven
+Group=opshaven
+ExecStart=/usr/local/libexec/opshaven-readonly-force-command --config /etc/opshaven/%i.json
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @obsolete
+UMask=0077
+ReadWritePaths=/var/lib/opshaven
+RuntimeDirectory=opshaven-readonly-%i
+RuntimeDirectoryMode=0700
+TimeoutStartSec=30
