@@ -1,0 +1,53 @@
+#!/usr/bin/env node
+import { createHash } from "node:crypto";
+import { loadConfig } from "../config.js";
+import { asOpsHavenError, OpsHavenError } from "../errors.js";
+import { handleInspection } from "./handlers.js";
+import { handleMutation } from "./mutations.js";
+import { parseRemoteRequest, validateRemoteRequest, type RemoteFailure, type RemoteSuccess } from "./protocol.js";
+import { FixedCommandRunner } from "./runner.js";
+
+async function readBoundedInput(maxBytes = 65536): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    process.stdin.on("data", (chunk: Uint8Array) => {
+      bytes += chunk.length;
+      if (bytes > maxBytes) reject(new OpsHavenError("OUTPUT_LIMIT", "Remote request exceeded its byte limit."));
+      else chunks.push(chunk);
+    });
+    process.stdin.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    process.stdin.on("error", () => reject(new OpsHavenError("REMOTE_PROTOCOL_INVALID", "Remote request could not be read.")));
+  });
+}
+
+function configPath(argv: readonly string[]): string {
+  if (argv.length !== 4 || argv[2] !== "--config" || !argv[3]?.startsWith("/")) throw new OpsHavenError("CONFIG_INVALID", "Dispatcher requires one trusted absolute configuration path.");
+  return argv[3];
+}
+
+export async function dispatch(argv = process.argv, originalCommand = process.env.SSH_ORIGINAL_COMMAND ?? ""): Promise<RemoteSuccess | RemoteFailure> {
+  const startedAt = new Date().toISOString();
+  let requestId = "invalid";
+  try {
+    if (originalCommand.trim().length > 0) throw new OpsHavenError("POLICY_DENIED", "Original SSH commands are forbidden.");
+    const config = await loadConfig(configPath(argv));
+    const raw = await readBoundedInput();
+    if (raw.split(/\r?\n/).filter(Boolean).length !== 1) throw new OpsHavenError("REMOTE_PROTOCOL_INVALID", "Exactly one request envelope is required.");
+    const request = validateRemoteRequest(config, parseRemoteRequest(JSON.parse(raw) as unknown));
+    requestId = request.requestId;
+    const context = { config, runner: new FixedCommandRunner() };
+    const data = request.operation === "restart_service" || request.operation === "deploy_commit" || request.operation === "rollback_deployment" ? await handleMutation(context, request) : await handleInspection(context, request);
+    return { version: 1, requestId, ok: true, data, evidence: { startedAt, finishedAt: new Date().toISOString(), truncated: data.truncated === true, redactions: typeof data.redactions === "number" ? data.redactions : 0 } };
+  } catch (error) {
+    const safe = asOpsHavenError(error);
+    return { version: 1, requestId, ok: false, error: { code: safe.code, message: safe.message, retryable: safe.retryable }, evidence: { startedAt, finishedAt: new Date().toISOString(), truncated: false, redactions: 0 } };
+  }
+}
+
+if (process.argv[1]?.endsWith("dispatcher.js") || process.argv[1]?.endsWith("opshaven-dispatcher")) {
+  dispatch().then((response) => process.stdout.write(`${JSON.stringify(response)}\n`)).catch(() => {
+    const id = createHash("sha256").update(String(Date.now())).digest("hex").slice(0, 16);
+    process.stdout.write(`${JSON.stringify({ version: 1, requestId: id, ok: false, error: { code: "INTERNAL_ERROR", message: "Dispatcher failed safely.", retryable: false }, evidence: { startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), truncated: false, redactions: 0 } })}\n`);
+  });
+}

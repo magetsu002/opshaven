@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "policyVersion": "v1",
+  "limits": { "timeoutMs": 15000, "maxBytes": 131072, "maxLines": 1000 },
+  "audit": { "path": "/var/lib/opshaven/audit-unused.jsonl" },
+  "approvals": {
+    "directory": "/var/lib/opshaven/local-approvals-unused",
+    "secretFile": "/var/lib/opshaven/local-secret-unused",
+    "signingPrivateKeyFile": "/var/lib/opshaven/local-private-unused",
+    "verificationPublicKeyFile": "/etc/opshaven/approval-public.pem",
+    "remoteUsedDirectory": "/var/lib/opshaven/remote-used",
+    "defaultTtlSeconds": 300
+  },
+  "secretFingerprints": [],
+  "resources": [
+    {
+      "id": "host.example",
+      "kind": "host",
+      "address": "localhost",
+      "port": 22,
+      "user": "opshaven",
+      "knownHostsFile": "/etc/opshaven/known_hosts-unused",
+      "identityFile": "/etc/opshaven/id-unused",
+      "connectTimeoutMs": 5000
+    },
+    { "id": "svc.example", "kind": "service", "hostId": "host.example", "unit": "example.service" }
+  ]
+}

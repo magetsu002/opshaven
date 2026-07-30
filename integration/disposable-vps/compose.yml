@@ -1,0 +1,14 @@
+services:
+  vps:
+    build:
+      context: ../..
+      dockerfile: integration/disposable-vps/Dockerfile
+    ports:
+      - "127.0.0.1:22222:22"
+    volumes:
+      - ./generated:/run/opshaven-test:ro
+    healthcheck:
+      test: ["CMD", "test", "-s", "/home/opshaven/.ssh/authorized_keys"]
+      interval: 2s
+      timeout: 2s
+      retries: 20

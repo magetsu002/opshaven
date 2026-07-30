@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "policyVersion": "integration-v1",
+  "limits": { "timeoutMs": 10000, "maxBytes": 65536, "maxLines": 500 },
+  "audit": { "path": "/var/lib/opshaven/audit-unused.jsonl" },
+  "approvals": {
+    "directory": "/var/lib/opshaven/local-approvals-unused",
+    "secretFile": "/var/lib/opshaven/local-secret-unused",
+    "signingPrivateKeyFile": "/var/lib/opshaven/local-private-unused",
+    "verificationPublicKeyFile": "/etc/opshaven/approval-public-unused.pem",
+    "remoteUsedDirectory": "/var/lib/opshaven/remote-used",
+    "defaultTtlSeconds": 300
+  },
+  "secretFingerprints": [],
+  "resources": [
+    {
+      "id": "host.fixture",
+      "kind": "host",
+      "address": "localhost",
+      "port": 22,
+      "user": "opshaven",
+      "knownHostsFile": "/etc/opshaven/known-hosts-unused",
+      "identityFile": "/etc/opshaven/identity-unused",
+      "connectTimeoutMs": 5000
+    }
+  ]
+}
