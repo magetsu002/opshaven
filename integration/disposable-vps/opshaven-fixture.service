@@ -3,7 +3,9 @@ Description=OpsHaven disposable deployment fixture
 After=network.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=10
 User=opshaven
 Group=opshaven
 WorkingDirectory=/srv/opshaven/current

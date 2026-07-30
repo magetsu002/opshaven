@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import os
+import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -26,4 +28,17 @@ class Handler(BaseHTTPRequestHandler):
         return
 
 
-ThreadingHTTPServer(("127.0.0.1", 18080), Handler).serve_forever()
+def notify_ready():
+    address = os.environ.get("NOTIFY_SOCKET")
+    if not address:
+        return
+    if address.startswith("@"):
+        address = "\0" + address[1:]
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notifier:
+        notifier.connect(address)
+        notifier.sendall(b"READY=1")
+
+
+server = ThreadingHTTPServer(("127.0.0.1", 18080), Handler)
+notify_ready()
+server.serve_forever()
