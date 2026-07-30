@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-const roots = ["src", "tests", "scripts", "docs", "integration", "examples"];
+const roots = ["src", "tests", "scripts", "docs", "integration", "examples", "packaging", "security"];
 const rootFiles = [
   "README.md",
   "RELEASE_NOTES.md",
@@ -18,7 +18,7 @@ async function walk(root) {
     if (entry.name === "generated") continue;
     const full = path.join(root, entry.name);
     if (entry.isDirectory()) await walk(full);
-    else if (/\.(?:ts|mjs|js|json|md|yml|yaml|sh|py|service)$/.test(entry.name) || entry.name === "Dockerfile") files.push(full);
+    else if (/\.(?:ts|mjs|js|json|md|yml|yaml|sh|py|service)$/.test(entry.name) || entry.name === "Dockerfile" || !entry.name.includes(".")) files.push(full);
   }
 }
 

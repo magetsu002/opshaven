@@ -1,10 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import {
-  assertCapabilityAllows,
-  loadVerifiedCapability,
-  type VerifiedCapability,
-} from "../capabilities.js";
+import { loadVerifiedDeclarationBinding } from "../capability-declaration.js";
+import { assertCapabilityAllows, loadVerifiedCapability, type VerifiedCapability } from "../capabilities.js";
 import { loadConfig, type OpsHavenConfig } from "../config.js";
 import { asOpsHavenError, OpsHavenError } from "../errors.js";
 import { readRegularFile } from "../safe-fs.js";
@@ -41,21 +38,13 @@ async function readBoundedInput(maxBytes = 65536): Promise<string> {
 }
 
 function configPath(argv: readonly string[]): string {
-  if (argv.length !== 4 || argv[2] !== "--config" || !argv[3]?.startsWith("/")) {
-    throw new OpsHavenError("CONFIG_INVALID", "Read-only dispatcher requires one trusted absolute configuration path.");
-  }
+  if (argv.length !== 4 || argv[2] !== "--config" || !argv[3]?.startsWith("/")) throw new OpsHavenError("CONFIG_INVALID", "Read-only dispatcher requires one trusted absolute configuration path.");
   return argv[3];
 }
 
 function failure(requestId: string, startedAt: string, error: unknown): ReadOnlyRemoteFailure {
   const safe = asOpsHavenError(error);
-  return {
-    version: 1,
-    requestId,
-    ok: false,
-    error: { code: safe.code, message: safe.message, retryable: safe.retryable },
-    evidence: { startedAt, finishedAt: new Date().toISOString(), truncated: false, redactions: 0 },
-  };
+  return { version: 1, requestId, ok: false, error: { code: safe.code, message: safe.message, retryable: safe.retryable }, evidence: { startedAt, finishedAt: new Date().toISOString(), truncated: false, redactions: 0 } };
 }
 
 export async function dispatchReadOnlyEnvelope(
@@ -74,13 +63,7 @@ export async function dispatchReadOnlyEnvelope(
     if (capability) assertCapabilityAllows(capability, request.operation, request.resourceId, request.limits);
     requestId = request.requestId;
     const data = await handleReadOnlyInspection({ config, runner }, request);
-    const success: ReadOnlyRemoteSuccess = {
-      version: 1,
-      requestId,
-      ok: true,
-      data,
-      evidence: { startedAt, finishedAt: new Date().toISOString(), truncated: data.truncated === true, redactions: typeof data.redactions === "number" ? data.redactions : 0 },
-    };
+    const success: ReadOnlyRemoteSuccess = { version: 1, requestId, ok: true, data, evidence: { startedAt, finishedAt: new Date().toISOString(), truncated: data.truncated === true, redactions: typeof data.redactions === "number" ? data.redactions : 0 } };
     return success;
   } catch (error) {
     return failure(requestId, startedAt, error);
@@ -99,6 +82,7 @@ export async function dispatchReadOnly(
     const config = await loadConfig(trustedConfigPath);
     const dispatcherPath = process.argv[1] ?? "";
     await assertRemoteConfinement(config, trustedConfigPath, dispatcherPath, "read-only");
+    await loadVerifiedDeclarationBinding(config, trustedConfigPath, "read-only", dispatcherPath);
     const capability = await loadVerifiedCapability(config, trustedConfigPath, "read-only", dispatcherPath);
     const requestPublicKey = await readRegularFile(config.approvals.verificationPublicKeyFile, "Request verification key", { maxBytes: 65536, code: "POLICY_DENIED" });
     const responsePrivateKey = await readRegularFile(responsePrivateKeyPath(trustedConfigPath), "Response signing key", { maxBytes: 65536, code: "POLICY_DENIED" });
@@ -111,13 +95,7 @@ export async function dispatchReadOnly(
       const request = validateReadOnlyRemoteRequest(config, parseReadOnlyRemoteRequest(verified.request));
       assertCapabilityAllows(capability, request.operation, request.resourceId, request.limits);
       const data = await handleReadOnlyInspection({ config, runner: new FixedCommandRunner() }, request);
-      response = {
-        version: 1,
-        requestId,
-        ok: true,
-        data,
-        evidence: { startedAt, finishedAt: new Date().toISOString(), truncated: data.truncated === true, redactions: typeof data.redactions === "number" ? data.redactions : 0 },
-      };
+      response = { version: 1, requestId, ok: true, data, evidence: { startedAt, finishedAt: new Date().toISOString(), truncated: data.truncated === true, redactions: typeof data.redactions === "number" ? data.redactions : 0 } };
     } catch (error) {
       response = failure(requestId, startedAt, error);
     }

@@ -9,7 +9,9 @@ const required = [
   "docs/setup.md",
   "docs/security.md",
   "docs/architecture.md",
+  "docs/confinement.md",
   "docs/sudoers.example",
+  "security/capability-declaration.json",
 ];
 const obsolete = [
   "docs/milestones.md",
@@ -47,7 +49,6 @@ for (const file of required.filter((item) => item.endsWith(".md"))) {
   for (const match of text.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
     const target = match[1].trim();
     if (!target || target.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(target)) continue;
-
     const cleanTarget = target.split("#", 1)[0];
     const resolved = path.resolve(path.dirname(file), cleanTarget);
     const exists = await fs.stat(resolved).then(() => true).catch(() => false);
@@ -56,12 +57,7 @@ for (const file of required.filter((item) => item.endsWith(".md"))) {
 }
 
 const readme = await fs.readFile("README.md", "utf8");
-for (const target of [
-  "docs/setup.md",
-  "docs/security.md",
-  "CONTRIBUTING.md",
-  "LICENSE",
-]) {
+for (const target of ["docs/setup.md", "docs/security.md", "CONTRIBUTING.md", "LICENSE"]) {
   if (!readme.includes(`](${target})`)) failures.push(`README.md: missing link to ${target}`);
 }
 

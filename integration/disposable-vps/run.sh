@@ -80,14 +80,19 @@ writeFileSync(path.join(root, "local.config.json"), JSON.stringify(config, null,
 NODE
 
 cp "$GEN/response-public.pem" "$GEN/local.config.json.response-public.pem"
-chmod 644 "$GEN/local.config.json.response-public.pem"
+cp "$ROOT/security/capability-declaration.json" "$GEN/declaration.json"
+cp "$GEN/declaration.json" "$GEN/local.config.json.declaration.json"
+chmod 644 "$GEN/local.config.json.response-public.pem" "$GEN/declaration.json" "$GEN/local.config.json.declaration.json"
 node "$DIR/generate-capability.mjs" \
   "$GEN/local.config.json" \
   "$GEN/approval-private.pem" \
   "$ROOT/dist/src/remote/dispatcher.js" \
+  "$GEN/declaration.json" \
   "$GEN/capability.json" \
-  "$GEN/local.config.json.capability.json"
-chmod 600 "$GEN/capability.json" "$GEN/local.config.json.capability.json"
+  "$GEN/declaration-binding.json"
+cp "$GEN/capability.json" "$GEN/local.config.json.capability.json"
+cp "$GEN/declaration-binding.json" "$GEN/local.config.json.declaration-binding.json"
+chmod 600 "$GEN/capability.json" "$GEN/declaration-binding.json" "$GEN/local.config.json.capability.json" "$GEN/local.config.json.declaration-binding.json"
 
 cleanup() {
   docker compose -f "$DIR/compose.yml" down -v --remove-orphans >/dev/null 2>&1 || true
@@ -135,4 +140,4 @@ LIFECYCLE="$(node "$DIR/lifecycle.mjs" "$GEN/local.config.json" "$GEN/commits.js
 node -e 'const x=JSON.parse(process.argv[1]); if(x.dryRun!=="no-change" || !x.replayRejected || !x.argumentMutationRejected || x.auditRecords < 12) process.exit(1)' "$LIFECYCLE"
 BOUNDARY="$(node "$ROOT/dist/src/cli.js" verify-boundary --config "$GEN/local.config.json" --json)"
 node -e 'const x=JSON.parse(process.argv[1]); if(!x.ok || x.assertions.some((item)=>!item.passed)) process.exit(1)' "$BOUNDARY"
-printf 'disposable-vps: shell denial, pinned host keys, signed capabilities, authenticated requests and responses, confinement, boundary verification, exact deployment, failed-health restoration, rollback, approval rejection, and audit verification passed\n'
+printf 'disposable-vps: shell denial, pinned host keys, signed capabilities and declarations, authenticated requests and responses, confinement, boundary verification, exact deployment, failed-health restoration, rollback, approval rejection, and audit verification passed\n'

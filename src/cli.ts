@@ -2,6 +2,11 @@
 import { promises as fs } from "node:fs";
 import { AuditLog } from "./audit.js";
 import { formatBoundaryReport, verifyBoundary } from "./boundary.js";
+import {
+  compareCapabilityDeclarations,
+  formatCapabilityComparison,
+  loadCapabilityDeclaration,
+} from "./capability-declaration.js";
 import { loadConfig } from "./config.js";
 import { OperationService } from "./operations.js";
 
@@ -27,7 +32,15 @@ async function regularFile(path: string, ownerOnly: boolean): Promise<{ exists: 
 async function main(): Promise<void> {
   const selected = command();
   if (selected === "help") {
-    process.stdout.write("OpsHaven commands: validate-config, diagnostics, verify-audit, verify-boundary, approve-restart, approve-deploy, approve-rollback, print-mcp-config\n");
+    process.stdout.write("OpsHaven commands: validate-config, diagnostics, verify-audit, verify-boundary, compare-capabilities, approve-restart, approve-deploy, approve-rollback, print-mcp-config\n");
+    return;
+  }
+  if (selected === "compare-capabilities") {
+    const previous = await loadCapabilityDeclaration(required("--from"));
+    const current = await loadCapabilityDeclaration(flag("--to") ?? "security/capability-declaration.json");
+    const comparison = compareCapabilityDeclarations(previous, current);
+    process.stdout.write(process.argv.includes("--json") ? `${JSON.stringify(comparison)}\n` : formatCapabilityComparison(comparison));
+    process.exitCode = comparison.authorityExpanded ? 2 : 0;
     return;
   }
   const path = configPath();

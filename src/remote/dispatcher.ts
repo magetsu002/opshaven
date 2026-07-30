@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import { loadVerifiedDeclarationBinding } from "../capability-declaration.js";
 import { assertCapabilityAllows, loadVerifiedCapability } from "../capabilities.js";
 import { loadConfig } from "../config.js";
 import { asOpsHavenError, OpsHavenError } from "../errors.js";
@@ -59,17 +60,13 @@ export async function dispatch(
     const config = await loadConfig(trustedConfigPath);
     const dispatcherPath = process.argv[1] ?? "";
     await assertRemoteConfinement(config, trustedConfigPath, dispatcherPath, "controlled");
+    await loadVerifiedDeclarationBinding(config, trustedConfigPath, "controlled", dispatcherPath);
     const capability = await loadVerifiedCapability(config, trustedConfigPath, "controlled", dispatcherPath);
     const requestPublicKey = await readRegularFile(config.approvals.verificationPublicKeyFile, "Request verification key", { maxBytes: 65536, code: "POLICY_DENIED" });
     const responsePrivateKey = await readRegularFile(responsePrivateKeyPath(trustedConfigPath), "Response signing key", { maxBytes: 65536, code: "POLICY_DENIED" });
     const raw = await readBoundedInput();
     if (raw.split(/\r?\n/).filter(Boolean).length !== 1) throw new OpsHavenError("REMOTE_PROTOCOL_INVALID", "Exactly one authenticated request envelope is required.");
-    const verified = await verifyAuthenticatedRequest(
-      JSON.parse(raw) as unknown,
-      capability,
-      requestPublicKey,
-      requestReplayDirectory(config),
-    );
+    const verified = await verifyAuthenticatedRequest(JSON.parse(raw) as unknown, capability, requestPublicKey, requestReplayDirectory(config));
     requestId = verified.request.requestId;
     let response: RemoteResponse;
     try {
@@ -84,12 +81,7 @@ export async function dispatch(
         requestId,
         ok: true,
         data,
-        evidence: {
-          startedAt,
-          finishedAt: new Date().toISOString(),
-          truncated: data.truncated === true,
-          redactions: typeof data.redactions === "number" ? data.redactions : 0,
-        },
+        evidence: { startedAt, finishedAt: new Date().toISOString(), truncated: data.truncated === true, redactions: typeof data.redactions === "number" ? data.redactions : 0 },
       };
       response = success;
     } catch (error) {
