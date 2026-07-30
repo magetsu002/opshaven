@@ -1,7 +1,9 @@
+import path from "node:path";
 import type { ApplicationResource, BackupResource, ContainerResource, DeploymentResource, MonitoringResource, OpsHavenConfig, ProbeResource, ProxyResource, Resource, ServiceResource } from "../config.js";
 import { OpsHavenError } from "../errors.js";
 import type { OperationName } from "../policy.js";
 import { sanitizeOutput } from "../redaction.js";
+import { readDeploymentState } from "./deployment-state.js";
 import type { RemoteRequest } from "./protocol.js";
 import { runProbe } from "./probe.js";
 import type { CommandRunner } from "./runner.js";
@@ -12,7 +14,6 @@ export interface HandlerContext { config: OpsHavenConfig; runner: CommandRunner 
 const SYSTEMCTL = "/usr/bin/systemctl";
 const JOURNALCTL = "/usr/bin/journalctl";
 const DOCKER = "/usr/bin/docker";
-const GIT = "/usr/bin/git";
 const UFW = "/usr/sbin/ufw";
 
 function options(request: RemoteRequest) { return { timeoutMs: request.limits.timeoutMs, maxBytes: request.limits.maxBytes, maxLines: request.limits.maxLines }; }
@@ -37,9 +38,16 @@ async function runtimeConfig(target: ApplicationResource, request: RemoteRequest
   return { keys: parseEnvironmentPresence(text, target.runtimeConfigKeys), sourceConfigured: true, sourceType: "trusted_environment_file" };
 }
 async function deployedCommit(context: HandlerContext, request: RemoteRequest, target: DeploymentResource): Promise<Record<string, unknown>> {
-  const commit = await requireSuccess(context.runner, GIT, ["-C", target.repositoryPath, "rev-parse", "HEAD"], options(request));
-  const dirty = (await requireSuccess(context.runner, GIT, ["-C", target.repositoryPath, "status", "--porcelain=v1", "--untracked-files=normal"], options(request))).length > 0;
-  return { commit, dirty, repositoryId: target.id, migrationPolicy: target.migrationPolicy };
+  const state = await readDeploymentState(target, context.runner, options(request));
+  return {
+    commit: state.activeCommit,
+    activeCommit: state.activeCommit,
+    activeReleaseId: state.activeReleasePath ? path.basename(state.activeReleasePath) : null,
+    sourceRepositoryCommit: state.sourceRepositoryCommit,
+    dirty: state.sourceRepositoryDirty,
+    repositoryId: target.id,
+    migrationPolicy: target.migrationPolicy,
+  };
 }
 async function proxySummary(context: HandlerContext, request: RemoteRequest, target: ProxyResource): Promise<Record<string, unknown>> {
   const service = context.config.resources.get(target.serviceId);
