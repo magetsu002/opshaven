@@ -70,7 +70,7 @@ The isolated read-only launcher uses no-new-privileges and an empty capability s
 
 Controlled mode intentionally requires narrowly documented exceptions for approved deployment writes, configured health-probe networking, and exact systemd sudo transitions. Distribution-specific systemd and syscall behavior must be validated before production adoption.
 
-See [Remote confinement](remote-confinement.md) for the detailed reference profile.
+See [Remote confinement](confinement.md) for the detailed reference profile.
 
 ## Verifiable updates and releases
 
@@ -78,7 +78,7 @@ OpsHaven does not self-update. Operators should review capability changes, sourc
 
 Authority expansion should block adoption until the operator deliberately accepts and signs a compatible capability manifest.
 
-See [Reproducible and verifiable releases](releases.md) for build and artifact verification instructions.
+See [Reproducible and verifiable releases](reproducible-builds.md) for build and artifact verification instructions.
 
 ## What OpsHaven protects against
 
