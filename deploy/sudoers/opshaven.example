@@ -1,0 +1,4 @@
+# Copy to /etc/sudoers.d/opshaven after replacing each exact unit placeholder.
+# Never use wildcards and never allow a shell, editor, package manager, Docker exec, or arbitrary command.
+Cmnd_Alias OPSHAVEN_RESTARTS = /usr/bin/systemctl restart REPLACE.service
+opshaven ALL=(root) NOPASSWD: OPSHAVEN_RESTARTS

@@ -1,0 +1,1 @@
+restrict,command="/usr/local/bin/opshaven-dispatch" ssh-ed25519 REPLACE_WITH_DEDICATED_PUBLIC_KEY opshaven
