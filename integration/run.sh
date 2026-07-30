@@ -17,7 +17,19 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+stage() {
+  printf 'integration: %s\n' "$1"
+}
+
+fail_fixture() {
+  printf 'integration failure: %s\n' "$1" >&2
+  docker inspect "$container" >&2 || true
+  docker logs "$container" >&2 || true
+  exit 1
+}
+
 cd "$root"
+stage "build project and fixture image"
 npm run build >/dev/null
 ssh-keygen -q -t ed25519 -N '' -f "$work/id_ed25519"
 public_key="$(cat "$work/id_ed25519.pub")"
@@ -25,13 +37,20 @@ docker build -f integration/Dockerfile -t opshaven-v1-integration:local . >/dev/
 docker run -d --name "$container" -p 127.0.0.1::22 \
   -e "OPSHAVEN_AUTHORIZED_KEY=$public_key" opshaven-v1-integration:local >/dev/null
 port="$(docker inspect -f '{{(index (index .NetworkSettings.Ports "22/tcp") 0).HostPort}}' "$container")"
+printf 'integration: fixture port %s\n' "$port"
 
+stage "wait for SSH host key"
 attempt=0
-while ! ssh-keyscan -q -p "$port" -t ed25519 127.0.0.1 > "$work/known_hosts" 2>/dev/null; do
+while :; do
+  if ssh-keyscan -p "$port" -t ed25519 127.0.0.1 > "$work/known_hosts.next" 2> "$work/keyscan.err" \
+    && [ -s "$work/known_hosts.next" ]; then
+    mv "$work/known_hosts.next" "$work/known_hosts"
+    break
+  fi
   attempt=$((attempt + 1))
-  if [ "$attempt" -ge 30 ]; then
-    docker logs "$container" >&2
-    exit 1
+  if [ "$attempt" -ge 60 ]; then
+    cat "$work/keyscan.err" >&2 || true
+    fail_fixture "SSH host key did not become reachable"
   fi
   sleep 1
 done
@@ -75,17 +94,20 @@ call_tool() {
     | node dist/index.js --config "$work/client.json" > "$destination"
 }
 
+stage "inspect host through forced dispatcher"
 call_tool get_host_summary '{"hostId":"fixture-host"}' "$work/host.json"
 node integration/assert-response.mjs "$work/host.json" get_host_summary true
 
+stage "inspect deployed commit through forced dispatcher"
 call_tool get_deployed_commit '{"deploymentId":"fixture-deployment"}' "$work/commit.json"
 node integration/assert-response.mjs "$work/commit.json" get_deployed_commit true
 
+stage "verify runtime metadata does not expose values"
 call_tool get_runtime_config_status '{"serviceId":"fixture-service"}' "$work/runtime.json"
 node integration/assert-response.mjs "$work/runtime.json" get_runtime_config_status true 'PLANTED-SECRET-MUST-NOT-CROSS-SSH'
-
 grep -q '"valuesExposed":false' "$work/runtime.json"
 
+stage "prove arbitrary SSH command cannot execute"
 set +e
 ssh -T -p "$port" -i "$work/id_ed25519" \
   -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
@@ -93,9 +115,11 @@ ssh -T -p "$port" -i "$work/id_ed25519" \
   -- opshaven@127.0.0.1 'touch /tmp/opshaven-shell-escape' > "$work/forced.out" 2> "$work/forced.err"
 ssh_status=$?
 set -e
-[ "$ssh_status" -ne 0 ]
-! docker exec "$container" test -e /tmp/opshaven-shell-escape
+[ "$ssh_status" -ne 0 ] || fail_fixture "arbitrary SSH command unexpectedly succeeded"
+! docker exec "$container" test -e /tmp/opshaven-shell-escape \
+  || fail_fixture "arbitrary SSH command created a file"
 
+stage "prove host-key mismatch fails closed"
 good_fingerprint="$fingerprint"
 sed "s|$good_fingerprint|SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB|" "$work/client.json" > "$work/mismatch.json"
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_host_summary","arguments":{"hostId":"fixture-host"}}}' \
@@ -103,6 +127,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"g
 node integration/assert-response.mjs "$work/mismatch-response.json" get_host_summary false
 grep -q 'SSH_HOST_KEY_MISMATCH' "$work/mismatch-response.json"
 
+stage "verify audit chain"
 node dist/cli.js audit verify --config "$work/client.json" > "$work/audit-verification.json"
 grep -q '"valid": true' "$work/audit-verification.json"
 
