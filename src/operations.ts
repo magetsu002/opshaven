@@ -42,10 +42,13 @@ export class OperationService {
   readonly policy: PolicyEngine;
   readonly approvals: ApprovalService;
   readonly audit: AuditLog;
-  constructor(readonly config: OpsHavenConfig, private readonly transport: RemoteTransport = new SshTransport()) {
+  private readonly transport: RemoteTransport;
+
+  constructor(readonly config: OpsHavenConfig, transport?: RemoteTransport, configPath?: string) {
     this.policy = new PolicyEngine(config);
     this.approvals = new ApprovalService(config.approvals);
     this.audit = new AuditLog(config.audit.path);
+    this.transport = transport ?? new SshTransport(configPath ? { config, configPath, mode: "controlled" } : undefined);
   }
 
   private host(id: string): HostResource {

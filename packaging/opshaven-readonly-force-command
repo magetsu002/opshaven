@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 2 ] || [ "$1" != "--config" ]; then
+  printf '%s\n' 'read-only dispatcher requires --config and one absolute path' >&2
+  exit 126
+fi
+case "$2" in
+  /*) ;;
+  *) printf '%s\n' 'configuration path must be absolute' >&2; exit 126 ;;
+esac
+
+exec /usr/bin/setpriv \
+  --no-new-privs \
+  --bounding-set=-all \
+  --inh-caps=-all \
+  --ambient-caps=-all \
+  --reset-env \
+  /usr/bin/env \
+    PATH=/usr/bin:/bin \
+    LANG=C \
+    LC_ALL=C \
+    HOME=/nonexistent \
+    /usr/bin/node /usr/lib/opshaven/read-only-dispatcher.js "$@"

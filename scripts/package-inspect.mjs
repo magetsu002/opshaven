@@ -5,6 +5,7 @@ const expectedBins = {
   opshaven: "dist/src/cli.js",
   "opshaven-mcp": "dist/src/index.js",
   "opshaven-dispatcher": "dist/src/remote/dispatcher.js",
+  "opshaven-readonly-dispatcher": "dist-readonly/src/remote/read-only-dispatcher.js",
 };
 const failures = [];
 if (pkg.name !== "opshaven") failures.push("package name must be opshaven");
@@ -17,9 +18,27 @@ for (const [name, file] of Object.entries(expectedBins)) {
   const stat = await fs.stat(file).catch(() => null);
   if (!stat?.isFile()) failures.push(`${name}: built entrypoint is missing`);
 }
+const isolatedFiles = [
+  "src/remote/read-only-dispatcher.ts",
+  "src/remote/read-only-protocol.ts",
+  "src/remote/read-only-policy.ts",
+  "src/remote/read-only-handlers.ts",
+];
+const forbidden = [
+  /from\s+["'][^"']*(?:mutations|authorization|approval)[^"']*["']/i,
+  /\b(?:handleMutation|verifyAndConsumeRemoteAuthorization|ApprovalService)\b/,
+  /\/usr\/(?:bin|sbin)\/(?:sudo|docker)\b/,
+  /docker\.sock/i,
+];
+for (const file of isolatedFiles) {
+  const source = await fs.readFile(file, "utf8");
+  for (const pattern of forbidden) {
+    if (pattern.test(source)) failures.push(`${file}: read-only target imports a privileged capability`);
+  }
+}
 if (failures.length) {
   console.error(failures.join("\n"));
   process.exitCode = 1;
 } else {
-  console.log("package: metadata and built entrypoints verified");
+  console.log("package: metadata, isolated target, and built entrypoints verified");
 }

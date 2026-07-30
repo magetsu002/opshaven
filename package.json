@@ -7,28 +7,30 @@
   "bin": {
     "opshaven": "dist/src/cli.js",
     "opshaven-mcp": "dist/src/index.js",
-    "opshaven-dispatcher": "dist/src/remote/dispatcher.js"
+    "opshaven-dispatcher": "dist/src/remote/dispatcher.js",
+    "opshaven-readonly-dispatcher": "dist-readonly/src/remote/read-only-dispatcher.js"
   },
-  "engines": {
-    "node": ">=22.0.0"
-  },
+  "engines": { "node": ">=22.0.0" },
   "scripts": {
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist dist-readonly",
     "format:check": "node scripts/format-check.mjs",
     "lint": "node scripts/lint.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "build:main": "tsc -p tsconfig.build.json",
+    "build:readonly": "tsc -p tsconfig.readonly.json",
+    "build": "npm run clean && npm run build:main && npm run build:readonly",
     "test": "npm run build && node --test dist/tests/*.test.js",
     "start": "node dist/src/index.js",
     "check": "npm run lint && npm run typecheck && npm test",
     "package:check": "node scripts/package-inspect.mjs",
     "docs:check": "node scripts/docs-check.mjs",
-    "release:check": "npm run format:check && npm run check && npm run package:check && npm run docs:check",
+    "lockfile:check": "node scripts/verify-lockfile.mjs",
+    "workflow:check": "node scripts/verify-workflow-pins.mjs",
+    "release:check": "npm run format:check && npm run check && npm run package:check && npm run docs:check && npm run lockfile:check && npm run workflow:check",
+    "reproducible:check": "scripts/check-reproducible-build.sh",
     "security": "node scripts/security-scan.mjs",
     "certify": "scripts/certify-release.sh"
   },
-  "devDependencies": {
-    "typescript": "5.8.3"
-  },
+  "devDependencies": { "typescript": "5.8.3" },
   "license": "MIT"
 }

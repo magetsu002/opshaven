@@ -7,7 +7,11 @@ systemd-machine-id-setup >/dev/null 2>&1 || true
 
 KEY_FILE=/run/opshaven-test/authorized_key.pub
 PUBLIC_KEY_FILE=/run/opshaven-test/approval-public.pem
-if [[ ! -s "$KEY_FILE" || ! -s "$PUBLIC_KEY_FILE" ]]; then
+CAPABILITY_FILE=/run/opshaven-test/capability.json
+DECLARATION_FILE=/run/opshaven-test/declaration.json
+DECLARATION_BINDING_FILE=/run/opshaven-test/declaration-binding.json
+RESPONSE_PRIVATE_FILE=/run/opshaven-test/response-private.pem
+if [[ ! -s "$KEY_FILE" || ! -s "$PUBLIC_KEY_FILE" || ! -s "$CAPABILITY_FILE" || ! -s "$DECLARATION_FILE" || ! -s "$DECLARATION_BINDING_FILE" || ! -s "$RESPONSE_PRIVATE_FILE" ]]; then
   echo "Missing disposable test trust material." >&2
   exit 1
 fi
@@ -16,7 +20,11 @@ KEY="$(cat "$KEY_FILE")"
 printf '%s\n' "restrict,no-agent-forwarding,no-port-forwarding,no-pty,no-X11-forwarding,command=\"/usr/local/bin/opshaven-dispatcher --config /etc/opshaven/config.json\" $KEY" > /home/opshaven/.ssh/authorized_keys
 chown opshaven:opshaven /home/opshaven/.ssh/authorized_keys
 chmod 600 /home/opshaven/.ssh/authorized_keys
-install -m 644 "$PUBLIC_KEY_FILE" /etc/opshaven/approval-public.pem
+install -o root -g root -m 644 "$PUBLIC_KEY_FILE" /etc/opshaven/approval-public.pem
+install -o root -g root -m 644 "$CAPABILITY_FILE" /etc/opshaven/config.json.capability.json
+install -o root -g root -m 644 "$DECLARATION_FILE" /etc/opshaven/config.json.declaration.json
+install -o root -g root -m 644 "$DECLARATION_BINDING_FILE" /etc/opshaven/config.json.declaration-binding.json
+install -o root -g opshaven -m 640 "$RESPONSE_PRIVATE_FILE" /etc/opshaven/config.json.response-private.pem
 
 rm -rf /srv/opshaven/repository /srv/opshaven/releases /srv/opshaven/current
 install -d -m 755 -o opshaven -g opshaven /srv/opshaven/repository /srv/opshaven/releases

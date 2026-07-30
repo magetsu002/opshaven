@@ -1,9 +1,15 @@
 import { spawn } from "node:child_process";
-import type { HostResource } from "../config.js";
+import type { HostResource, OpsHavenConfig } from "../config.js";
 import { OpsHavenError } from "../errors.js";
-import { verifyRegularFile } from "../safe-fs.js";
+import {
+  createAuthenticatedRequest,
+  loadClientProtocolContext,
+  verifyAuthenticatedResponse,
+  type ClientProtocolContext,
+} from "../remote/authenticated-protocol.js";
 import type { RemoteRequest, RemoteResponse } from "../remote/protocol.js";
 import { parseRemoteResponse } from "../remote/protocol.js";
+import { verifyRegularFile } from "../safe-fs.js";
 
 export interface SpawnLike {
   (command: string, args: readonly string[], options: Record<string, unknown>): {
@@ -13,6 +19,12 @@ export interface SpawnLike {
     on(event: string, listener: (...args: any[]) => void): void;
     kill(signal?: string): void;
   };
+}
+
+export interface SshProtocolBinding {
+  config: OpsHavenConfig;
+  configPath: string;
+  mode?: "controlled" | "read-only";
 }
 
 export function buildSshArgs(host: HostResource): string[] {
@@ -40,12 +52,31 @@ function hostKeyFailure(stderr: string): boolean {
 }
 
 export class SshTransport {
-  constructor(private readonly spawnProcess: SpawnLike = spawn as unknown as SpawnLike) {}
+  private readonly spawnProcess: SpawnLike;
+  private readonly binding: SshProtocolBinding | undefined;
+  private trustPromise?: Promise<ClientProtocolContext>;
+
+  constructor(value?: SpawnLike | SshProtocolBinding) {
+    this.spawnProcess = typeof value === "function" ? value : spawn as unknown as SpawnLike;
+    this.binding = typeof value === "function" ? undefined : value;
+  }
+
+  private async trust(): Promise<ClientProtocolContext | undefined> {
+    if (!this.binding) return undefined;
+    this.trustPromise ??= loadClientProtocolContext(
+      this.binding.config,
+      this.binding.configPath,
+      this.binding.mode ?? "controlled",
+    );
+    return await this.trustPromise;
+  }
 
   async execute(host: HostResource, request: RemoteRequest): Promise<RemoteResponse> {
     await verifyRegularFile(host.identityFile, "SSH identity", { ownerOnly: true, maxBytes: 65536, code: "SSH_FAILED" });
     await verifyRegularFile(host.knownHostsFile, "SSH known-hosts file", { maxBytes: 1048576, code: "SSH_HOST_KEY_FAILED" });
-    const payload = `${JSON.stringify(request)}\n`;
+    const trust = await this.trust();
+    const authenticated = trust ? createAuthenticatedRequest(request, trust.capability, trust.requestPrivateKey) : undefined;
+    const payload = `${JSON.stringify(authenticated?.envelope ?? request)}\n`;
     if (Buffer.byteLength(payload, "utf8") > 65536) throw new OpsHavenError("OUTPUT_LIMIT", "Remote request exceeds the protocol limit.");
     return await new Promise<RemoteResponse>((resolve, reject) => {
       const child = this.spawnProcess("/usr/bin/ssh", buildSshArgs(host), { shell: false, stdio: ["pipe", "pipe", "pipe"], env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" } });
@@ -93,8 +124,11 @@ export class SshTransport {
           const text = Buffer.concat(stdout).toString("utf8");
           if (text.includes("\u0000")) throw new OpsHavenError("BINARY_OUTPUT", "Binary SSH output was rejected.");
           const parsed = JSON.parse(text) as unknown;
+          const response = trust && authenticated
+            ? verifyAuthenticatedResponse(parsed, authenticated.requestHash, request.requestId, trust.capability, trust.responsePublicKey)
+            : parseRemoteResponse(parsed, request.requestId);
           settled = true;
-          resolve(parseRemoteResponse(parsed, request.requestId));
+          resolve(response);
         } catch (error) {
           finishReject(error instanceof OpsHavenError ? error : new OpsHavenError("REMOTE_PROTOCOL_INVALID", "Remote response was not valid JSON."));
         }

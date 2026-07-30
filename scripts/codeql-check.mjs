@@ -18,10 +18,13 @@ for (const file of files) {
   const document = JSON.parse(await fs.readFile(file, "utf8"));
   for (const run of document.runs ?? []) {
     for (const result of run.results ?? []) {
+      const location = result.locations?.[0]?.physicalLocation;
       findings.push({
         ruleId: result.ruleId ?? "unknown",
         level: result.level ?? "warning",
         message: result.message?.text ?? "CodeQL finding",
+        path: location?.artifactLocation?.uri ?? "unknown",
+        line: location?.region?.startLine ?? null,
       });
     }
   }

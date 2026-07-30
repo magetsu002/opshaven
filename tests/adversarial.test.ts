@@ -47,8 +47,11 @@ test("remote approval rejects argument mutation and replay", async () => {
 
 test("forced dispatcher rejects any original SSH command", async () => {
   const response = await dispatch(["node", "dispatcher.js", "--config", "/unused"], "id");
-  assert.equal(response.ok, false);
-  if (!response.ok) assert.equal(response.error.code, "POLICY_DENIED");
+  assert.equal("ok" in response, true);
+  if ("ok" in response) {
+    assert.equal(response.ok, false);
+    if (!response.ok) assert.equal(response.error.code, "POLICY_DENIED");
+  }
 });
 
 test("remote requests are independently normalized against trusted policy and limits", async () => {

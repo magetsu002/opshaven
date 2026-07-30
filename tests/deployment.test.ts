@@ -111,7 +111,7 @@ test("manual rollback activates only a recorded release", async () => {
   await fs.mkdir(current, { recursive: true });
   await fs.mkdir(recorded, { recursive: true });
   await fs.symlink(current, target.currentSymlink);
-  await fs.writeFile(path.join(target.releasesPath, "opshaven-releases.jsonl"), `${JSON.stringify({ releaseId: "release-known", commit, path: recorded, activatedAt: new Date().toISOString(), previousPath: null, status: "active", migrationPolicy: "none" })}\n`);
+  await fs.writeFile(path.join(target.releasesPath, "opshaven-releases.jsonl"), `${JSON.stringify({ releaseId: "release-known", commit, path: recorded, activatedAt: new Date().toISOString(), previousPath: null, status: "active", migrationPolicy: "none" })}\n`, { mode: 0o600 });
   const runner: CommandRunner = { async run(_executable, args) {
     if (args.includes("rev-parse")) return { exitCode: 0, stdout: commit };
     return { exitCode: 0, stdout: "" };

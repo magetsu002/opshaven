@@ -21,6 +21,42 @@ export function fingerprintSecret(secret: string): string {
   return createHash("sha256").update(secret).digest("hex");
 }
 
+function normalizeControls(value: string): { text: string; removed: number } {
+  let text = "";
+  let removed = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 0) throw new OpsHavenError("BINARY_OUTPUT", "Binary or non-text output was rejected.");
+    if (code === 0x1b) {
+      removed += 1;
+      if (value.charCodeAt(index + 1) === 0x5b) {
+        index += 2;
+        let scanned = 0;
+        while (index < value.length && scanned < 64) {
+          const sequenceCode = value.charCodeAt(index);
+          if (sequenceCode >= 0x40 && sequenceCode <= 0x7e) break;
+          index += 1;
+          scanned += 1;
+        }
+      }
+      continue;
+    }
+    if (
+      (code < 32 && code !== 9 && code !== 10 && code !== 13)
+      || (code >= 0x7f && code <= 0x9f)
+      || (code >= 0x200b && code <= 0x200f)
+      || (code >= 0x202a && code <= 0x202e)
+      || (code >= 0x2060 && code <= 0x2069)
+      || code === 0xfeff
+    ) {
+      removed += 1;
+      continue;
+    }
+    text += value[index];
+  }
+  return { text, removed };
+}
+
 function printableRatio(value: string): number {
   if (value.length === 0) return 1;
   let printable = 0;
@@ -33,9 +69,10 @@ function printableRatio(value: string): number {
 
 export function sanitizeOutput(input: string | Uint8Array, limits: OutputLimits, configuredFingerprints: readonly string[] = []): RedactionResult {
   const raw = typeof input === "string" ? input : Buffer.from(input).toString("utf8");
-  if (raw.includes("\u0000") || printableRatio(raw) < 0.85) throw new OpsHavenError("BINARY_OUTPUT", "Binary or non-text output was rejected.");
-  let text = raw;
-  let redactions = 0;
+  const normalized = normalizeControls(raw);
+  if (printableRatio(normalized.text) < 0.85) throw new OpsHavenError("BINARY_OUTPUT", "Binary or non-text output was rejected.");
+  let text = normalized.text;
+  let redactions = normalized.removed;
   for (const rule of RULES) {
     text = text.replace(rule, (match, prefix?: string) => {
       redactions += 1;
