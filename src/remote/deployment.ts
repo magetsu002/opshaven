@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { DeploymentResource, OpsHavenConfig, ProbeResource, ServiceResource, TrustedStep } from "../config.js";
 import { OpsHavenError } from "../errors.js";
+import { openOwnerOnlyAppendFile, readOptionalRegularTextFile } from "../safe-fs.js";
 import { ensureReleaseRoot, readDeploymentState, resolveCurrentRelease, validateReleaseDirectory } from "./deployment-state.js";
 import { runProbe } from "./probe.js";
 import type { CommandRunner, RunOptions } from "./runner.js";
@@ -91,19 +92,13 @@ export class DeploymentManager {
   private ledgerPath(target: DeploymentResource): string { return path.join(target.releasesPath, "opshaven-releases.jsonl"); }
   private async record(target: DeploymentResource, record: ReleaseRecord): Promise<void> {
     await ensureReleaseRoot(target);
-    const ledger = this.ledgerPath(target);
-    const stat = await fs.lstat(ledger).catch((error: any) => error?.code === "ENOENT" ? null : Promise.reject(error));
-    if (stat && (!stat.isFile() || stat.isSymbolicLink())) throw new OpsHavenError("POLICY_DENIED", "Release ledger must be a regular non-symlink file.");
-    const handle = await fs.open(ledger, "a", 0o600);
+    const handle = await openOwnerOnlyAppendFile(this.ledgerPath(target), "Release ledger", "POLICY_DENIED");
     try { await handle.appendFile(`${JSON.stringify(record)}\n`, "utf8"); await handle.sync(); }
     finally { await handle.close(); }
   }
   private async records(target: DeploymentResource): Promise<ReleaseRecord[]> {
-    const ledger = this.ledgerPath(target);
-    const stat = await fs.lstat(ledger).catch((error: any) => error?.code === "ENOENT" ? null : Promise.reject(error));
-    if (!stat) return [];
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4 * 1024 * 1024) throw new OpsHavenError("POLICY_DENIED", "Release ledger is not a safe bounded regular file.");
-    const text = await fs.readFile(ledger, "utf8");
+    const text = await readOptionalRegularTextFile(this.ledgerPath(target), "Release ledger", { ownerOnly: true, maxBytes: 4 * 1024 * 1024, code: "POLICY_DENIED" });
+    if (!text) return [];
     return text.split(/\r?\n/).filter(Boolean).map((line: string) => {
       let parsed: unknown;
       try { parsed = JSON.parse(line) as unknown; }
