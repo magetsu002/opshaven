@@ -4,6 +4,7 @@ import { OpsHavenError } from "../errors.js";
 import type { OperationName } from "../policy.js";
 import { sanitizeOutput } from "../redaction.js";
 import { readDeploymentState } from "./deployment-state.js";
+import { parseUfwSummary } from "./firewall-summary.js";
 import type { RemoteRequest } from "./protocol.js";
 import { runProbe } from "./probe.js";
 import type { CommandRunner } from "./runner.js";
@@ -53,7 +54,7 @@ async function proxySummary(context: HandlerContext, request: RemoteRequest, tar
   const service = context.config.resources.get(target.serviceId);
   if (!service || service.kind !== "service") throw new OpsHavenError("CONFIG_INVALID", "Proxy references an invalid service.");
   const status = await serviceStatus(context, request, service);
-  return { provider: target.provider, publicNames: target.publicNames, service: status };
+  return { provider: target.provider, publicNames: target.publicNames.slice(0, 64), publicNameCount: target.publicNames.length, service: status };
 }
 async function logs(context: HandlerContext, request: RemoteRequest, target: ServiceResource | ContainerResource): Promise<Record<string, unknown>> {
   const lines = Number(request.args.lines);
@@ -107,8 +108,7 @@ export async function handleInspection(context: HandlerContext, request: RemoteR
     case "get_firewall_summary": {
       resource(context, request, "host");
       const raw = await requireSuccess(context.runner, UFW, ["status", "numbered"], options(request));
-      const safe = sanitizeOutput(raw, request.limits, context.config.secretFingerprints);
-      return { provider: "ufw", text: safe.text, redactions: safe.redactions, truncated: safe.truncated };
+      return parseUfwSummary(raw, request.limits, context.config.secretFingerprints);
     }
     case "run_health_probe": return { ...(await runProbe(resource(context, request, "probe"))) };
     case "get_redacted_logs": {

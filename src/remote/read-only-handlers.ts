@@ -12,6 +12,7 @@ import type {
 import { OpsHavenError } from "../errors.js";
 import { sanitizeOutput } from "../redaction.js";
 import { readDeploymentState } from "./deployment-state.js";
+import { parseUfwSummary } from "./firewall-summary.js";
 import { runProbe } from "./probe.js";
 import type { ReadOnlyRemoteRequest } from "./read-only-protocol.js";
 import type { CommandRunner } from "./runner.js";
@@ -126,7 +127,8 @@ async function proxySummary(
   }
   return {
     provider: target.provider,
-    publicNames: target.publicNames,
+    publicNames: target.publicNames.slice(0, 64),
+    publicNameCount: target.publicNames.length,
     service: await serviceStatus(context, request, service),
   };
 }
@@ -246,8 +248,7 @@ export async function handleReadOnlyInspection(
     case "get_firewall_summary": {
       resource(context, request, "host");
       const raw = await requireSuccess(context.runner, UFW, ["status", "numbered"], options(request));
-      const safe = sanitizeOutput(raw, request.limits, context.config.secretFingerprints);
-      return { provider: "ufw", text: safe.text, redactions: safe.redactions, truncated: safe.truncated };
+      return parseUfwSummary(raw, request.limits, context.config.secretFingerprints);
     }
     case "run_health_probe":
       return { ...(await runProbe(resource(context, request, "probe"))) };
