@@ -1,0 +1,64 @@
+import type { OperationService, ResultEnvelope } from "./operations.js";
+
+interface JsonRpcRequest { jsonrpc: "2.0"; id?: string | number | null; method: string; params?: unknown }
+interface ToolDefinition { name: string; description: string; inputSchema: Record<string, unknown> }
+export interface ToolExecutor { execute(operation: string, args: unknown, approvalToken?: string, actor?: string): Promise<ResultEnvelope> }
+
+const resource = { type: "string", pattern: "^[a-z][a-z0-9._-]{0,63}$", description: "Configured logical resource ID." };
+const dryRun = { type: "boolean", default: false };
+const approval = { type: "string", minLength: 32, description: "Expiring single-use human approval token." };
+function schema(properties: Record<string, unknown>, required: string[]): Record<string, unknown> { return { type: "object", additionalProperties: false, properties, required }; }
+const TOOLS: readonly ToolDefinition[] = [
+  { name: "get_host_summary", description: "Return a bounded safe host summary.", inputSchema: schema({ resourceId: resource }, ["resourceId"]) },
+  { name: "get_deployed_commit", description: "Return the exact deployed Git commit and dirty-state evidence.", inputSchema: schema({ resourceId: resource }, ["resourceId"]) },
+  { name: "get_service_status", description: "Return structured status for a configured system service.", inputSchema: schema({ resourceId: resource }, ["resourceId"]) },
+  { name: "get_container_status", description: "Return structured status for a configured container.", inputSchema: schema({ resourceId: resource }, ["resourceId"]) },
+  { name: "get_runtime_config_status", description: "Report configured environment-key presence without returning values.", inputSchema: schema({ resourceId: resource }, ["resourceId"]) },
+  { name: "get_reverse_proxy_summary", description: "Return safe configured reverse-proxy metadata and service status.", inputSchema: schema({ resourceId: resource }, ["resourceId"]) },
+  { name: "get_firewall_summary", description: "Return a bounded redacted firewall summary.", inputSchema: schema({ resourceId: resource }, ["resourceId"]) },
+  { name: "run_health_probe", description: "Run one configured credential-free health probe.", inputSchema: schema({ resourceId: resource }, ["resourceId"]) },
+  { name: "get_redacted_logs", description: "Return bounded doubly-redacted logs for a configured service or container.", inputSchema: schema({ resourceId: resource, lines: { type: "integer", minimum: 1, maximum: 500, default: 100 }, sinceMinutes: { type: "integer", minimum: 1, maximum: 1440, default: 60 } }, ["resourceId"]) },
+  { name: "get_monitoring_status", description: "Return configured monitoring service and probe evidence.", inputSchema: schema({ resourceId: resource }, ["resourceId"]) },
+  { name: "get_backup_status", description: "Return safe structured backup freshness evidence.", inputSchema: schema({ resourceId: resource }, ["resourceId"]) },
+  { name: "get_restore_readiness", description: "Return restore-test readiness evidence and migration warning.", inputSchema: schema({ resourceId: resource }, ["resourceId"]) },
+  { name: "restart_service", description: "Dry-run or restart one configured service with exact human approval.", inputSchema: schema({ resourceId: resource, dryRun, approvalToken: approval }, ["resourceId", "dryRun"]) },
+  { name: "deploy_commit", description: "Dry-run or deploy one exact allowlisted Git commit using configured trusted steps.", inputSchema: schema({ resourceId: resource, commit: { type: "string", pattern: "^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$" }, expectedCurrentCommit: { type: "string", pattern: "^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$" }, dryRun, approvalToken: approval }, ["resourceId", "commit", "dryRun"]) },
+  { name: "rollback_deployment", description: "Dry-run or activate a known recorded release with exact human approval.", inputSchema: schema({ resourceId: resource, releaseId: { type: "string", pattern: "^[A-Za-z0-9._-]{1,128}$" }, dryRun, approvalToken: approval }, ["resourceId", "releaseId", "dryRun"]) },
+];
+const TOOL_NAMES = new Set(TOOLS.map((tool) => tool.name));
+
+function request(value: unknown): JsonRpcRequest | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as Record<string, unknown>;
+  if (item.jsonrpc !== "2.0" || typeof item.method !== "string" || (item.id !== undefined && item.id !== null && typeof item.id !== "string" && typeof item.id !== "number")) return null;
+  return item as unknown as JsonRpcRequest;
+}
+function success(id: JsonRpcRequest["id"], result: unknown): Record<string, unknown> { return { jsonrpc: "2.0", id: id ?? null, result }; }
+function failure(id: JsonRpcRequest["id"], code: number, message: string, data?: unknown): Record<string, unknown> { return { jsonrpc: "2.0", id: id ?? null, error: { code, message, ...(data === undefined ? {} : { data }) } }; }
+
+export class McpServer {
+  constructor(private readonly executor: ToolExecutor) {}
+
+  async handle(value: unknown): Promise<Record<string, unknown> | null> {
+    const message = request(value);
+    if (!message) return failure(null, -32600, "Invalid Request");
+    if (message.method === "notifications/initialized") return null;
+    if (message.method === "ping") return success(message.id, {});
+    if (message.method === "initialize") return success(message.id, { protocolVersion: "2025-03-26", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "opshaven", version: "0.1.0-rc.0" }, instructions: "Use configured logical resource IDs only. Mutations require an external human approval token." });
+    if (message.method === "tools/list") return success(message.id, { tools: TOOLS });
+    if (message.method === "tools/call") {
+      if (!message.params || typeof message.params !== "object" || Array.isArray(message.params)) return failure(message.id, -32602, "Invalid params");
+      const params = message.params as Record<string, unknown>;
+      if (typeof params.name !== "string" || !TOOL_NAMES.has(params.name) || !params.arguments || typeof params.arguments !== "object" || Array.isArray(params.arguments)) return failure(message.id, -32602, "Unknown tool or invalid arguments");
+      const args = { ...(params.arguments as Record<string, unknown>) };
+      const approvalToken = typeof args.approvalToken === "string" ? args.approvalToken : undefined;
+      delete args.approvalToken;
+      const result = await this.executor.execute(params.name, args, approvalToken, "mcp-client");
+      return success(message.id, { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: !result.ok });
+    }
+    return failure(message.id, -32601, "Method not found");
+  }
+}
+
+export function getToolDefinitions(): readonly ToolDefinition[] { return TOOLS; }
+export type { OperationService };
