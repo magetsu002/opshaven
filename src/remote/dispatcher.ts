@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import { assertCapabilityAllows, loadVerifiedCapability } from "../capabilities.js";
 import { loadConfig } from "../config.js";
 import { asOpsHavenError, OpsHavenError } from "../errors.js";
 import { handleInspection } from "./handlers.js";
@@ -31,10 +32,13 @@ export async function dispatch(argv = process.argv, originalCommand = process.en
   let requestId = "invalid";
   try {
     if (originalCommand.trim().length > 0) throw new OpsHavenError("POLICY_DENIED", "Original SSH commands are forbidden.");
-    const config = await loadConfig(configPath(argv));
+    const trustedConfigPath = configPath(argv);
+    const config = await loadConfig(trustedConfigPath);
+    const capability = await loadVerifiedCapability(config, trustedConfigPath, "controlled", process.argv[1] ?? "");
     const raw = await readBoundedInput();
     if (raw.split(/\r?\n/).filter(Boolean).length !== 1) throw new OpsHavenError("REMOTE_PROTOCOL_INVALID", "Exactly one request envelope is required.");
     const request = validateRemoteRequest(config, parseRemoteRequest(JSON.parse(raw) as unknown));
+    assertCapabilityAllows(capability, request.operation, request.resourceId, request.limits);
     requestId = request.requestId;
     const context = { config, runner: new FixedCommandRunner() };
     const data = request.operation === "restart_service" || request.operation === "deploy_commit" || request.operation === "rollback_deployment" ? await handleMutation(context, request) : await handleInspection(context, request);

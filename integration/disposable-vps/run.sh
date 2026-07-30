@@ -77,6 +77,14 @@ const config = {
 writeFileSync(path.join(root, "local.config.json"), JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });
 NODE
 
+node "$DIR/generate-capability.mjs" \
+  "$GEN/local.config.json" \
+  "$GEN/approval-private.pem" \
+  "$ROOT/dist/src/remote/dispatcher.js" \
+  "$GEN/capability.json" \
+  "$GEN/local.config.json.capability.json"
+chmod 600 "$GEN/capability.json" "$GEN/local.config.json.capability.json"
+
 cleanup() {
   docker compose -f "$DIR/compose.yml" down -v --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$GEN"
@@ -122,4 +130,4 @@ node -e 'const x=JSON.parse(process.argv[1]); if(x.ok || x.error?.code!=="POLICY
 
 LIFECYCLE="$(node "$DIR/lifecycle.mjs" "$GEN/local.config.json" "$GEN/commits.json")"
 node -e 'const x=JSON.parse(process.argv[1]); if(x.dryRun!=="no-change" || !x.replayRejected || !x.argumentMutationRejected || x.auditRecords < 12) process.exit(1)' "$LIFECYCLE"
-printf 'disposable-vps: shell denial, pinned host keys, bounded inspection, exact deployment, failed-health restoration, rollback, approval rejection, and audit verification passed\n'
+printf 'disposable-vps: shell denial, pinned host keys, bounded inspection, signed capabilities, exact deployment, failed-health restoration, rollback, approval rejection, and audit verification passed\n'

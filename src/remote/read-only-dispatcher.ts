@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import {
+  assertCapabilityAllows,
+  loadVerifiedCapability,
+  type VerifiedCapability,
+} from "../capabilities.js";
 import { loadConfig, type OpsHavenConfig } from "../config.js";
 import { asOpsHavenError, OpsHavenError } from "../errors.js";
 import { handleReadOnlyInspection } from "./read-only-handlers.js";
@@ -41,6 +46,7 @@ export async function dispatchReadOnlyEnvelope(
   raw: string,
   runner: CommandRunner = new FixedCommandRunner(),
   originalCommand = "",
+  capability?: VerifiedCapability,
 ): Promise<ReadOnlyRemoteResponse> {
   const startedAt = new Date().toISOString();
   let requestId = "invalid";
@@ -55,6 +61,7 @@ export async function dispatchReadOnlyEnvelope(
       config,
       parseReadOnlyRemoteRequest(JSON.parse(raw) as unknown),
     );
+    if (capability) assertCapabilityAllows(capability, request.operation, request.resourceId, request.limits);
     requestId = request.requestId;
     const data = await handleReadOnlyInspection({ config, runner }, request);
     const success: ReadOnlyRemoteSuccess = {
@@ -92,8 +99,19 @@ export async function dispatchReadOnly(
   argv = process.argv,
   originalCommand = process.env.SSH_ORIGINAL_COMMAND ?? "",
 ): Promise<ReadOnlyRemoteResponse> {
-  const config = await loadConfig(configPath(argv));
-  return await dispatchReadOnlyEnvelope(config, await readBoundedInput(), new FixedCommandRunner(), originalCommand);
+  if (originalCommand.trim().length > 0) {
+    return await dispatchReadOnlyEnvelope({} as OpsHavenConfig, "{}", new FixedCommandRunner(), originalCommand);
+  }
+  const trustedConfigPath = configPath(argv);
+  const config = await loadConfig(trustedConfigPath);
+  const capability = await loadVerifiedCapability(config, trustedConfigPath, "read-only", process.argv[1] ?? "");
+  return await dispatchReadOnlyEnvelope(
+    config,
+    await readBoundedInput(),
+    new FixedCommandRunner(),
+    originalCommand,
+    capability,
+  );
 }
 
 if (
