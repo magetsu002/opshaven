@@ -26,9 +26,8 @@ for (const file of required) {
   else if (text.trim().length < 20) failures.push(`${file}: unexpectedly empty`);
 }
 
-const trackedTextFiles = [
+const repositoryReferences = [
   ...required.filter((file) => file.endsWith(".md")),
-  "scripts/docs-check.mjs",
   "scripts/bootstrap-remote.sh",
   "package.json",
   ".github/workflows/ci.yml",
@@ -36,7 +35,7 @@ const trackedTextFiles = [
   ".github/workflows/codeql.yml",
 ];
 
-for (const file of trackedTextFiles) {
+for (const file of repositoryReferences) {
   const text = await fs.readFile(file, "utf8").catch(() => "");
   for (const deleted of obsolete) {
     if (text.includes(deleted)) failures.push(`${file}: references deleted ${deleted}`);
