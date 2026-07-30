@@ -35,6 +35,10 @@ export function buildSshArgs(host: HostResource): string[] {
   ];
 }
 
+function hostKeyFailure(stderr: string): boolean {
+  return /REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed|No .* host key is known|Offending .* key/i.test(stderr);
+}
+
 export class SshTransport {
   constructor(private readonly spawnProcess: SpawnLike = spawn as unknown as SpawnLike) {}
 
@@ -46,28 +50,31 @@ export class SshTransport {
     return await new Promise<RemoteResponse>((resolve, reject) => {
       const child = this.spawnProcess("/usr/bin/ssh", buildSshArgs(host), { shell: false, stdio: ["pipe", "pipe", "pipe"], env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" } });
       const stdout: Uint8Array[] = [];
+      const stderr: Uint8Array[] = [];
       let bytes = 0;
-      let stderrBytes = 0;
+      let lines = 0;
       let settled = false;
       const finishReject = (error: OpsHavenError): void => {
         if (settled) return;
         settled = true;
         reject(error);
       };
+      const consume = (chunk: Uint8Array, collect: Uint8Array[]): void => {
+        bytes += chunk.length;
+        lines += Buffer.from(chunk).toString("utf8").split("\n").length - 1;
+        if (bytes > request.limits.maxBytes || lines > request.limits.maxLines) {
+          child.kill("SIGKILL");
+          finishReject(new OpsHavenError("OUTPUT_LIMIT", "SSH output exceeded its configured limit."));
+          return;
+        }
+        collect.push(chunk);
+      };
       const timer = setTimeout(() => {
         child.kill("SIGKILL");
         finishReject(new OpsHavenError("TIMEOUT", "SSH operation timed out.", true));
       }, request.limits.timeoutMs);
-      child.stdout.on("data", (chunk) => {
-        bytes += chunk.length;
-        if (bytes > request.limits.maxBytes) {
-          child.kill("SIGKILL");
-          finishReject(new OpsHavenError("OUTPUT_LIMIT", "Remote output exceeded the byte limit."));
-          return;
-        }
-        stdout.push(chunk);
-      });
-      child.stderr.on("data", (chunk) => { stderrBytes += chunk.length; });
+      child.stdout.on("data", (chunk) => consume(chunk, stdout));
+      child.stderr.on("data", (chunk) => consume(chunk, stderr));
       child.on("error", () => {
         clearTimeout(timer as any);
         finishReject(new OpsHavenError("SSH_FAILED", "SSH transport could not start.", true));
@@ -75,14 +82,16 @@ export class SshTransport {
       child.on("close", (code: number | null) => {
         clearTimeout(timer as any);
         if (settled) return;
+        const stderrText = Buffer.concat(stderr).toString("utf8");
+        if (stderrText.includes("\u0000")) return finishReject(new OpsHavenError("BINARY_OUTPUT", "Binary SSH output was rejected."));
         if (code !== 0) {
-          const hostKeyFailure = code === 255 && stderrBytes > 0;
-          finishReject(new OpsHavenError(hostKeyFailure ? "SSH_HOST_KEY_FAILED" : "SSH_FAILED", hostKeyFailure ? "SSH verification or connection failed." : "Restricted SSH operation failed.", true));
+          const keyFailure = code === 255 && hostKeyFailure(stderrText);
+          finishReject(new OpsHavenError(keyFailure ? "SSH_HOST_KEY_FAILED" : "SSH_FAILED", keyFailure ? "SSH host-key verification failed." : "Restricted SSH operation failed.", true));
           return;
         }
         try {
           const text = Buffer.concat(stdout).toString("utf8");
-          if (text.includes("\u0000") || text.split(/\r?\n/).length > request.limits.maxLines + 2) throw new OpsHavenError("OUTPUT_LIMIT", "Remote output exceeded its line limit.");
+          if (text.includes("\u0000")) throw new OpsHavenError("BINARY_OUTPUT", "Binary SSH output was rejected.");
           const parsed = JSON.parse(text) as unknown;
           settled = true;
           resolve(parseRemoteResponse(parsed, request.requestId));
