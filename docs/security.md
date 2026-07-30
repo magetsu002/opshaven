@@ -1,81 +1,63 @@
 # Security
 
-OpsHaven is designed to give AI agents useful VPS access without giving them a shell.
-
-This guide covers the main security assumptions for running it safely.
+OpsHaven gives AI agents useful VPS access without giving them a general-purpose shell. Its security depends on a local policy boundary, a restricted SSH account, an independently validating remote dispatcher, and explicit human approval for changes.
 
 ## Local machine
 
-Keep the local OpsHaven files private:
+Keep SSH private keys, approval signing material, configuration, known-hosts files, and audit state private. Key material should be owned by the local user with mode `0600`. Configuration and key files should be regular files rather than symlinks, and approval or audit directories should only be accessible to the operator.
 
-* SSH private keys and approval signing material should be owned by the local user and use mode `0600`.
-* Configuration, known-hosts, and approval public keys should be regular files, not symlinks.
-* Audit and approval directories should only be accessible to the operator.
-
-Generate the local approval keys with:
+Generate approval keys with:
 
 ```bash
 scripts/bootstrap-local.sh
 ```
 
-Only copy the generated public approval key to the VPS.
+Only the public approval key belongs on the VPS.
 
 ## Restricted SSH account
 
-Use a dedicated non-root SSH account for OpsHaven.
+Use a dedicated non-root account with public-key authentication, a forced command, no interactive shell, no PTY, no forwarding, and only narrowly scoped sudo access. Apply restrictions in both `authorized_keys` and an `sshd` `Match User` rule.
 
-The account should have:
+Possession of the SSH key must not authorize a change. Mutating operations also require a short-lived signed approval bound to the exact target, arguments, and expected state. Approvals are consumed once and verified again by the VPS.
 
-* public-key authentication only
-* a forced command
-* no interactive shell
-* no PTY
-* no agent, TCP, X11, or tunnel forwarding
-* narrowly scoped sudo access where required
+## Secrets, logs, and resources
 
-Use both SSH key restrictions and an `sshd` `Match User` rule. This keeps the account restricted even if one layer is misconfigured.
+Prefer metadata over secret values. Runtime configuration checks should report presence only. Health probes should use credential-free URLs, and passwords or tokens must not appear in paths or query strings.
 
-The SSH key alone cannot approve changes. Mutating operations also require a separate signed approval that the VPS verifies and consumes once.
+Logs are untrusted input. OpsHaven bounds and redacts them before and after they cross the SSH boundary. Redaction is defense in depth, not permission to store secrets in logs. For especially sensitive values, configure SHA-256 fingerprints instead of the original values.
 
-## Secrets and logs
+All services, deployments, paths, probes, and container targets must be predefined in configuration. The dispatcher does not accept arbitrary executables, flags, service names, filesystem paths, SQL, scripts, or shell commands.
 
-OpsHaven should avoid reading secrets whenever possible.
+## Threat model
 
-Runtime configuration checks return only whether configured variables are present. They never return variable values.
+OpsHaven protects SSH keys, host identity, environment values, service credentials, deployment integrity, release history, approval authority, and audit evidence.
 
-Health probes should use credential-free URLs. Do not place passwords, API keys, or tokens in probe paths or query strings.
+The main threats are a compromised or prompt-injected AI client, stolen restricted SSH credentials, malicious log output, configuration tampering, path or symlink substitution, approval replay or mutation, state drift, and privilege expansion from the restricted account.
 
-Logs are treated as untrusted input and are redacted before and after crossing the SSH boundary.
+The primary controls are:
 
-For especially sensitive values, configure their SHA-256 hashes under `secretFingerprints`. Store fingerprints only, never the original values.
+- independent logical-resource validation on both sides of SSH;
+- pinned host keys and disabled forwarding;
+- fixed executable paths and argument arrays without a shell;
+- strict input schemas and bounded output;
+- trusted-file checks that reject symlinks and identity changes;
+- signed, expiring, single-use approvals tied to exact state;
+- atomic deployment activation and rollback records;
+- hash-chained audit records with verification.
 
-## Dependencies and validation
+OpsHaven is not a remote shell, database console, secrets manager, generic fleet manager, or replacement for host hardening. A root-level host compromise remains outside its protection boundary.
 
-OpsHaven has no production npm dependencies.
+## Validation
 
-Before submitting or releasing changes, run:
+Before submitting changes, run:
 
 ```bash
-npm run check
+npm run release:check
 npm run security
 ```
 
-CI also verifies:
+CI checks formatting, lint, strict type safety, tests, build output, package contents, documentation links, dependency audit, secret scanning, CodeQL, and the restricted-SSH integration.
 
-* type safety and tests
-* production dependency audit
-* repository and Git-history secret scanning
-* the restricted SSH integration environment
+## Reporting a vulnerability
 
-## Reporting a security issue
-
-Please avoid opening a public issue for a vulnerability that could expose secrets, bypass approval, escape the restricted account, or alter unrelated services.
-
-Include:
-
-* the affected boundary
-* the expected and observed behavior
-* a minimal reproduction using generic fixtures
-* the relevant OpsHaven version or commit
-
-Do not include real credentials, hostnames, IP addresses, customer information, or private infrastructure details.
+Follow [SECURITY.md](../SECURITY.md). Do not include real credentials, hostnames, IP addresses, customer information, or private infrastructure details in reports or fixtures.
