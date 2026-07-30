@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "policyVersion": "v1",
+  "defaults": {
+    "timeoutMs": 10000,
+    "output": { "maxBytes": 65536, "maxLines": 500 }
+  },
+  "audit": { "path": "/var/lib/opshaven/audit.jsonl" },
+  "approvals": {
+    "stateDirectory": "/var/lib/opshaven/approvals",
+    "ttlSeconds": 300,
+    "keyEnvironmentVariable": "OPSHAVEN_APPROVAL_KEY"
+  },
+  "secrets": {
+    "fingerprints": [],
+    "keyNames": ["authorization", "cookie", "password", "secret", "token"]
+  },
+  "hosts": [
+    {
+      "id": "demo-host",
+      "address": "192.0.2.10",
+      "port": 22,
+      "username": "opshaven",
+      "identityFile": "/home/user/.ssh/opshaven",
+      "knownHostsFile": "/home/user/.ssh/opshaven_known_hosts",
+      "hostKeySha256": "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "dispatcherCommand": "opshaven-dispatch"
+    }
+  ],
+  "applications": [{ "id": "demo-app", "hostId": "demo-host", "displayName": "Demo application" }],
+  "services": [
+    {
+      "id": "demo-service",
+      "hostId": "demo-host",
+      "applicationId": "demo-app",
+      "unit": "demo.service",
+      "restartAllowed": true,
+      "runtimeEnvFile": "/etc/demo/demo.env",
+      "requiredEnvironment": ["NODE_ENV"]
+    }
+  ],
+  "containers": [],
+  "deployments": [
+    {
+      "id": "demo-deployment",
+      "hostId": "demo-host",
+      "applicationId": "demo-app",
+      "repositoryPath": "/srv/demo/repository",
+      "releasesPath": "/srv/demo/releases",
+      "activeSymlink": "/srv/demo/current",
+      "stateFile": "/var/lib/opshaven/demo-releases.json",
+      "allowedRefs": ["refs/heads/main"],
+      "strategy": "systemd",
+      "serviceIds": ["demo-service"],
+      "probeIds": ["demo-health"],
+      "checkSteps": [{ "executable": "npm", "args": ["test"], "timeoutMs": 300000 }],
+      "buildSteps": [{ "executable": "npm", "args": ["run", "build"], "timeoutMs": 300000 }],
+      "migrationRisk": "manual-review"
+    }
+  ],
+  "proxies": [],
+  "probes": [
+    {
+      "id": "demo-health",
+      "hostId": "demo-host",
+      "url": "http://127.0.0.1:8080/health",
+      "expectedStatus": [200],
+      "timeoutMs": 5000
+    }
+  ],
+  "databases": [],
+  "monitoring": [{ "id": "demo-monitoring", "hostId": "demo-host", "serviceIds": ["demo-service"] }],
+  "backups": [
+    {
+      "id": "demo-backup",
+      "hostId": "demo-host",
+      "provider": "file-marker",
+      "evidencePath": "/var/lib/demo/backups/latest.json",
+      "restoreProcedurePath": "/var/lib/demo/backups/RESTORE.md",
+      "maximumAgeSeconds": 86400
+    }
+  ]
+}

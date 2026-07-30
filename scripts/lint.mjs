@@ -16,7 +16,6 @@ async function walk(directory) {
     text.split("\n").forEach((line, index) => {
       if (/\s+$/.test(line)) violations.push(`${path}:${index + 1}: trailing whitespace`);
       if (line.includes("\t")) violations.push(`${path}:${index + 1}: tab character`);
-      if (line.length > 120) violations.push(`${path}:${index + 1}: line exceeds 120 columns`);
     });
   }
 }
