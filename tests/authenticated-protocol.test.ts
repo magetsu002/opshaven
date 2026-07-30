@@ -64,6 +64,10 @@ function protocolFailure(error: unknown): boolean {
   return error instanceof OpsHavenError && error.code === "REMOTE_PROTOCOL_INVALID";
 }
 
+function mutateLastCharacter(value: string): string {
+  return `${value.slice(0, -1)}${value.endsWith("A") ? "B" : "A"}`;
+}
+
 test("authenticated request binds arguments, capability, dispatcher, nonce, and time", async () => {
   const created = createAuthenticatedRequest(request, capability, requestPrivate, now, 30);
   const verified = await verifyAuthenticatedRequest(created.envelope, capability, requestPublic, await replayRoot(), now + 1000);
@@ -76,7 +80,7 @@ test("authenticated request rejects replay, mutation, stale time, and trust mism
   const created = createAuthenticatedRequest(request, capability, requestPrivate, now, 30);
   await verifyAuthenticatedRequest(created.envelope, capability, requestPublic, directory, now + 1000);
   await assert.rejects(verifyAuthenticatedRequest(created.envelope, capability, requestPublic, directory, now + 1000), protocolFailure);
-  const altered = { ...created.envelope, payload: `${created.envelope.payload.slice(0, -1)}A` };
+  const altered = { ...created.envelope, payload: mutateLastCharacter(created.envelope.payload) };
   await assert.rejects(verifyAuthenticatedRequest(altered, capability, requestPublic, await replayRoot(), now + 1000), protocolFailure);
   const stale = createAuthenticatedRequest(request, capability, requestPrivate, now - 120000, 30);
   await assert.rejects(verifyAuthenticatedRequest(stale.envelope, capability, requestPublic, await replayRoot(), now), protocolFailure);
@@ -95,7 +99,7 @@ test("authenticated response binds the originating request and result", () => {
 test("authenticated response rejects signature, request, and result mutation", () => {
   const created = createAuthenticatedRequest(request, capability, requestPrivate, now, 30);
   const envelope = createAuthenticatedResponse(response, created.requestHash, capability, responsePrivate, now + 1000);
-  assert.throws(() => verifyAuthenticatedResponse({ ...envelope, signature: `${envelope.signature.slice(0, -1)}A` }, created.requestHash, request.requestId, capability, responsePublic, now + 2000), protocolFailure);
+  assert.throws(() => verifyAuthenticatedResponse({ ...envelope, signature: mutateLastCharacter(envelope.signature) }, created.requestHash, request.requestId, capability, responsePublic, now + 2000), protocolFailure);
   assert.throws(() => verifyAuthenticatedResponse(envelope, "f".repeat(64), request.requestId, capability, responsePublic, now + 2000), protocolFailure);
   const decoded = JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")) as AuthenticatedResponsePayload;
   const tamperedPayload: AuthenticatedResponsePayload = {
