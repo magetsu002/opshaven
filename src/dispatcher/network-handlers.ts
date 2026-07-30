@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { OpsHavenError } from "../core/errors.js";
 import type { JsonValue } from "../security/canonical.js";
 import type { DispatcherHandlers } from "./dispatcher.js";
 import {
@@ -38,7 +39,7 @@ function summarizeUfw(text: string): JsonValue {
   const status = lines.find((line) => line.startsWith("Status:"))?.split(":", 2)[1]?.trim() ?? "unknown";
   const defaults = lines.find((line) => line.startsWith("Default:"))?.slice("Default:".length).trim() ?? "unknown";
   const separatorIndex = lines.findIndex((line) => /^-+$/.test(line.replace(/\s/g, "")));
-  const ruleCount = separatorIndex < 0 ? 0 : lines.slice(separatorIndex + 1).filter((line) => !line.startsWith("(")) .length;
+  const ruleCount = separatorIndex < 0 ? 0 : lines.slice(separatorIndex + 1).filter((line) => !line.startsWith("(")).length;
   return { provider: "ufw", status, defaults, ruleCount, rawRulesExposed: false };
 }
 
@@ -87,7 +88,9 @@ export function createNetworkHandlers(runtime: NetworkRuntime = DEFAULT_NETWORK_
 
     get_firewall_summary: async (request, config, dispatcherHostId) => {
       assertArgs(request, ["hostId"]);
-      if (request.args.hostId !== dispatcherHostId) throw new Error("Host is not served by this dispatcher");
+      if (request.args.hostId !== dispatcherHostId) {
+        throw new OpsHavenError("RESOURCE_NOT_FOUND", "Host is not served by this dispatcher");
+      }
       assertTarget(request, dispatcherHostId);
       const host = config.hosts.find((item) => item.id === dispatcherHostId)!;
       if (host.firewallProvider === "ufw") {

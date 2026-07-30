@@ -28,7 +28,10 @@
     "test": "npm run test:compile && node --test .test-dist/tests/**/*.test.js",
     "check": "npm run lint && npm run typecheck && npm run test && npm run build",
     "start": "node dist/index.js",
-    "test:integration": "sh integration/run.sh"
+    "test:integration": "sh integration/run.sh",
+    "test:security": "npm run test:compile && node --test .test-dist/tests/adversarial.test.js .test-dist/tests/approval.test.js .test-dist/tests/redaction.test.js .test-dist/tests/ssh.test.js",
+    "security:scan": "node scripts/security-scan.mjs",
+    "security": "npm run test:security && npm run security:scan && npm audit --audit-level=high"
   },
   "devDependencies": {
     "@types/node": "22.15.3",

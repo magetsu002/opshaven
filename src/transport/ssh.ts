@@ -30,29 +30,50 @@ function strictDecode(bytes: Uint8Array, context: string): string {
   }
 }
 
+function responseObject(value: unknown, context: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new OpsHavenError("REMOTE_PROTOCOL_ERROR", `${context} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function exactFields(value: Record<string, unknown>, allowed: readonly string[], context: string): void {
+  const unknown = Object.keys(value).filter((field) => !allowed.includes(field));
+  if (unknown.length > 0) {
+    throw new OpsHavenError("REMOTE_PROTOCOL_ERROR", `${context} contains unknown fields`, { fields: unknown });
+  }
+}
+
 function parseRemoteResponse(text: string, requestId: string): RemoteResponse {
   let value: unknown;
   try {
-    value = JSON.parse(text);
+    value = JSON.parse(text) as unknown;
   } catch {
     throw new OpsHavenError("REMOTE_PROTOCOL_ERROR", "Remote dispatcher returned invalid JSON");
   }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new OpsHavenError("REMOTE_PROTOCOL_ERROR", "Remote dispatcher response must be an object");
-  }
-  const response = value as Record<string, unknown>;
-  const allowed = ["version", "requestId", "ok", "data", "error"];
-  const unknown = Object.keys(response).filter((field) => !allowed.includes(field));
-  if (unknown.length > 0 || response.version !== 1 || response.requestId !== requestId || typeof response.ok !== "boolean") {
-    throw new OpsHavenError("REMOTE_PROTOCOL_ERROR", "Remote dispatcher response failed strict validation");
+  const response = responseObject(value, "Remote dispatcher response");
+  if (response.version !== 1 || response.requestId !== requestId || typeof response.ok !== "boolean") {
+    throw new OpsHavenError("REMOTE_PROTOCOL_ERROR", "Remote dispatcher response header failed strict validation");
   }
   if (response.ok) {
-    if (!("data" in response) || "error" in response) {
-      throw new OpsHavenError("REMOTE_PROTOCOL_ERROR", "Successful remote response has an invalid shape");
+    exactFields(response, ["version", "requestId", "ok", "data"], "Successful remote response");
+    if (!("data" in response)) {
+      throw new OpsHavenError("REMOTE_PROTOCOL_ERROR", "Successful remote response is missing data");
     }
-  } else if (!("error" in response) || "data" in response) {
-    throw new OpsHavenError("REMOTE_PROTOCOL_ERROR", "Failed remote response has an invalid shape");
+    return response as RemoteResponse;
   }
+  exactFields(response, ["version", "requestId", "ok", "error"], "Failed remote response");
+  const error = responseObject(response.error, "Remote error");
+  exactFields(error, ["code", "message", "retryable", "details"], "Remote error");
+  if (
+    typeof error.code !== "string" ||
+    error.code.length === 0 ||
+    typeof error.message !== "string" ||
+    typeof error.retryable !== "boolean"
+  ) {
+    throw new OpsHavenError("REMOTE_PROTOCOL_ERROR", "Remote error contains invalid fields");
+  }
+  if (error.details !== undefined) responseObject(error.details, "Remote error details");
   return response as RemoteResponse;
 }
 
