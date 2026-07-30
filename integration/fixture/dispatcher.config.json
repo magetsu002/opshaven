@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "policyVersion": "integration-v1",
+  "defaults": {
+    "timeoutMs": 10000,
+    "output": { "maxBytes": 65536, "maxLines": 500 }
+  },
+  "audit": { "path": "/var/lib/opshaven/audit.jsonl" },
+  "approvals": {
+    "stateDirectory": "/var/lib/opshaven/approvals",
+    "ttlSeconds": 300,
+    "keyEnvironmentVariable": "OPSHAVEN_APPROVAL_KEY"
+  },
+  "secrets": {
+    "fingerprints": ["PLANTED-INTEGRATION-FINGERPRINT"],
+    "keyNames": ["authorization", "cookie", "password", "secret", "token"]
+  },
+  "hosts": [
+    {
+      "id": "fixture-host",
+      "address": "127.0.0.1",
+      "port": 22,
+      "username": "opshaven",
+      "identityFile": "/var/lib/opshaven/.ssh/id_ed25519",
+      "knownHostsFile": "/var/lib/opshaven/.ssh/known_hosts",
+      "hostKeySha256": "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "dispatcherCommand": "opshaven-dispatch",
+      "firewallProvider": "ufw"
+    }
+  ],
+  "applications": [
+    { "id": "fixture-app", "hostId": "fixture-host", "displayName": "Generic fixture application" }
+  ],
+  "services": [
+    {
+      "id": "fixture-service",
+      "hostId": "fixture-host",
+      "applicationId": "fixture-app",
+      "unit": "fixture.service",
+      "restartAllowed": false,
+      "runtimeEnvFile": "/etc/opshaven/fixture.env",
+      "requiredEnvironment": ["NODE_ENV", "SECRET_TOKEN"]
+    }
+  ],
+  "containers": [],
+  "deployments": [
+    {
+      "id": "fixture-deployment",
+      "hostId": "fixture-host",
+      "applicationId": "fixture-app",
+      "repositoryPath": "/srv/opshaven-fixture/repository",
+      "releasesPath": "/srv/opshaven-fixture/releases",
+      "activeSymlink": "/srv/opshaven-fixture/current",
+      "stateFile": "/var/lib/opshaven/releases.json",
+      "allowedRefs": ["refs/heads/main"],
+      "strategy": "systemd",
+      "serviceIds": [],
+      "probeIds": [],
+      "checkSteps": [],
+      "buildSteps": [],
+      "migrationRisk": "none"
+    }
+  ],
+  "proxies": [],
+  "probes": [],
+  "databases": [],
+  "monitoring": [],
+  "backups": []
+}

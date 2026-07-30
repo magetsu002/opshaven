@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+export OPSHAVEN_DISPATCH_CONFIG=/etc/opshaven/dispatcher.json
+export OPSHAVEN_HOST_ID=fixture-host
+exec /usr/local/bin/node /opt/opshaven/dist/dispatcher/cli.js
