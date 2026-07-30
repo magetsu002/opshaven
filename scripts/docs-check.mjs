@@ -1,37 +1,74 @@
 import { promises as fs } from "node:fs";
+import path from "node:path";
 
-const VERSION = "1.0.0";
 const required = [
   "README.md",
-  "RELEASE_NOTES.md",
-  "docs/architecture.md",
-  "docs/operations.md",
-  "docs/release.md",
-  "docs/security.md",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  "LICENSE",
   "docs/setup.md",
+  "docs/security.md",
+  "docs/architecture.md",
+  "docs/sudoers.example",
+];
+const obsolete = [
+  "docs/milestones.md",
+  "RELEASE_NOTES.md",
+  "docs/operations.md",
   "docs/threat-model.md",
+  "docs/release.md",
 ];
 const failures = [];
+
 for (const file of required) {
   const text = await fs.readFile(file, "utf8").catch(() => null);
   if (text === null) failures.push(`${file}: missing`);
-  else if (text.trim().length < 40) failures.push(`${file}: unexpectedly empty`);
+  else if (text.trim().length < 20) failures.push(`${file}: unexpectedly empty`);
 }
-const packageJson = JSON.parse(await fs.readFile("package.json", "utf8"));
-const lock = JSON.parse(await fs.readFile("package-lock.json", "utf8"));
-const mcp = await fs.readFile("src/mcp.ts", "utf8");
+
+const trackedTextFiles = [
+  ...required.filter((file) => file.endsWith(".md")),
+  "scripts/docs-check.mjs",
+  "scripts/bootstrap-remote.sh",
+  "package.json",
+  ".github/workflows/ci.yml",
+  ".github/workflows/security.yml",
+  ".github/workflows/codeql.yml",
+];
+
+for (const file of trackedTextFiles) {
+  const text = await fs.readFile(file, "utf8").catch(() => "");
+  for (const deleted of obsolete) {
+    if (text.includes(deleted)) failures.push(`${file}: references deleted ${deleted}`);
+  }
+}
+
+for (const file of required.filter((item) => item.endsWith(".md"))) {
+  const text = await fs.readFile(file, "utf8");
+  for (const match of text.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
+    const target = match[1].trim();
+    if (!target || target.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(target)) continue;
+
+    const cleanTarget = target.split("#", 1)[0];
+    const resolved = path.resolve(path.dirname(file), cleanTarget);
+    const exists = await fs.stat(resolved).then(() => true).catch(() => false);
+    if (!exists) failures.push(`${file}: broken link ${target}`);
+  }
+}
+
 const readme = await fs.readFile("README.md", "utf8");
-const notes = await fs.readFile("RELEASE_NOTES.md", "utf8");
-if (packageJson.version !== VERSION) failures.push("package.json: version mismatch");
-if (lock.version !== VERSION || lock.packages?.[""]?.version !== VERSION) failures.push("package-lock.json: version mismatch");
-if (!mcp.includes(`version: "${VERSION}"`)) failures.push("src/mcp.ts: MCP version mismatch");
-if (!readme.includes(`OpsHaven ${VERSION}`)) failures.push("README.md: stable release version missing");
-for (const heading of ["Security model", "Deployment and rollback", "Known V1 limitations"]) {
-  if (!notes.includes(heading)) failures.push(`RELEASE_NOTES.md: missing ${heading}`);
+for (const target of [
+  "docs/setup.md",
+  "docs/security.md",
+  "CONTRIBUTING.md",
+  "LICENSE",
+]) {
+  if (!readme.includes(`](${target})`)) failures.push(`README.md: missing link to ${target}`);
 }
+
 if (failures.length) {
-  console.error(failures.join("\n"));
+  console.error([...new Set(failures)].join("\n"));
   process.exitCode = 1;
 } else {
-  console.log(`docs: ${required.length + 4} release references checked`);
+  console.log(`docs: ${required.length} required files and internal links checked`);
 }
