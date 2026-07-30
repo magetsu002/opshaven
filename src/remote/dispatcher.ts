@@ -11,6 +11,7 @@ import {
   verifyAuthenticatedRequest,
   type AuthenticatedResponseEnvelope,
 } from "./authenticated-protocol.js";
+import { assertRemoteConfinement } from "./confinement.js";
 import { handleInspection } from "./handlers.js";
 import { handleMutation } from "./mutations.js";
 import { validateRemoteRequest, type RemoteFailure, type RemoteResponse, type RemoteSuccess } from "./protocol.js";
@@ -56,7 +57,9 @@ export async function dispatch(
   try {
     const trustedConfigPath = configPath(argv);
     const config = await loadConfig(trustedConfigPath);
-    const capability = await loadVerifiedCapability(config, trustedConfigPath, "controlled", process.argv[1] ?? "");
+    const dispatcherPath = process.argv[1] ?? "";
+    await assertRemoteConfinement(config, trustedConfigPath, dispatcherPath, "controlled");
+    const capability = await loadVerifiedCapability(config, trustedConfigPath, "controlled", dispatcherPath);
     const requestPublicKey = await readRegularFile(config.approvals.verificationPublicKeyFile, "Request verification key", { maxBytes: 65536, code: "POLICY_DENIED" });
     const responsePrivateKey = await readRegularFile(responsePrivateKeyPath(trustedConfigPath), "Response signing key", { maxBytes: 65536, code: "POLICY_DENIED" });
     const raw = await readBoundedInput();
