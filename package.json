@@ -1,0 +1,30 @@
+{
+  "name": "opshaven",
+  "version": "0.1.0-rc.0",
+  "private": true,
+  "description": "A fail-closed MCP server for safe VPS inspection and controlled operations over restricted SSH.",
+  "type": "module",
+  "bin": {
+    "opshaven": "dist/src/cli.js",
+    "opshaven-mcp": "dist/src/index.js",
+    "opshaven-dispatcher": "dist/src/remote/dispatcher.js"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "lint": "node scripts/lint.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "start": "node dist/src/index.js",
+    "check": "npm run lint && npm run typecheck && npm test",
+    "security": "node scripts/security-scan.mjs",
+    "certify": "scripts/certify-release.sh"
+  },
+  "devDependencies": {
+    "typescript": "5.8.3"
+  },
+  "license": "MIT"
+}
