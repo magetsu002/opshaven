@@ -9,6 +9,8 @@ declare const process: {
   execPath: string;
   versions?: { node?: string };
   cwd(): string;
+  getuid?(): number;
+  umask(mask?: number): number;
   on(event: string, listener: (...args: unknown[]) => void): void;
 };
 declare const Buffer: {
