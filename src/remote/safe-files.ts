@@ -1,19 +1,10 @@
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import { OpsHavenError } from "../errors.js";
+import { readRegularTextFile } from "../safe-fs.js";
 
 export async function readTrustedTextFile(filePath: string, maxBytes: number): Promise<string> {
   if (!path.isAbsolute(filePath) || path.normalize(filePath) !== filePath || filePath.includes("..")) throw new OpsHavenError("POLICY_DENIED", "Unsafe configured file path.");
-  const stat = await fs.lstat(filePath);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maxBytes) throw new OpsHavenError("POLICY_DENIED", "Configured file is not a safe bounded regular file.");
-  const handle = await fs.open(filePath, "r");
-  try {
-    const afterOpen = await handle.stat();
-    if (afterOpen.dev !== stat.dev || afterOpen.ino !== stat.ino || afterOpen.size !== stat.size) throw new OpsHavenError("POLICY_DENIED", "Configured file changed during validation.");
-    return await handle.readFile({ encoding: "utf8" });
-  } finally {
-    await handle.close();
-  }
+  return await readRegularTextFile(filePath, "Configured remote file", { maxBytes, code: "POLICY_DENIED" });
 }
 
 export function parseEnvironmentPresence(text: string, expectedKeys: readonly string[]): Record<string, { present: boolean }> {

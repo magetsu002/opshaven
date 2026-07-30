@@ -17,7 +17,7 @@ declare const Buffer: {
   concat(chunks: readonly Uint8Array[]): Uint8Array & { toString(encoding?: string): string; length: number };
   isBuffer(value: unknown): value is Uint8Array;
 };
-declare const URL: { new(input: string): { protocol: string; username: string; password: string; hostname: string; port: string; pathname: string; search: string; toString(): string } };
+declare const URL: { new(input: string): { protocol: string; username: string; password: string; hostname: string; port: string; pathname: string; search: string; hash: string; toString(): string } };
 declare namespace NodeJS {
   interface ReadableStream { on(event: string, listener: (...args: any[]) => void): this; resume(): void; }
   interface WritableStream { write(chunk: string | Uint8Array): boolean; }
@@ -36,6 +36,7 @@ declare module "node:crypto" {
   export function generateKeyPairSync(type: "ed25519"): { publicKey: { export(options: any): Uint8Array | string }; privateKey: { export(options: any): Uint8Array | string } };
 }
 declare module "node:fs" {
+  export const constants: any;
   export const promises: any;
   export function createReadStream(path: string, options?: any): any;
   export function createWriteStream(path: string, options?: any): any;

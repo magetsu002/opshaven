@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { HostResource } from "../config.js";
 import { OpsHavenError } from "../errors.js";
+import { verifyRegularFile } from "../safe-fs.js";
 import type { RemoteRequest, RemoteResponse } from "../remote/protocol.js";
 import { parseRemoteResponse } from "../remote/protocol.js";
 
@@ -38,6 +39,8 @@ export class SshTransport {
   constructor(private readonly spawnProcess: SpawnLike = spawn as unknown as SpawnLike) {}
 
   async execute(host: HostResource, request: RemoteRequest): Promise<RemoteResponse> {
+    await verifyRegularFile(host.identityFile, "SSH identity", { ownerOnly: true, maxBytes: 65536, code: "SSH_FAILED" });
+    await verifyRegularFile(host.knownHostsFile, "SSH known-hosts file", { maxBytes: 1048576, code: "SSH_HOST_KEY_FAILED" });
     const payload = `${JSON.stringify(request)}\n`;
     if (Buffer.byteLength(payload, "utf8") > 65536) throw new OpsHavenError("OUTPUT_LIMIT", "Remote request exceeds the protocol limit.");
     return await new Promise<RemoteResponse>((resolve, reject) => {
