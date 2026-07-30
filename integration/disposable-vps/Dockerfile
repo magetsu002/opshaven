@@ -8,7 +8,7 @@ RUN npm ci --ignore-scripts --no-audit --no-fund && npm run build
 FROM node:22-bookworm-slim
 ENV container=docker
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends systemd systemd-sysv openssh-server git procps ca-certificates sudo python3 \
+  && apt-get install -y --no-install-recommends systemd systemd-sysv dbus openssh-server git procps ca-certificates sudo python3 \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --create-home --shell /bin/bash opshaven \
   && install -d -m 700 -o opshaven -g opshaven /home/opshaven/.ssh \
@@ -41,7 +41,7 @@ RUN printf '%s\n' '#!/bin/sh' 'exec node /opt/opshaven/dist/src/remote/dispatche
     'opshaven ALL=(root) NOPASSWD: /usr/bin/systemctl restart opshaven-fixture.service' \
     > /etc/sudoers.d/opshaven-fixture \
   && chmod 440 /etc/sudoers.d/opshaven-fixture \
-  && systemctl enable ssh.service opshaven-fixture.service
+  && systemctl enable ssh.service dbus.socket opshaven-fixture.service
 STOPSIGNAL SIGRTMIN+3
 EXPOSE 22
 ENTRYPOINT ["/usr/local/bin/opshaven-entrypoint"]
