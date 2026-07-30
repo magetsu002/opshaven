@@ -22,3 +22,7 @@ jobs:
         with:
           languages: javascript-typescript
       - uses: github/codeql-action/analyze@v3
+        with:
+          output: codeql-results
+          upload: never
+      - run: node scripts/codeql-check.mjs codeql-results
