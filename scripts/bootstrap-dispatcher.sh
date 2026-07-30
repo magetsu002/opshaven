@@ -12,7 +12,9 @@ fi
 if ! id "$ACCOUNT" >/dev/null 2>&1; then
   useradd --system --create-home --home-dir "$HOME_DIR" --shell /bin/sh "$ACCOUNT"
 fi
-passwd -l "$ACCOUNT" >/dev/null
+# A leading ! locks the account and makes sshd reject public-key authentication.
+# * is not a valid password hash, so password login remains impossible while key-only forced commands work.
+usermod --password '*' "$ACCOUNT"
 install -d -o "$ACCOUNT" -g "$ACCOUNT" -m 0700 "$HOME_DIR/.ssh"
 install -d -o root -g "$ACCOUNT" -m 0750 /etc/opshaven
 install -d -o "$ACCOUNT" -g "$ACCOUNT" -m 0750 "$HOME_DIR/state"
