@@ -23,6 +23,11 @@ test("MCP rejects unknown envelope and call fields", async () => {
   assert.equal((params?.error as Record<string, unknown>).code, -32602);
 });
 
+test("MCP never responds to initialized notifications", async () => {
+  const server = new McpServer(executor);
+  assert.equal(await server.handle({ jsonrpc: "2.0", method: "notifications/initialized", params: { unexpected: true } }), null);
+});
+
 test("MCP rejects approval tokens on read-only and dry-run calls", async () => {
   let calls = 0;
   const counting: ToolExecutor = { async execute(operation) { calls += 1; return { ok: true, requestId: "req", operation, data: {}, meta: { startedAt: "start", finishedAt: "end", dryRun: false, mutation: false, truncated: false, redactions: 0, auditRecorded: true } }; } };

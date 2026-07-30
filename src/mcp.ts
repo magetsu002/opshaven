@@ -47,7 +47,10 @@ export class McpServer {
   async handle(value: unknown): Promise<Record<string, unknown> | null> {
     const message = request(value);
     if (!message) return failure(null, -32600, "Invalid Request");
-    if (message.method === "notifications/initialized") return message.id === undefined && emptyParams(message.params) ? null : failure(message.id, -32602, "Invalid params");
+    if (message.method === "notifications/initialized") {
+      if (message.id === undefined) return null;
+      return failure(message.id, -32602, "Invalid params");
+    }
     if (message.method === "ping") return emptyParams(message.params) ? success(message.id, {}) : failure(message.id, -32602, "Invalid params");
     if (message.method === "initialize") return success(message.id, { protocolVersion: "2025-03-26", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "opshaven", version: "0.1.0-rc.0" }, instructions: "Use configured logical resource IDs only. Mutations require an external human approval token." });
     if (message.method === "tools/list") return emptyParams(message.params) ? success(message.id, { tools: TOOLS }) : failure(message.id, -32602, "Invalid params");
