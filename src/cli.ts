@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { promises as fs } from "node:fs";
 import { AuditLog } from "./audit.js";
+import { formatBoundaryReport, verifyBoundary } from "./boundary.js";
 import { loadConfig } from "./config.js";
 import { OperationService } from "./operations.js";
 
@@ -26,7 +27,7 @@ async function regularFile(path: string, ownerOnly: boolean): Promise<{ exists: 
 async function main(): Promise<void> {
   const selected = command();
   if (selected === "help") {
-    process.stdout.write("OpsHaven commands: validate-config, diagnostics, verify-audit, approve-restart, approve-deploy, approve-rollback, print-mcp-config\n");
+    process.stdout.write("OpsHaven commands: validate-config, diagnostics, verify-audit, verify-boundary, approve-restart, approve-deploy, approve-rollback, print-mcp-config\n");
     return;
   }
   const path = configPath();
@@ -40,6 +41,12 @@ async function main(): Promise<void> {
     const result = await new AuditLog(config.audit.path).verify();
     process.stdout.write(`${JSON.stringify(result)}\n`);
     process.exitCode = result.valid ? 0 : 1;
+    return;
+  }
+  if (selected === "verify-boundary") {
+    const report = await verifyBoundary(config, path);
+    process.stdout.write(process.argv.includes("--json") ? `${JSON.stringify(report)}\n` : formatBoundaryReport(report));
+    process.exitCode = report.ok ? 0 : 1;
     return;
   }
   if (selected === "diagnostics") {
