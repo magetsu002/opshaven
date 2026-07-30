@@ -72,10 +72,19 @@ function encode(value: unknown): string {
   return Buffer.from(canonicalize(value), "utf8").toString("base64url");
 }
 
+function decodeCanonicalBytes(encoded: string, label: string): Uint8Array {
+  const decoded = Buffer.from(encoded, "base64url");
+  if (Buffer.from(decoded).toString("base64url") !== encoded) {
+    throw new OpsHavenError("REMOTE_PROTOCOL_INVALID", `${label} is not canonically encoded.`);
+  }
+  return decoded;
+}
+
 function decode(encoded: string, label: string): unknown {
   try {
-    return JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as unknown;
-  } catch {
+    return JSON.parse(Buffer.from(decodeCanonicalBytes(encoded, `${label} payload`)).toString("utf8")) as unknown;
+  } catch (error) {
+    if (error instanceof OpsHavenError) throw error;
     throw new OpsHavenError("REMOTE_PROTOCOL_INVALID", `${label} payload is malformed.`);
   }
 }
@@ -92,11 +101,15 @@ function parseSignedEnvelope(value: unknown, label: string): { payload: string; 
   ) {
     throw new OpsHavenError("REMOTE_PROTOCOL_INVALID", `${label} is malformed.`);
   }
+  decodeCanonicalBytes(value.payload, `${label} payload`);
+  const signature = decodeCanonicalBytes(value.signature, `${label} signature`);
+  if (signature.length !== 64) throw new OpsHavenError("REMOTE_PROTOCOL_INVALID", `${label} signature has an invalid length.`);
   return { payload: value.payload, signature: value.signature };
 }
 
 function verifyEnvelopeSignature(encoded: string, signature: string, publicKey: Uint8Array, label: string): void {
-  if (!verify(null, Buffer.from(encoded, "utf8"), publicKey, Buffer.from(signature, "base64url"))) {
+  const decodedSignature = decodeCanonicalBytes(signature, `${label} signature`);
+  if (!verify(null, Buffer.from(encoded, "utf8"), publicKey, decodedSignature)) {
     throw new OpsHavenError("REMOTE_PROTOCOL_INVALID", `${label} signature is invalid.`);
   }
 }
