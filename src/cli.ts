@@ -2,13 +2,10 @@
 import { promises as fs } from "node:fs";
 import { AuditLog } from "./audit.js";
 import { formatBoundaryReport, verifyBoundary } from "./boundary.js";
-import {
-  compareCapabilityDeclarations,
-  formatCapabilityComparison,
-  loadCapabilityDeclaration,
-} from "./capability-declaration.js";
+import { compareCapabilityDeclarations, formatCapabilityComparison, loadCapabilityDeclaration } from "./capability-declaration.js";
 import { loadConfig } from "./config.js";
 import { OperationService } from "./operations.js";
+import { buildTrustReport, formatTrustReport } from "./trust-report.js";
 
 function flag(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -21,6 +18,16 @@ function required(name: string): string {
 }
 function configPath(): string { return flag("--config") ?? process.env.OPSHAVEN_CONFIG ?? ""; }
 function command(): string { return process.argv[2] ?? "help"; }
+function selectedMode(): "controlled" | "read-only" {
+  const mode = flag("--mode") ?? "controlled";
+  if (mode !== "controlled" && mode !== "read-only") throw new Error("Mode must be controlled or read-only.");
+  return mode;
+}
+function dispatcherPath(mode: "controlled" | "read-only"): string {
+  return flag("--dispatcher")
+    ?? (mode === "controlled" ? process.env.OPSHAVEN_DISPATCHER : process.env.OPSHAVEN_READONLY_DISPATCHER)
+    ?? (mode === "controlled" ? "/usr/local/bin/opshaven-dispatcher" : "/usr/local/bin/opshaven-readonly-dispatcher");
+}
 
 async function regularFile(path: string, ownerOnly: boolean): Promise<{ exists: boolean; safe: boolean }> {
   try {
@@ -32,7 +39,7 @@ async function regularFile(path: string, ownerOnly: boolean): Promise<{ exists: 
 async function main(): Promise<void> {
   const selected = command();
   if (selected === "help") {
-    process.stdout.write("OpsHaven commands: validate-config, diagnostics, verify-audit, verify-boundary, compare-capabilities, approve-restart, approve-deploy, approve-rollback, print-mcp-config\n");
+    process.stdout.write("OpsHaven commands: validate-config, diagnostics, verify-audit, verify-boundary, compare-capabilities, trust-report, approve-restart, approve-deploy, approve-rollback, print-mcp-config\n");
     return;
   }
   if (selected === "compare-capabilities") {
@@ -57,8 +64,15 @@ async function main(): Promise<void> {
     return;
   }
   if (selected === "verify-boundary") {
-    const report = await verifyBoundary(config, path);
+    const report = await verifyBoundary(config, path, selectedMode());
     process.stdout.write(process.argv.includes("--json") ? `${JSON.stringify(report)}\n` : formatBoundaryReport(report));
+    process.exitCode = report.ok ? 0 : 1;
+    return;
+  }
+  if (selected === "trust-report") {
+    const mode = selectedMode();
+    const report = await buildTrustReport(config, path, dispatcherPath(mode), mode, flag("--from"));
+    process.stdout.write(process.argv.includes("--json") ? `${JSON.stringify(report)}\n` : formatTrustReport(report));
     process.exitCode = report.ok ? 0 : 1;
     return;
   }
