@@ -1,6 +1,6 @@
 # OpsHaven
 
-OpsHaven is a local, general-purpose MCP server that gives AI agents safe VPS inspection and narrowly controlled operations over restricted SSH.
+OpsHaven 1.0.0 is a local, general-purpose MCP server that gives AI agents safe VPS inspection and narrowly controlled operations over restricted SSH.
 
 ```text
 AI client
@@ -26,8 +26,8 @@ Controlled mutations: `restart_service`, `deploy_commit`, and `rollback_deployme
 ## Development
 
 ```bash
-npm install --ignore-scripts --no-audit --no-fund
-npm run check
+npm ci --ignore-scripts --no-audit --no-fund
+npm run release:check
 ```
 
 The server is stdio-only:
@@ -37,4 +37,4 @@ npm run build
 node dist/src/index.js --config /absolute/path/to/local.config.json
 ```
 
-See `docs/setup.md` before connecting an MCP client. The repository remains at release-candidate version until exact-head CI and disposable-VPS certification pass; no `v1.0.0` tag should be created earlier.
+See `docs/setup.md` before connecting an MCP client, `docs/security.md` before configuring trust files or sudo, and `RELEASE_NOTES.md` for the stable V1 scope and limitations.

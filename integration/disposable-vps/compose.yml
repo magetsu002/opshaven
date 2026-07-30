@@ -3,12 +3,19 @@ services:
     build:
       context: ../..
       dockerfile: integration/disposable-vps/Dockerfile
+    privileged: true
+    cgroup: host
+    stop_signal: SIGRTMIN+3
     ports:
       - "127.0.0.1:22222:22"
+    tmpfs:
+      - /run
+      - /run/lock
     volumes:
-      - ./generated:/run/opshaven-test:ro
+      - ./generated:/run/opshaven-test
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
     healthcheck:
-      test: ["CMD", "test", "-s", "/home/opshaven/.ssh/authorized_keys"]
+      test: ["CMD-SHELL", "systemctl is-active --quiet ssh.service && systemctl is-active --quiet opshaven-fixture.service"]
       interval: 2s
       timeout: 2s
-      retries: 20
+      retries: 30

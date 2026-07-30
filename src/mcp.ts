@@ -52,7 +52,7 @@ export class McpServer {
       return failure(message.id, -32602, "Invalid params");
     }
     if (message.method === "ping") return emptyParams(message.params) ? success(message.id, {}) : failure(message.id, -32602, "Invalid params");
-    if (message.method === "initialize") return success(message.id, { protocolVersion: "2025-03-26", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "opshaven", version: "0.1.0-rc.0" }, instructions: "Use configured logical resource IDs only. Mutations require an external human approval token." });
+    if (message.method === "initialize") return success(message.id, { protocolVersion: "2025-03-26", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "opshaven", version: "1.0.0" }, instructions: "Use configured logical resource IDs only. Mutations require an external human approval token." });
     if (message.method === "tools/list") return emptyParams(message.params) ? success(message.id, { tools: TOOLS }) : failure(message.id, -32602, "Invalid params");
     if (message.method === "tools/call") {
       if (!message.params || typeof message.params !== "object" || Array.isArray(message.params)) return failure(message.id, -32602, "Invalid params");
