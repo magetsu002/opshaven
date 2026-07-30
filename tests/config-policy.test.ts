@@ -22,6 +22,24 @@ test("configuration rejects unknown fields", () => {
   assert.throws(() => parseConfig({ ...raw, surprise: true }), (error: unknown) => error instanceof OpsHavenError && error.code === "CONFIG_INVALID");
 });
 
+test("configuration rejects cross-host or wrong-kind resource references", () => {
+  const otherHost = { id: "host.other", kind: "host", address: "other.internal", port: 22, user: "opshaven", knownHostsFile: "/etc/opshaven/other_known_hosts", identityFile: "/etc/opshaven/other_id", connectTimeoutMs: 5000 };
+  const otherService = { id: "svc.other", kind: "service", hostId: "host.other", unit: "other.service" };
+  const deployment = { ...raw.resources[2], serviceIds: ["svc.other"] };
+  assert.throws(() => parseConfig({ ...raw, resources: [raw.resources[0], raw.resources[1], deployment, otherHost, otherService] }), (error: unknown) => error instanceof OpsHavenError && error.code === "CONFIG_INVALID");
+  const wrongKind = { ...raw.resources[2], serviceIds: ["host.main"] };
+  assert.throws(() => parseConfig({ ...raw, resources: [raw.resources[0], raw.resources[1], wrongKind] }), (error: unknown) => error instanceof OpsHavenError && error.code === "CONFIG_INVALID");
+});
+
+test("configuration rejects option-like names, refs, and secret-bearing probe URLs", () => {
+  const unsafeService = { ...raw.resources[1], unit: "--help" };
+  assert.throws(() => parseConfig({ ...raw, resources: [raw.resources[0], unsafeService] }), (error: unknown) => error instanceof OpsHavenError && error.code === "CONFIG_INVALID");
+  const unsafeDeployment = { ...raw.resources[2], allowedRefs: ["--all"] };
+  assert.throws(() => parseConfig({ ...raw, resources: [raw.resources[0], raw.resources[1], unsafeDeployment] }), (error: unknown) => error instanceof OpsHavenError && error.code === "CONFIG_INVALID");
+  const unsafeProbe = { id: "probe.web", kind: "probe", hostId: "host.main", url: "https://example.internal/health?token=secret", method: "GET", expectedStatus: [200], timeoutMs: 1000 };
+  assert.throws(() => parseConfig({ ...raw, resources: [raw.resources[0], unsafeProbe] }), (error: unknown) => error instanceof OpsHavenError && error.code === "CONFIG_INVALID");
+});
+
 test("policy resolves only logical IDs", () => {
   const policy = new PolicyEngine(parseConfig(raw));
   const resolved = policy.resolve("get_service_status", { resourceId: "svc.web" });

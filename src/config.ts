@@ -112,7 +112,8 @@ export interface OpsHavenConfig {
 }
 
 const ID = /^[a-z][a-z0-9._-]{0,63}$/;
-const SAFE_NAME = /^[A-Za-z0-9@_.:-]{1,128}$/;
+const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9@_.:-]{0,127}$/;
+const SAFE_REF = /^(?!-)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._/-]{1,160}$/;
 const ABSOLUTE_SAFE_PATH = /^\/(?:[A-Za-z0-9._-]+\/?)+$/;
 
 function text(value: unknown, label: string, pattern?: RegExp): string {
@@ -176,7 +177,7 @@ function parseResource(value: unknown, index: number): Resource {
       if (activation !== "systemd" && activation !== "compose") throw new OpsHavenError("CONFIG_INVALID", `${label}.activation is invalid.`);
       if (migrationPolicy !== "none" && migrationPolicy !== "manual") throw new OpsHavenError("CONFIG_INVALID", `${label}.migrationPolicy is invalid.`);
       if (!Array.isArray(value.buildSteps) || !Array.isArray(value.checkSteps)) throw new OpsHavenError("CONFIG_INVALID", `${label} steps must be arrays.`);
-      return { ...common, kind, hostId: hostId(value.hostId, `${label}.hostId`), repositoryPath: safePath(value.repositoryPath, `${label}.repositoryPath`), releasesPath: safePath(value.releasesPath, `${label}.releasesPath`), currentSymlink: safePath(value.currentSymlink, `${label}.currentSymlink`), allowedRefs: stringArray(value.allowedRefs, `${label}.allowedRefs`, /^[A-Za-z0-9._/-]{1,160}$/), activation, serviceIds: stringArray(value.serviceIds, `${label}.serviceIds`, ID), probeIds: stringArray(value.probeIds, `${label}.probeIds`, ID), buildSteps: value.buildSteps.map((step, stepIndex) => parseStep(step, `${label}.buildSteps[${stepIndex}]`)), checkSteps: value.checkSteps.map((step, stepIndex) => parseStep(step, `${label}.checkSteps[${stepIndex}]`)), fetchBeforeDeploy: boolean(value.fetchBeforeDeploy, `${label}.fetchBeforeDeploy`), migrationPolicy };
+      return { ...common, kind, hostId: hostId(value.hostId, `${label}.hostId`), repositoryPath: safePath(value.repositoryPath, `${label}.repositoryPath`), releasesPath: safePath(value.releasesPath, `${label}.releasesPath`), currentSymlink: safePath(value.currentSymlink, `${label}.currentSymlink`), allowedRefs: stringArray(value.allowedRefs, `${label}.allowedRefs`, SAFE_REF), activation, serviceIds: stringArray(value.serviceIds, `${label}.serviceIds`, ID), probeIds: stringArray(value.probeIds, `${label}.probeIds`, ID), buildSteps: value.buildSteps.map((step, stepIndex) => parseStep(step, `${label}.buildSteps[${stepIndex}]`)), checkSteps: value.checkSteps.map((step, stepIndex) => parseStep(step, `${label}.checkSteps[${stepIndex}]`)), fetchBeforeDeploy: boolean(value.fetchBeforeDeploy, `${label}.fetchBeforeDeploy`), migrationPolicy };
     }
     case "proxy": {
       rejectUnknownKeys(value, ["id", "kind", "hostId", "provider", "serviceId", "publicNames"], label);
@@ -187,8 +188,10 @@ function parseResource(value: unknown, index: number): Resource {
     case "probe": {
       rejectUnknownKeys(value, ["id", "kind", "hostId", "url", "method", "expectedStatus", "timeoutMs"], label);
       const url = text(value.url, `${label}.url`);
-      const parsed = new URL(url);
-      if (!(["http:", "https:"] as string[]).includes(parsed.protocol) || parsed.username || parsed.password || parsed.search) throw new OpsHavenError("CONFIG_INVALID", `${label}.url must be a credential-free HTTP(S) URL without a query string.`);
+      let parsed: URL;
+      try { parsed = new URL(url); }
+      catch { throw new OpsHavenError("CONFIG_INVALID", `${label}.url is invalid.`); }
+      if (!(parsed.protocol === "http:" || parsed.protocol === "https:") || !parsed.hostname || parsed.username || parsed.password || parsed.search || parsed.hash) throw new OpsHavenError("CONFIG_INVALID", `${label}.url must be a credential-free HTTP(S) URL without query or fragment data.`);
       const method = text(value.method, `${label}.method`);
       if (method !== "GET" && method !== "HEAD") throw new OpsHavenError("CONFIG_INVALID", `${label}.method is invalid.`);
       if (!Array.isArray(value.expectedStatus)) throw new OpsHavenError("CONFIG_INVALID", `${label}.expectedStatus must be an array.`);
@@ -213,16 +216,23 @@ function parseResource(value: unknown, index: number): Resource {
   }
 }
 
+function requireReference(resources: Map<string, Resource>, owner: Resource, id: string, kind: "service" | "probe"): Resource {
+  const referenced = resources.get(id);
+  if (!referenced || referenced.kind !== kind || referenced.hostId !== owner.hostId) throw new OpsHavenError("CONFIG_INVALID", `${owner.id} references an invalid ${kind} ${id}.`);
+  return referenced;
+}
+
 function validateReferences(resources: Map<string, Resource>): void {
   for (const resource of resources.values()) {
     if (resource.kind !== "host") {
       const host = resources.get(resource.hostId);
       if (!host || host.kind !== "host") throw new OpsHavenError("CONFIG_INVALID", `${resource.id} references an unknown host.`);
     }
-    const ids: string[] = [];
-    if (resource.kind === "deployment" || resource.kind === "monitoring") ids.push(...resource.serviceIds, ...resource.probeIds);
-    if (resource.kind === "proxy") ids.push(resource.serviceId);
-    for (const id of ids) if (!resources.has(id)) throw new OpsHavenError("CONFIG_INVALID", `${resource.id} references unknown resource ${id}.`);
+    if (resource.kind === "deployment" || resource.kind === "monitoring") {
+      for (const id of resource.serviceIds) requireReference(resources, resource, id, "service");
+      for (const id of resource.probeIds) requireReference(resources, resource, id, "probe");
+    }
+    if (resource.kind === "proxy") requireReference(resources, resource, resource.serviceId, "service");
   }
 }
 

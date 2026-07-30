@@ -26,8 +26,17 @@ REQUEST='{"version":1,"requestId":"integration-1","operation":"get_host_summary"
 RESPONSE="$(printf '%s\n' "$REQUEST" | "${SSH[@]}")"
 node -e 'const x=JSON.parse(process.argv[1]); if(!x.ok || x.requestId!=="integration-1" || !x.data.uname) process.exit(1)' "$RESPONSE"
 
+ssh-keygen -q -t ed25519 -N '' -f "$GEN/fake_host_key"
+printf '[127.0.0.1]:22222 %s\n' "$(cut -d' ' -f1,2 "$GEN/fake_host_key.pub")" > "$GEN/bad_known_hosts"
+BAD_SSH=(ssh -p 22222 -i "$GEN/id_ed25519" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$GEN/bad_known_hosts" -o ClearAllForwardings=yes -o ForwardAgent=no -o RequestTTY=no opshaven@127.0.0.1)
+set +e
+printf '%s\n' "$REQUEST" | "${BAD_SSH[@]}" >/dev/null 2>&1
+BAD_HOST_STATUS=$?
+set -e
+[[ $BAD_HOST_STATUS -ne 0 ]]
+
 OVERSIZED='{"version":1,"requestId":"integration-2","operation":"get_host_summary","resourceId":"host.fixture","args":{"resourceId":"host.fixture"},"limits":{"timeoutMs":10000,"maxBytes":65537,"maxLines":500}}'
 REJECTED="$(printf '%s\n' "$OVERSIZED" | "${SSH[@]}")"
 node -e 'const x=JSON.parse(process.argv[1]); if(x.ok || x.error?.code!=="POLICY_DENIED") process.exit(1)' "$REJECTED"
 
-printf 'disposable-vps: restricted SSH, valid inspection, and remote limit rejection passed\n'
+printf 'disposable-vps: shell denial, pinned host keys, valid inspection, and remote limit rejection passed\n'
