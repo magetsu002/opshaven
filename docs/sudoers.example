@@ -1,0 +1,3 @@
+# Replace example.service with one exact configured unit. Do not add wildcards.
+Defaults:opshaven !requiretty
+opshaven ALL=(root) NOPASSWD: /usr/bin/systemctl restart example.service
