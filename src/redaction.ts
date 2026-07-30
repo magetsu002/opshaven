@@ -50,7 +50,7 @@ export function sanitizeOutput(input: string | Uint8Array, limits: OutputLimits,
     let safeLine = line;
     for (const fingerprint of configuredFingerprints) {
       if (fingerprint.length < 8) continue;
-      const tokens = safeLine.split(/([^A-Za-z0-9_./+=-]+)/);
+      const tokens = safeLine.split(/([^A-Za-z0-9_./+-]+)/);
       safeLine = tokens.map((token) => {
         if (fingerprintSecret(token) !== fingerprint.toLowerCase()) return token;
         redactions += 1;
