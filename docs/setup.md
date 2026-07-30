@@ -69,7 +69,7 @@ A read-only installation should also have:
 - no approval private key on the VPS;
 - a root-owned dispatcher, policy, capability manifest, and trust files.
 
-Install `packaging/opshaven-readonly-force-command` as the forced command and use the read-only build produced by the repository. Review [Remote confinement](remote-confinement.md) before adapting the reference systemd profile.
+Install `packaging/opshaven-readonly-force-command` as the forced command and use the read-only build produced by the repository. Review [Remote confinement](confinement.md) before adapting the reference systemd profile.
 
 ### Controlled mode
 
