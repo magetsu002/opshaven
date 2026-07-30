@@ -5,6 +5,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /run/sshd /opt/opshaven /etc/opshaven /var/lib/opshaven/.ssh \
     && useradd --system --home-dir /var/lib/opshaven --shell /bin/sh --gid nogroup opshaven \
+    && usermod --password '*' opshaven \
     && chown -R opshaven:nogroup /var/lib/opshaven \
     && chmod 0700 /var/lib/opshaven/.ssh
 
