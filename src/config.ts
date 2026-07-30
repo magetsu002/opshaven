@@ -1,7 +1,7 @@
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import { assertPlainObject, rejectUnknownKeys } from "./canonical.js";
 import { OpsHavenError } from "./errors.js";
+import { readRegularTextFile } from "./safe-fs.js";
 
 export type ResourceKind =
   | "host"
@@ -266,8 +266,11 @@ export function parseConfig(raw: unknown): OpsHavenConfig {
 }
 
 export async function loadConfig(filePath: string): Promise<OpsHavenConfig> {
-  const stats = await fs.lstat(filePath);
-  if (stats.isSymbolicLink() || !stats.isFile()) throw new OpsHavenError("CONFIG_INVALID", "Configuration path must be a regular non-symlink file.");
-  const raw = JSON.parse(await fs.readFile(filePath, "utf8")) as unknown;
+  let raw: unknown;
+  try { raw = JSON.parse(await readRegularTextFile(filePath, "Configuration", { maxBytes: 1048576, code: "CONFIG_INVALID" })) as unknown; }
+  catch (error) {
+    if (error instanceof OpsHavenError) throw error;
+    throw new OpsHavenError("CONFIG_INVALID", "Configuration JSON is invalid.");
+  }
   return parseConfig(raw);
 }
