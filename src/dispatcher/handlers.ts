@@ -1,4 +1,5 @@
 import { createCoreHandlers } from "./core-handlers.js";
+import { createDeploymentHandlers } from "./deployment-handlers.js";
 import type { DispatcherHandlers } from "./dispatcher.js";
 import { createLogHandlers } from "./log-handlers.js";
 import { createMutationHandlers } from "./mutation-handlers.js";
@@ -10,5 +11,6 @@ export const DISPATCHER_HANDLERS: DispatcherHandlers = Object.freeze({
   ...createNetworkHandlers(),
   ...createLogHandlers(),
   ...createRecoveryHandlers(),
-  ...createMutationHandlers()
+  ...createMutationHandlers(),
+  ...createDeploymentHandlers()
 });

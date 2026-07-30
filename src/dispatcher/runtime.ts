@@ -36,13 +36,14 @@ export async function fixedCommand(
   request: DispatcherRequest,
   executable: string,
   args: readonly string[],
-  options: Readonly<{ allowExitCodes?: readonly number[]; timeoutMs?: number }> = {}
+  options: Readonly<{ allowExitCodes?: readonly number[]; timeoutMs?: number; cwd?: string }> = {}
 ): Promise<Readonly<{ stdout: string; stderr: string; exitCode: number }>> {
   const result = await runtime.runner({
     executable,
     args,
     timeoutMs: Math.min(options.timeoutMs ?? request.limits.timeoutMs, request.limits.timeoutMs),
-    output: { maxBytes: request.limits.maxBytes, maxLines: request.limits.maxLines }
+    output: { maxBytes: request.limits.maxBytes, maxLines: request.limits.maxLines },
+    ...(options.cwd === undefined ? {} : { cwd: options.cwd })
   });
   const allowed = options.allowExitCodes ?? [0];
   const stdout = Buffer.from(result.stdout).toString("utf8").trim();
