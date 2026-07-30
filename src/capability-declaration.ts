@@ -158,6 +158,12 @@ function parseBindingPayload(value: unknown): DeclarationBindingPayload {
   return value as unknown as DeclarationBindingPayload;
 }
 
+function decodeCanonicalBase64Url(value: string, label: string): Uint8Array {
+  const decoded = Buffer.from(value, "base64url");
+  if (Buffer.from(decoded).toString("base64url") !== value) throw new OpsHavenError("POLICY_DENIED", `${label} is not canonically encoded.`);
+  return decoded;
+}
+
 export function signDeclarationBinding(payload: DeclarationBindingPayload, privateKey: Uint8Array): SignedDeclarationBinding {
   const encoded = Buffer.from(canonicalize(payload), "utf8").toString("base64url");
   return { payload: encoded, signature: sign(null, Buffer.from(encoded, "utf8"), privateKey).toString("base64url") };
@@ -169,6 +175,9 @@ export function parseSignedDeclarationBinding(value: unknown): SignedDeclaration
   if (typeof value.payload !== "string" || typeof value.signature !== "string" || !ENCODED.test(value.payload) || !ENCODED.test(value.signature)) {
     throw new OpsHavenError("POLICY_DENIED", "Signed declaration binding is malformed.");
   }
+  decodeCanonicalBase64Url(value.payload, "Declaration binding payload");
+  const signature = decodeCanonicalBase64Url(value.signature, "Declaration binding signature");
+  if (signature.length !== 64) throw new OpsHavenError("POLICY_DENIED", "Declaration binding signature has an invalid length.");
   return { payload: value.payload, signature: value.signature };
 }
 
@@ -181,9 +190,11 @@ export function verifyDeclarationBinding(
   declarationSha256: string,
   now = Date.now(),
 ): VerifiedDeclarationBinding {
-  if (!verify(null, Buffer.from(binding.payload, "utf8"), publicKey, Buffer.from(binding.signature, "base64url"))) throw new OpsHavenError("POLICY_DENIED", "Declaration binding signature is invalid.");
+  const parsed = parseSignedDeclarationBinding(binding);
+  const signature = decodeCanonicalBase64Url(parsed.signature, "Declaration binding signature");
+  if (!verify(null, Buffer.from(parsed.payload, "utf8"), publicKey, signature)) throw new OpsHavenError("POLICY_DENIED", "Declaration binding signature is invalid.");
   let decoded: unknown;
-  try { decoded = JSON.parse(Buffer.from(binding.payload, "base64url").toString("utf8")) as unknown; }
+  try { decoded = JSON.parse(Buffer.from(decodeCanonicalBase64Url(parsed.payload, "Declaration binding payload")).toString("utf8")) as unknown; }
   catch { throw new OpsHavenError("POLICY_DENIED", "Declaration binding payload is malformed."); }
   const payload = parseBindingPayload(decoded);
   const issuedAt = Date.parse(payload.issuedAt);
