@@ -53,16 +53,12 @@ function hostKeyFailure(stderr: string): boolean {
 
 export class SshTransport {
   private readonly spawnProcess: SpawnLike;
-  private readonly binding?: SshProtocolBinding;
+  private readonly binding: SshProtocolBinding | undefined;
   private trustPromise?: Promise<ClientProtocolContext>;
 
   constructor(value?: SpawnLike | SshProtocolBinding) {
-    if (typeof value === "function") {
-      this.spawnProcess = value;
-    } else {
-      this.spawnProcess = spawn as unknown as SpawnLike;
-      this.binding = value;
-    }
+    this.spawnProcess = typeof value === "function" ? value : spawn as unknown as SpawnLike;
+    this.binding = typeof value === "function" ? undefined : value;
   }
 
   private async trust(): Promise<ClientProtocolContext | undefined> {
