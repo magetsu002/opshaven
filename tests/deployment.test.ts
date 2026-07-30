@@ -144,3 +144,114 @@ describe("safe configured Git deployment", () => {
     assert.equal(calls.length, 1);
   });
 });
+
+const ROLLBACK = "3333333333333333333333333333333333333333";
+
+async function recordRollbackRelease(config: OpsHavenConfig): Promise<void> {
+  const deployment = config.deployments[0]!;
+  await fs.mkdir(join(deployment.releasesPath, ROLLBACK));
+  await fs.writeFile(
+    deployment.stateFile,
+    `${JSON.stringify({
+      version: 1,
+      currentCommit: CURRENT,
+      releases: [
+        {
+          commit: ROLLBACK,
+          path: join(deployment.releasesPath, ROLLBACK),
+          activatedAt: "2025-12-01T00:00:00.000Z",
+          previousCommit: ROLLBACK,
+          migrationRisk: "manual-review"
+        },
+        {
+          commit: CURRENT,
+          path: join(deployment.releasesPath, CURRENT),
+          activatedAt: "2026-01-01T00:00:00.000Z",
+          previousCommit: ROLLBACK,
+          migrationRisk: "manual-review"
+        }
+      ]
+    })}\n`,
+    { mode: 0o600 }
+  );
+}
+
+function rollbackRequest(releaseCommit = ROLLBACK, dryRun = false) {
+  return {
+    version: 1 as const,
+    requestId: "00000000-0000-4000-8000-000000000001",
+    operation: "rollback_deployment" as const,
+    target: "demo-deployment",
+    args: { deploymentId: "demo-deployment", releaseCommit },
+    expectedState: { currentCommit: CURRENT },
+    dryRun,
+    limits: { timeoutMs: 10_000, maxBytes: 65_536, maxLines: 500 }
+  };
+}
+
+describe("recorded-release rollback", () => {
+  it("restores only a known recorded release and updates current state", async () => {
+    const { config, active, state } = await fixture();
+    await recordRollbackRelease(config);
+    const calls: ProcessRequest[] = [];
+    const handlers = createDeploymentHandlers({
+      runner: successfulRunner(calls),
+      fs,
+      fetcher: async () => new Response(null, { status: 200 }),
+      now: () => new Date("2026-01-02T00:00:00.000Z")
+    });
+    const response = await new Dispatcher(config, handlers, "demo-host").handle(rollbackRequest());
+    assert.equal(response.ok, true);
+    assert.equal(await fs.readlink(active), join(config.deployments[0]!.releasesPath, ROLLBACK));
+    const recorded = JSON.parse(await fs.readFile(state, "utf8")) as { currentCommit: string };
+    assert.equal(recorded.currentCommit, ROLLBACK);
+    assert.ok(JSON.stringify(response).includes('"databaseMigrationReversalAttempted":false'));
+  });
+
+  it("refuses an unrecorded commit even when the identifier is well formed", async () => {
+    const { config, active } = await fixture();
+    await recordRollbackRelease(config);
+    const handlers = createDeploymentHandlers({
+      runner: successfulRunner([]),
+      fs,
+      fetcher: async () => new Response(null, { status: 200 }),
+      now: () => new Date()
+    });
+    const unknown = "4444444444444444444444444444444444444444";
+    const response = await new Dispatcher(config, handlers, "demo-host").handle(rollbackRequest(unknown));
+    assert.equal(response.ok, false);
+    assert.equal(await fs.readlink(active), join(config.deployments[0]!.releasesPath, CURRENT));
+  });
+
+  it("dry-run reports migration risk without changing the active link", async () => {
+    const { config, active } = await fixture();
+    await recordRollbackRelease(config);
+    const calls: ProcessRequest[] = [];
+    const handlers = createDeploymentHandlers({
+      runner: successfulRunner(calls),
+      fs,
+      fetcher: async () => new Response(null, { status: 200 }),
+      now: () => new Date()
+    });
+    const response = await new Dispatcher(config, handlers, "demo-host").handle(rollbackRequest(ROLLBACK, true));
+    assert.equal(response.ok, true);
+    assert.equal(await fs.readlink(active), join(config.deployments[0]!.releasesPath, CURRENT));
+    assert.equal(calls.length, 0);
+    assert.ok(JSON.stringify(response).includes('"migrationRisk":"manual-review"'));
+  });
+
+  it("restores the current release when rollback health verification fails", async () => {
+    const { config, active } = await fixture();
+    await recordRollbackRelease(config);
+    const handlers = createDeploymentHandlers({
+      runner: successfulRunner([]),
+      fs,
+      fetcher: async () => new Response(null, { status: 500 }),
+      now: () => new Date()
+    });
+    const response = await new Dispatcher(config, handlers, "demo-host").handle(rollbackRequest());
+    assert.equal(response.ok, false);
+    assert.equal(await fs.readlink(active), join(config.deployments[0]!.releasesPath, CURRENT));
+    assert.ok(JSON.stringify(response).includes("restoredPriorRelease"));
+  });
+});

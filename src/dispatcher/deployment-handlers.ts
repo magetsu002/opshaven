@@ -62,6 +62,18 @@ function exactExpectedCommit(request: Parameters<NonNullable<DispatcherHandlers[
   return currentCommit;
 }
 
+function rollbackArgs(request: Parameters<NonNullable<DispatcherHandlers["rollback_deployment"]>>[0]): Readonly<{
+  deploymentId: string;
+  releaseCommit: string;
+}> {
+  assertArgs(request, ["deploymentId", "releaseCommit"]);
+  const { deploymentId, releaseCommit } = request.args;
+  if (typeof deploymentId !== "string" || typeof releaseCommit !== "string" || !/^[a-f0-9]{40}$/.test(releaseCommit)) {
+    throw new OpsHavenError("REMOTE_PROTOCOL_ERROR", "Rollback arguments are malformed");
+  }
+  return { deploymentId, releaseCommit };
+}
+
 function deploymentArgs(request: Parameters<NonNullable<DispatcherHandlers["deploy_commit"]>>[0]): Readonly<{
   deploymentId: string;
   commit: string;
@@ -359,6 +371,86 @@ export function createDeploymentHandlers(runtime: DeploymentRuntime = DEFAULT_DE
         }
         await removeFailedWorktree(runtime, request, deployment, releasePath);
         throw new OpsHavenError("OPERATION_FAILED", "Deployment transaction failed", {
+          reason: errorMessage(error),
+          restoredPriorRelease
+        });
+      }
+    },
+
+    rollback_deployment: async (request, config, dispatcherHostId) => {
+      const args = rollbackArgs(request);
+      const deployment = findResource(config.deployments, args.deploymentId, dispatcherHostId, "deployment");
+      assertTarget(request, deployment.id);
+      const expectedCurrentCommit = exactExpectedCommit(request);
+      await verifySafeLayout(runtime, deployment);
+      const active = await readActiveRelease(runtime.fs, deployment.activeSymlink, deployment.releasesPath);
+      if (active.commit !== expectedCurrentCommit) {
+        throw new OpsHavenError("POLICY_DENIED", "Active release changed since approval was resolved", {
+          expected: expectedCurrentCommit,
+          observed: active.commit
+        });
+      }
+      if (args.releaseCommit === active.commit) {
+        throw new OpsHavenError("POLICY_DENIED", "Rollback target is already active");
+      }
+      const state = await readDeploymentState(runtime.fs, deployment.stateFile);
+      if (state.currentCommit !== active.commit) {
+        throw new OpsHavenError("POLICY_DENIED", "Recorded deployment state does not match the active release");
+      }
+      const release = state.releases.find((item) => item.commit === args.releaseCommit);
+      const expectedPath = join(deployment.releasesPath, args.releaseCommit);
+      if (release === undefined || release.path !== expectedPath) {
+        throw new OpsHavenError("POLICY_DENIED", "Rollback target is not a known recorded release");
+      }
+      await assertSafeDirectory(runtime.fs, expectedPath, "Recorded rollback release");
+      if (request.dryRun) {
+        return {
+          deploymentId: deployment.id,
+          currentCommit: active.commit,
+          releaseCommit: release.commit,
+          dryRun: true,
+          changed: false,
+          migrationRisk: release.migrationRisk,
+          databaseMigrationReversalAttempted: false
+        };
+      }
+
+      let activated = false;
+      try {
+        await activateRelease(runtime.fs, deployment.activeSymlink, expectedPath, deployment.releasesPath);
+        activated = true;
+        const activation = await activateConfiguredResources(runtime, request, config, deployment);
+        const probes = await verifyHealth(runtime, request, config, deployment);
+        await writeDeploymentState(runtime.fs, deployment.stateFile, {
+          version: 1,
+          currentCommit: release.commit,
+          releases: state.releases
+        });
+        return {
+          deploymentId: deployment.id,
+          previousCommit: active.commit,
+          commit: release.commit,
+          changed: true,
+          migrationRisk: release.migrationRisk,
+          databaseMigrationReversalAttempted: false,
+          activation,
+          probes
+        };
+      } catch (error) {
+        let restoredPriorRelease = false;
+        if (activated) {
+          try {
+            await activateRelease(runtime.fs, deployment.activeSymlink, active.target, deployment.releasesPath);
+            await activateConfiguredResources(runtime, request, config, deployment);
+            restoredPriorRelease = true;
+          } catch (restoreError) {
+            throw new OpsHavenError("OPERATION_FAILED", "Rollback failed and active release restoration also failed", {
+              rollbackFailure: errorMessage(error),
+              restorationFailure: errorMessage(restoreError)
+            });
+          }
+        }
+        throw new OpsHavenError("OPERATION_FAILED", "Rollback transaction failed", {
           reason: errorMessage(error),
           restoredPriorRelease
         });
