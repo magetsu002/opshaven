@@ -26,15 +26,20 @@ const TOOLS: readonly ToolDefinition[] = [
   { name: "rollback_deployment", description: "Dry-run or activate a known recorded release with exact human approval.", inputSchema: schema({ resourceId: resource, releaseId: { type: "string", pattern: "^[A-Za-z0-9._-]{1,128}$" }, dryRun, approvalToken: approval }, ["resourceId", "releaseId", "dryRun"]) },
 ];
 const TOOL_NAMES = new Set(TOOLS.map((tool) => tool.name));
+const MUTATION_TOOLS = new Set(["restart_service", "deploy_commit", "rollback_deployment"]);
 
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
 function request(value: unknown): JsonRpcRequest | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const item = value as Record<string, unknown>;
-  if (item.jsonrpc !== "2.0" || typeof item.method !== "string" || (item.id !== undefined && item.id !== null && typeof item.id !== "string" && typeof item.id !== "number")) return null;
+  if (!hasOnlyKeys(item, ["jsonrpc", "id", "method", "params"]) || item.jsonrpc !== "2.0" || typeof item.method !== "string" || (item.id !== undefined && item.id !== null && typeof item.id !== "string" && typeof item.id !== "number")) return null;
   return item as unknown as JsonRpcRequest;
 }
 function success(id: JsonRpcRequest["id"], result: unknown): Record<string, unknown> { return { jsonrpc: "2.0", id: id ?? null, result }; }
 function failure(id: JsonRpcRequest["id"], code: number, message: string, data?: unknown): Record<string, unknown> { return { jsonrpc: "2.0", id: id ?? null, error: { code, message, ...(data === undefined ? {} : { data }) } }; }
+function emptyParams(params: unknown): boolean { return params === undefined || (!!params && typeof params === "object" && !Array.isArray(params) && Object.keys(params as Record<string, unknown>).length === 0); }
 
 export class McpServer {
   constructor(private readonly executor: ToolExecutor) {}
@@ -42,16 +47,18 @@ export class McpServer {
   async handle(value: unknown): Promise<Record<string, unknown> | null> {
     const message = request(value);
     if (!message) return failure(null, -32600, "Invalid Request");
-    if (message.method === "notifications/initialized") return null;
-    if (message.method === "ping") return success(message.id, {});
+    if (message.method === "notifications/initialized") return message.id === undefined && emptyParams(message.params) ? null : failure(message.id, -32602, "Invalid params");
+    if (message.method === "ping") return emptyParams(message.params) ? success(message.id, {}) : failure(message.id, -32602, "Invalid params");
     if (message.method === "initialize") return success(message.id, { protocolVersion: "2025-03-26", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "opshaven", version: "0.1.0-rc.0" }, instructions: "Use configured logical resource IDs only. Mutations require an external human approval token." });
-    if (message.method === "tools/list") return success(message.id, { tools: TOOLS });
+    if (message.method === "tools/list") return emptyParams(message.params) ? success(message.id, { tools: TOOLS }) : failure(message.id, -32602, "Invalid params");
     if (message.method === "tools/call") {
       if (!message.params || typeof message.params !== "object" || Array.isArray(message.params)) return failure(message.id, -32602, "Invalid params");
       const params = message.params as Record<string, unknown>;
-      if (typeof params.name !== "string" || !TOOL_NAMES.has(params.name) || !params.arguments || typeof params.arguments !== "object" || Array.isArray(params.arguments)) return failure(message.id, -32602, "Unknown tool or invalid arguments");
+      if (!hasOnlyKeys(params, ["name", "arguments"]) || typeof params.name !== "string" || !TOOL_NAMES.has(params.name) || !params.arguments || typeof params.arguments !== "object" || Array.isArray(params.arguments)) return failure(message.id, -32602, "Unknown tool or invalid arguments");
       const args = { ...(params.arguments as Record<string, unknown>) };
       const approvalToken = typeof args.approvalToken === "string" ? args.approvalToken : undefined;
+      if (args.approvalToken !== undefined && !approvalToken) return failure(message.id, -32602, "Approval token must be a string");
+      if (approvalToken && (!MUTATION_TOOLS.has(params.name) || args.dryRun === true)) return failure(message.id, -32602, "Approval token is not accepted for this call");
       delete args.approvalToken;
       const result = await this.executor.execute(params.name, args, approvalToken, "mcp-client");
       return success(message.id, { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: !result.ok });
