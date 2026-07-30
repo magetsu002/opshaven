@@ -28,7 +28,9 @@ async function assertParentChain(filePath: string, runtimeUid: number): Promise<
   while (current !== "/") {
     const stat = await fs.lstat(current).catch(() => null);
     if (!stat || !stat.isDirectory() || stat.isSymbolicLink()) throw new OpsHavenError("POLICY_DENIED", "Protected path parent substitution was detected.");
-    if ((stat.mode & 0o002) !== 0) throw new OpsHavenError("POLICY_DENIED", "Protected path parent is world writable.");
+    const worldWritable = (stat.mode & 0o002) !== 0;
+    const rootOwnedStickyDirectory = stat.uid === 0 && (stat.mode & 0o1000) !== 0;
+    if (worldWritable && !rootOwnedStickyDirectory) throw new OpsHavenError("POLICY_DENIED", "Protected path parent is world writable.");
     if (stat.uid !== 0 && stat.uid !== runtimeUid) throw new OpsHavenError("POLICY_DENIED", "Protected path parent has an unexpected owner.");
     current = path.dirname(current);
   }
