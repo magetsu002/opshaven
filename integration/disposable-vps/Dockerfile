@@ -1,9 +1,9 @@
 FROM node:22-bookworm AS build
 WORKDIR /src
-COPY package.json tsconfig.json tsconfig.build.json ./
+COPY package.json package-lock.json tsconfig.json tsconfig.build.json ./
 COPY types ./types
 COPY src ./src
-RUN npm install --ignore-scripts --no-audit --no-fund && npm run build
+RUN npm ci --ignore-scripts --no-audit --no-fund && npm run build
 
 FROM node:22-bookworm-slim
 RUN apt-get update \
