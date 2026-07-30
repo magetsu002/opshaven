@@ -20,7 +20,7 @@ COPY integration/disposable-vps/entrypoint.sh /usr/local/bin/opshaven-entrypoint
 COPY integration/disposable-vps/fixture-server.py /usr/local/bin/opshaven-fixture-server.py
 COPY integration/disposable-vps/opshaven-fixture.service /etc/systemd/system/opshaven-fixture.service
 RUN printf '%s\n' '#!/bin/sh' 'exec node /opt/opshaven/dist/src/remote/dispatcher.js "$@"' > /usr/local/bin/opshaven-dispatcher \
-  && chmod 755 /usr/local/bin/opshaven-dispatcher /usr/local/bin/opshaven-entrypoint /usr/local/bin/opshaven-fixture-server.py \
+  && chmod 755 /opt/opshaven/dist/src/remote/dispatcher.js /usr/local/bin/opshaven-dispatcher /usr/local/bin/opshaven-entrypoint /usr/local/bin/opshaven-fixture-server.py \
   && printf '%s\n' \
     'PasswordAuthentication no' \
     'KbdInteractiveAuthentication no' \
