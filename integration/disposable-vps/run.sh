@@ -133,4 +133,6 @@ node -e 'const x=JSON.parse(process.argv[1]); if(x.ok || x.error?.code!=="REMOTE
 
 LIFECYCLE="$(node "$DIR/lifecycle.mjs" "$GEN/local.config.json" "$GEN/commits.json")"
 node -e 'const x=JSON.parse(process.argv[1]); if(x.dryRun!=="no-change" || !x.replayRejected || !x.argumentMutationRejected || x.auditRecords < 12) process.exit(1)' "$LIFECYCLE"
-printf 'disposable-vps: shell denial, pinned host keys, signed capabilities, authenticated requests and responses, exact deployment, failed-health restoration, rollback, approval rejection, and audit verification passed\n'
+BOUNDARY="$(node "$ROOT/dist/src/cli.js" verify-boundary --config "$GEN/local.config.json" --json)"
+node -e 'const x=JSON.parse(process.argv[1]); if(!x.ok || x.assertions.some((item)=>!item.passed)) process.exit(1)' "$BOUNDARY"
+printf 'disposable-vps: shell denial, pinned host keys, signed capabilities, authenticated requests and responses, confinement, boundary verification, exact deployment, failed-health restoration, rollback, approval rejection, and audit verification passed\n'
