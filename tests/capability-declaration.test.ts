@@ -61,6 +61,11 @@ const privateKey = keys.privateKey.export({ type: "pkcs8", format: "pem" }) as U
 const publicKey = keys.publicKey.export({ type: "spki", format: "pem" }) as Uint8Array;
 const now = Date.parse("2026-07-30T20:00:00.000Z");
 
+function mutateLastCharacter(value: string): string {
+  const replacement = value.endsWith("A") ? "B" : "A";
+  return `${value.slice(0, -1)}${replacement}`;
+}
+
 test("capability comparison detects every declared authority expansion", () => {
   const expanded = structuredClone(declaration);
   expanded.modes.controlled.executables = ["sh", "uname"];
@@ -90,5 +95,5 @@ test("declaration binding rejects artifact, declaration, expiry, and signature c
   denied(() => verifyDeclarationBinding(config, signed, publicKey, "controlled", "b".repeat(64), capabilityDeclarationHash(declaration), now));
   denied(() => verifyDeclarationBinding(config, signed, publicKey, "controlled", "a".repeat(64), "b".repeat(64), now));
   denied(() => verifyDeclarationBinding(config, signed, publicKey, "controlled", "a".repeat(64), capabilityDeclarationHash(declaration), Date.parse("2026-07-30T21:00:01.000Z")));
-  denied(() => verifyDeclarationBinding(config, { ...signed, signature: `${signed.signature.slice(0, -1)}A` }, publicKey, "controlled", "a".repeat(64), capabilityDeclarationHash(declaration), now));
+  denied(() => verifyDeclarationBinding(config, { ...signed, signature: mutateLastCharacter(signed.signature) }, publicKey, "controlled", "a".repeat(64), capabilityDeclarationHash(declaration), now));
 });
