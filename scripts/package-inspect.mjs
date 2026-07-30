@@ -5,6 +5,7 @@ const expectedBins = {
   opshaven: "dist/src/cli.js",
   "opshaven-mcp": "dist/src/index.js",
   "opshaven-dispatcher": "dist/src/remote/dispatcher.js",
+  "opshaven-readonly-dispatcher": "dist-readonly/src/remote/read-only-dispatcher.js",
 };
 const failures = [];
 if (pkg.name !== "opshaven") failures.push("package name must be opshaven");
@@ -17,9 +18,11 @@ for (const [name, file] of Object.entries(expectedBins)) {
   const stat = await fs.stat(file).catch(() => null);
   if (!stat?.isFile()) failures.push(`${name}: built entrypoint is missing`);
 }
+const isolatedSource = await fs.readFile("src/remote/read-only-dispatcher.ts", "utf8");
+if (/(?:mutations|authorization|approval|sudo|docker)/i.test(isolatedSource)) failures.push("read-only dispatcher imports a privileged capability");
 if (failures.length) {
   console.error(failures.join("\n"));
   process.exitCode = 1;
 } else {
-  console.log("package: metadata and built entrypoints verified");
+  console.log("package: metadata, isolated target, and built entrypoints verified");
 }

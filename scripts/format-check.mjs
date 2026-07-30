@@ -2,7 +2,15 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 const roots = ["src", "tests", "scripts", "docs", "integration", "examples"];
-const rootFiles = ["README.md", "RELEASE_NOTES.md", "package.json", "package-lock.json", "tsconfig.json", "tsconfig.build.json"];
+const rootFiles = [
+  "README.md",
+  "RELEASE_NOTES.md",
+  "package.json",
+  "package-lock.json",
+  "tsconfig.json",
+  "tsconfig.build.json",
+  "tsconfig.readonly.json",
+];
 const files = [];
 
 async function walk(root) {

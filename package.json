@@ -7,17 +7,20 @@
   "bin": {
     "opshaven": "dist/src/cli.js",
     "opshaven-mcp": "dist/src/index.js",
-    "opshaven-dispatcher": "dist/src/remote/dispatcher.js"
+    "opshaven-dispatcher": "dist/src/remote/dispatcher.js",
+    "opshaven-readonly-dispatcher": "dist-readonly/src/remote/read-only-dispatcher.js"
   },
   "engines": {
     "node": ">=22.0.0"
   },
   "scripts": {
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist dist-readonly",
     "format:check": "node scripts/format-check.mjs",
     "lint": "node scripts/lint.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "build:main": "tsc -p tsconfig.build.json",
+    "build:readonly": "tsc -p tsconfig.readonly.json",
+    "build": "npm run clean && npm run build:main && npm run build:readonly",
     "test": "npm run build && node --test dist/tests/*.test.js",
     "start": "node dist/src/index.js",
     "check": "npm run lint && npm run typecheck && npm test",

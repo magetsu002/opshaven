@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist-readonly",
+    "noEmit": false,
+    "declaration": true,
+    "sourceMap": true
+  },
+  "files": ["types/node-shim.d.ts", "src/remote/read-only-dispatcher.ts"],
+  "include": [],
+  "exclude": ["dist", "dist-readonly", "node_modules", "tests"]
+}
