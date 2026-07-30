@@ -3,10 +3,12 @@ import { OpsHavenError, errorMessage } from "../core/errors.js";
 import type { OperationName } from "../policy/operations.js";
 import type { JsonValue } from "../security/canonical.js";
 import { parseDispatcherRequest, type DispatcherRequest, type DispatcherResponse } from "./protocol.js";
+import { requireHost } from "./runtime.js";
 
 export type DispatcherHandler = (
   request: DispatcherRequest,
-  config: OpsHavenConfig
+  config: OpsHavenConfig,
+  dispatcherHostId: string
 ) => Promise<JsonValue>;
 
 export type DispatcherHandlers = Readonly<Partial<Record<OperationName, DispatcherHandler>>>;
@@ -36,10 +38,13 @@ function failure(requestId: string, error: unknown): DispatcherResponse {
 export class Dispatcher {
   readonly #config: OpsHavenConfig;
   readonly #handlers: DispatcherHandlers;
+  readonly #hostId: string;
 
-  public constructor(config: OpsHavenConfig, handlers: DispatcherHandlers) {
+  public constructor(config: OpsHavenConfig, handlers: DispatcherHandlers, hostId: string) {
+    requireHost(config, hostId);
     this.#config = config;
     this.#handlers = Object.freeze({ ...handlers });
+    this.#hostId = hostId;
   }
 
   public async handle(value: unknown): Promise<DispatcherResponse> {
@@ -51,7 +56,7 @@ export class Dispatcher {
       if (handler === undefined) {
         throw new OpsHavenError("POLICY_DENIED", "Operation is not implemented by this dispatcher");
       }
-      const data = await handler(request, this.#config);
+      const data = await handler(request, this.#config, this.#hostId);
       return { version: 1, requestId, ok: true, data };
     } catch (error) {
       return failure(requestId, error);

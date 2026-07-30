@@ -30,7 +30,7 @@ describe("forced-command dispatcher", () => {
   });
 
   it("fails closed when a fixed handler is absent", async () => {
-    const response = await new Dispatcher(config, {}).handle(request);
+    const response = await new Dispatcher(config, {}, "demo-host").handle(request);
     assert.equal(response.ok, false);
     if (!response.ok) assert.equal(response.error.code, "POLICY_DENIED");
   });
@@ -39,7 +39,7 @@ describe("forced-command dispatcher", () => {
     const handlers = {
       get_host_summary: async () => ({ kernel: "generic" })
     } as const;
-    const dispatcher = new Dispatcher(config, handlers);
+    const dispatcher = new Dispatcher(config, handlers, "demo-host");
     const response = await dispatcher.handle(request);
     assert.equal(response.ok, true);
   });

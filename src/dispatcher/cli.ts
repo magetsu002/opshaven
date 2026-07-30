@@ -14,7 +14,9 @@ async function main(): Promise<void> {
   const configPath = process.env["OPSHAVEN_DISPATCH_CONFIG"] ?? "/etc/opshaven/dispatcher.json";
   if (!configPath.startsWith("/")) throw new OpsHavenError("CONFIG_INVALID", "Dispatcher config path must be absolute");
   const config = await loadConfig(configPath);
-  const dispatcher = new Dispatcher(config, DISPATCHER_HANDLERS);
+  const hostId = process.env["OPSHAVEN_HOST_ID"];
+  if (hostId === undefined) throw new OpsHavenError("CONFIG_INVALID", "OPSHAVEN_HOST_ID is required");
+  const dispatcher = new Dispatcher(config, DISPATCHER_HANDLERS, hostId);
   const request = await readSingleJsonLine(process.stdin);
   process.stdout.write(`${JSON.stringify(await dispatcher.handle(request))}\n`);
 }

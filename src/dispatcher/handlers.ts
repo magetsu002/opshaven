@@ -1,3 +1,6 @@
+import { createCoreHandlers } from "./core-handlers.js";
 import type { DispatcherHandlers } from "./dispatcher.js";
 
-export const DISPATCHER_HANDLERS: DispatcherHandlers = Object.freeze({});
+export const DISPATCHER_HANDLERS: DispatcherHandlers = Object.freeze({
+  ...createCoreHandlers()
+});
