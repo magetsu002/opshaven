@@ -5,14 +5,14 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { ApprovalService } from "../src/approval.js";
-import { parseConfig, loadConfig } from "../src/config.js";
+import { loadConfig, parseConfig } from "../src/config.js";
 import { OpsHavenError } from "../src/errors.js";
 import { OperationService } from "../src/operations.js";
 import type { ResolvedOperation } from "../src/policy.js";
 import { verifyAndConsumeRemoteAuthorization } from "../src/remote/authorization.js";
 import { dispatch } from "../src/remote/dispatcher.js";
+import { validateRemoteRequest, type RemoteRequest } from "../src/remote/protocol.js";
 import { FixedCommandRunner } from "../src/remote/runner.js";
-import type { RemoteRequest } from "../src/remote/protocol.js";
 
 async function root(): Promise<string> { return await fs.mkdtemp(path.join(tmpdir(), "opshaven-adversarial-")); }
 async function approvalFixture() {
@@ -49,6 +49,17 @@ test("forced dispatcher rejects any original SSH command", async () => {
   const response = await dispatch(["node", "dispatcher.js", "--config", "/unused"], "id");
   assert.equal(response.ok, false);
   if (!response.ok) assert.equal(response.error.code, "POLICY_DENIED");
+});
+
+test("remote requests are independently normalized against trusted policy and limits", async () => {
+  const { config } = await approvalFixture();
+  const base: RemoteRequest = { version: 1, requestId: "bounded-1", operation: "get_service_status", resourceId: "svc.web", args: { resourceId: "svc.web" }, limits: config.limits };
+  const normalized = validateRemoteRequest(config, base);
+  assert.deepEqual(normalized.args, { resourceId: "svc.web" });
+  assert.deepEqual(normalized.limits, config.limits);
+  assert.throws(() => validateRemoteRequest(config, { ...base, limits: { ...config.limits, maxBytes: config.limits.maxBytes + 1 } }), (error: unknown) => error instanceof OpsHavenError && error.code === "POLICY_DENIED");
+  assert.throws(() => validateRemoteRequest(config, { ...base, operation: "get_redacted_logs", args: { resourceId: "svc.web", lines: 1000000, sinceMinutes: 60 } }), (error: unknown) => error instanceof OpsHavenError && error.code === "INVALID_ARGUMENTS");
+  assert.throws(() => validateRemoteRequest(config, { ...base, operation: "get_state_fingerprint", args: { resourceId: "svc.web", dryRun: false } }), (error: unknown) => error instanceof OpsHavenError && error.code === "POLICY_DENIED");
 });
 
 test("configuration symlinks fail closed", async () => {

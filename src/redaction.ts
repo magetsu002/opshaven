@@ -12,6 +12,7 @@ const RULES: readonly RegExp[] = [
   /\b(?:authorization|cookie|set-cookie|x-api-key|api[_-]?key|token|secret|password|passwd|client_secret)\s*[:=]\s*[^\s,;]+/gi,
   /\b(?:https?|postgres(?:ql)?|mysql|redis):\/\/[^\s/@:]+:[^\s/@]+@[^\s]+/gi,
   /([?&](?:token|key|secret|password|signature|sig)=)[^&#\s]+/gi,
+  /\b(?:https?|postgres(?:ql)?|mysql|redis):\/\/[^\s"'<>]+/gi,
   /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
   /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,
 ];
@@ -50,7 +51,11 @@ export function sanitizeOutput(input: string | Uint8Array, limits: OutputLimits,
     for (const fingerprint of configuredFingerprints) {
       if (fingerprint.length < 8) continue;
       const tokens = safeLine.split(/([^A-Za-z0-9_./+=-]+)/);
-      safeLine = tokens.map((token) => fingerprintSecret(token) === fingerprint.toLowerCase() ? "[REDACTED]" : token).join("");
+      safeLine = tokens.map((token) => {
+        if (fingerprintSecret(token) !== fingerprint.toLowerCase()) return token;
+        redactions += 1;
+        return "[REDACTED]";
+      }).join("");
     }
     const next = `${safeLine}\n`;
     const nextBytes = Buffer.byteLength(next, "utf8");

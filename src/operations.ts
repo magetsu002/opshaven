@@ -1,10 +1,10 @@
 import { randomBytes } from "node:crypto";
-import { AuditLog } from "./audit.js";
 import { ApprovalService, operationDigest, type RemoteAuthorization } from "./approval.js";
+import { AuditLog } from "./audit.js";
 import { sha256 } from "./canonical.js";
 import type { HostResource, OpsHavenConfig } from "./config.js";
 import { asOpsHavenError, OpsHavenError } from "./errors.js";
-import { PolicyEngine, type OperationName, type ResolvedOperation } from "./policy.js";
+import { PolicyEngine, type ResolvedOperation } from "./policy.js";
 import { sanitizeOutput } from "./redaction.js";
 import type { RemoteRequest, RemoteResponse } from "./remote/protocol.js";
 import { SshTransport } from "./transport/ssh.js";
@@ -53,14 +53,14 @@ export class OperationService {
     if (!host || host.kind !== "host") throw new OpsHavenError("CONFIG_INVALID", "Resolved host is invalid.");
     return host;
   }
-  private request(operation: ResolvedOperation, override?: RemoteRequest["operation"], authorization?: RemoteAuthorization): RemoteRequest {
-    return { version: 1, requestId: randomBytes(12).toString("hex"), operation: override ?? operation.operation, resourceId: operation.resourceId, args: operation.args, limits: operation.limits, ...(authorization ? { authorization } : {}) };
+  private request(operation: ResolvedOperation, authorization?: RemoteAuthorization): RemoteRequest {
+    return { version: 1, requestId: randomBytes(12).toString("hex"), operation: operation.operation, resourceId: operation.resourceId, args: operation.args, limits: operation.limits, ...(authorization ? { authorization } : {}) };
   }
 
   async planMutation(operationName: string, args: unknown): Promise<ResolvedOperation> {
     const initial = this.policy.resolve(operationName, args);
     if (!initial.mutation || initial.dryRun) throw new OpsHavenError("APPROVAL_INVALID", "Only non-dry-run mutations require a plan.");
-    const stateRequest = this.request(initial, "get_state_fingerprint");
+    const stateRequest: RemoteRequest = { version: 1, requestId: randomBytes(12).toString("hex"), operation: "get_state_fingerprint", resourceId: initial.resourceId, args: Object.freeze({ resourceId: initial.resourceId }), limits: initial.limits };
     const state = await this.transport.execute(this.host(initial.hostId), stateRequest);
     if (!state.ok) throw new OpsHavenError("REMOTE_OPERATION_FAILED", state.error.message, state.error.retryable);
     return this.policy.resolve(operationName, args, sha256(state.data));
@@ -81,7 +81,7 @@ export class OperationService {
         approvalDigest = consumed.digest;
         authorization = consumed.authorization;
       }
-      const remoteRequest = this.request(resolved, undefined, authorization);
+      const remoteRequest = this.request(resolved, authorization);
       const response = await this.transport.execute(this.host(resolved.hostId), remoteRequest);
       if (!response.ok) throw new OpsHavenError("REMOTE_OPERATION_FAILED", response.error.message, response.error.retryable, { remoteCode: response.error.code });
       const safe = sanitizeValue(response.data, this.config);

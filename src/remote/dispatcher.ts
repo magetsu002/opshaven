@@ -2,10 +2,10 @@
 import { createHash } from "node:crypto";
 import { loadConfig } from "../config.js";
 import { asOpsHavenError, OpsHavenError } from "../errors.js";
-import { FixedCommandRunner } from "./runner.js";
 import { handleInspection } from "./handlers.js";
 import { handleMutation } from "./mutations.js";
-import { parseRemoteRequest, type RemoteFailure, type RemoteSuccess } from "./protocol.js";
+import { parseRemoteRequest, validateRemoteRequest, type RemoteFailure, type RemoteSuccess } from "./protocol.js";
+import { FixedCommandRunner } from "./runner.js";
 
 async function readBoundedInput(maxBytes = 65536): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
@@ -34,7 +34,7 @@ export async function dispatch(argv = process.argv, originalCommand = process.en
     const config = await loadConfig(configPath(argv));
     const raw = await readBoundedInput();
     if (raw.split(/\r?\n/).filter(Boolean).length !== 1) throw new OpsHavenError("REMOTE_PROTOCOL_INVALID", "Exactly one request envelope is required.");
-    const request = parseRemoteRequest(JSON.parse(raw) as unknown);
+    const request = validateRemoteRequest(config, parseRemoteRequest(JSON.parse(raw) as unknown));
     requestId = request.requestId;
     const context = { config, runner: new FixedCommandRunner() };
     const data = request.operation === "restart_service" || request.operation === "deploy_commit" || request.operation === "rollback_deployment" ? await handleMutation(context, request) : await handleInspection(context, request);
