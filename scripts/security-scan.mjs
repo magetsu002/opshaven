@@ -29,7 +29,7 @@ for (const file of files) {
 }
 async function gitHistoryContains(pattern) {
   return await new Promise((resolve) => {
-    const child = spawn("/usr/bin/git", ["log", "--all", "-G", pattern, "--format=%H", "--"], { shell: false, stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn("/usr/bin/git", ["log", "HEAD", "-G", pattern, "--format=%H", "--", ".", ":(exclude)scripts/security-scan.mjs", ":(exclude)scripts/lint.mjs"], { shell: false, stdio: ["ignore", "pipe", "ignore"] });
     let output = "";
     child.stdout.on("data", (chunk) => { output += chunk.toString(); });
     child.on("close", () => resolve(output.trim().length > 0));

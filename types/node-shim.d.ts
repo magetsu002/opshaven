@@ -6,6 +6,7 @@ declare const process: {
   stderr: NodeJS.WritableStream & { write(chunk: string | Uint8Array): boolean };
   exitCode?: number;
   pid: number;
+  execPath: string;
   versions?: { node?: string };
   cwd(): string;
   on(event: string, listener: (...args: unknown[]) => void): void;
