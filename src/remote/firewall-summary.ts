@@ -24,11 +24,16 @@ export interface FirewallSummary {
   truncated: boolean;
 }
 
-function policy(value: string | undefined, routed = false): FirewallSummary["defaults"]["incoming"] | "disabled" {
+function policy(value: string | undefined): FirewallSummary["defaults"]["incoming"] {
   const normalized = value?.trim().toLowerCase();
   if (normalized === "allow" || normalized === "deny" || normalized === "reject") return normalized;
-  if (routed && normalized === "disabled") return "disabled";
   return "unknown";
+}
+
+function routedPolicy(value: string | undefined): FirewallSummary["defaults"]["routed"] {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "disabled") return "disabled";
+  return policy(value);
 }
 
 export function parseUfwSummary(
@@ -63,7 +68,7 @@ export function parseUfwSummary(
     if (defaultMatch) {
       defaults.incoming = policy(defaultMatch[1]);
       defaults.outgoing = policy(defaultMatch[2]);
-      defaults.routed = policy(defaultMatch[3], true);
+      defaults.routed = routedPolicy(defaultMatch[3]);
       parsedLines += 1;
       continue;
     }
