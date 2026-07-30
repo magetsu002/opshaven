@@ -1,6 +1,6 @@
 FROM node:22-bookworm AS build
 WORKDIR /src
-COPY package.json package-lock.json tsconfig.json tsconfig.build.json ./
+COPY package.json package-lock.json tsconfig.json tsconfig.build.json tsconfig.readonly.json ./
 COPY types ./types
 COPY src ./src
 RUN npm ci --ignore-scripts --no-audit --no-fund && npm run build
