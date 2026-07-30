@@ -1,6 +1,7 @@
 import { sanitizeOutput, type OutputLimits } from "../redaction.js";
 
 export interface FirewallSummary {
+  [key: string]: unknown;
   provider: "ufw";
   status: "active" | "inactive" | "unknown";
   logging: "on" | "off" | "unknown";
