@@ -16,6 +16,7 @@ export type HostConfig = Readonly<{
   knownHostsFile: string;
   hostKeySha256: string;
   dispatcherCommand: "opshaven-dispatch";
+  firewallProvider: "ufw" | "nftables";
 }>;
 
 export type ApplicationConfig = Readonly<{
@@ -198,13 +199,30 @@ function stringList(value: unknown, context: string, parser: (item: unknown, ite
 function parseHost(value: unknown, index: number): HostConfig {
   const context = `hosts[${index}]`;
   const item = object(value, context);
-  exact(item, ["id", "address", "port", "username", "identityFile", "knownHostsFile", "hostKeySha256", "dispatcherCommand"], context);
+  exact(
+    item,
+    [
+      "id",
+      "address",
+      "port",
+      "username",
+      "identityFile",
+      "knownHostsFile",
+      "hostKeySha256",
+      "dispatcherCommand",
+      "firewallProvider"
+    ],
+    context
+  );
   const fingerprint = string(item.hostKeySha256, `${context}.hostKeySha256`);
   if (!SHA256_FINGERPRINT.test(fingerprint)) {
     throw new OpsHavenError("CONFIG_INVALID", `${context}.hostKeySha256 must be an SHA256 fingerprint`);
   }
   if (item.dispatcherCommand !== "opshaven-dispatch") {
     throw new OpsHavenError("CONFIG_INVALID", `${context}.dispatcherCommand must be opshaven-dispatch`);
+  }
+  if (item.firewallProvider !== "ufw" && item.firewallProvider !== "nftables") {
+    throw new OpsHavenError("CONFIG_INVALID", `${context}.firewallProvider must be ufw or nftables`);
   }
   return {
     id: id(item.id, `${context}.id`),
@@ -214,7 +232,8 @@ function parseHost(value: unknown, index: number): HostConfig {
     identityFile: absolutePath(item.identityFile, `${context}.identityFile`),
     knownHostsFile: absolutePath(item.knownHostsFile, `${context}.knownHostsFile`),
     hostKeySha256: fingerprint,
-    dispatcherCommand: "opshaven-dispatch"
+    dispatcherCommand: "opshaven-dispatch",
+    firewallProvider: item.firewallProvider
   };
 }
 

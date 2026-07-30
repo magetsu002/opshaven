@@ -14,7 +14,8 @@ const host: HostConfig = {
   identityFile: "/tmp/id",
   knownHostsFile: "/tmp/known_hosts",
   hostKeySha256: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-  dispatcherCommand: "opshaven-dispatch"
+  dispatcherCommand: "opshaven-dispatch",
+  firewallProvider: "ufw"
 };
 
 const operation: ResolvedOperation = {
