@@ -17,17 +17,11 @@ function validateStat(stat: any, label: string, policy: FilePolicy): void {
 }
 
 async function openReadOnly(filePath: string, label: string, policy: FilePolicy): Promise<any> {
-  let before: any;
-  try { before = await fs.lstat(filePath); }
-  catch { throw failure(label, policy); }
-  validateStat(before, label, policy);
   let handle: any;
   try { handle = await fs.open(filePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); }
   catch { throw failure(label, policy); }
   try {
-    const after = await handle.stat();
-    validateStat(after, label, policy);
-    if (before.dev !== after.dev || before.ino !== after.ino) throw failure(label, policy);
+    validateStat(await handle.stat(), label, policy);
     return handle;
   } catch (error) {
     await handle.close().catch(() => undefined);
