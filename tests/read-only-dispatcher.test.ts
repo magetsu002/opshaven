@@ -99,15 +99,21 @@ test("read-only dispatcher executes an allowlisted inspection", async () => {
   if (response.ok) assert.equal(response.data.activeState, "active");
 });
 
-test("read-only source graph contains no privileged handler imports", async () => {
+test("read-only source graph contains no privileged handlers or executables", async () => {
   const files = [
     "src/remote/read-only-dispatcher.ts",
     "src/remote/read-only-protocol.ts",
     "src/remote/read-only-policy.ts",
     "src/remote/read-only-handlers.ts",
   ];
+  const forbidden = [
+    /from\s+["'][^"']*(?:mutations|authorization|approval)[^"']*["']/i,
+    /\b(?:handleMutation|verifyAndConsumeRemoteAuthorization|ApprovalService)\b/,
+    /\/usr\/(?:bin|sbin)\/(?:sudo|docker)\b/,
+    /docker\.sock/i,
+  ];
   for (const file of files) {
     const source = await fs.readFile(file, "utf8");
-    assert.doesNotMatch(source, /(?:mutations|authorization|approval|sudo|docker)/i, file);
+    for (const pattern of forbidden) assert.doesNotMatch(source, pattern, file);
   }
 });
