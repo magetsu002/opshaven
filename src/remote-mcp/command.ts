@@ -4,6 +4,7 @@ import { OperationService } from "../operations.js";
 import { OidcPrincipalVerifier } from "./auth.js";
 import { loadRemoteMcpConfig } from "./config.js";
 import { StreamableHttpServer } from "./http.js";
+import { RemoteAdmissionController } from "./limits.js";
 import { RemoteSessionManager } from "./sessions.js";
 
 export interface RemoteServeFlags {
@@ -27,11 +28,21 @@ export async function runRemoteServe(config: OpsHavenConfig, configPath: string,
     verifier: new OidcPrincipalVerifier(remote),
     boundary,
     sessionManager: new RemoteSessionManager(remote),
+    admission: new RemoteAdmissionController(remote),
+    limits: {
+      maximumBodyBytes: remote.requests.maximumBodyBytes,
+      maximumHeaderBytes: remote.requests.maximumHeaderBytes,
+      maximumHeaders: remote.requests.maximumHeaders,
+      maximumJsonDepth: remote.requests.maximumJsonDepth,
+      maximumJsonNodes: remote.requests.maximumJsonNodes,
+      maximumResponseBytes: remote.requests.maximumResponseBytes,
+      timeoutMs: remote.requests.timeoutMs,
+      maximumConnections: remote.requests.globalConcurrency + remote.requests.maximumQueue,
+    },
     bindHost: remote.bindHost,
     port: remote.port,
     path: remote.path,
     unsafeAllowNonLoopback: flags.unsafeAllowNonLoopback,
-    maxBodyBytes: remote.requests.maximumBodyBytes,
   });
   const started = await transport.start();
   process.stdout.write(`${JSON.stringify({ ok: true, transport: "streamable-http", url: started.url, authentication: "oidc-bearer", remoteCapability: "read-only" })}\n`);
