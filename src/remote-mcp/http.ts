@@ -84,12 +84,14 @@ function validateModernEnvelope(message: unknown, headers: Readonly<Record<strin
   if (!method) return "Malformed MCP request.";
   const bodyVersion = protocolFromMessage(message);
   if (bodyVersion !== CURRENT_MCP_PROTOCOL) return "Missing or incompatible MCP request metadata.";
-  if (!plain(message) || !plain(message.params) || !plain(message.params._meta["io.modelcontextprotocol/clientCapabilities"])) return "Missing or incompatible MCP request metadata.";
+  if (!plain(message) || !plain(message.params) || !plain(message.params._meta)) return "Missing or incompatible MCP request metadata.";
+  const meta = message.params._meta;
+  if (!plain(meta["io.modelcontextprotocol/clientCapabilities"])) return "Missing or incompatible MCP request metadata.";
   const methodHeader = headerValue(headers["mcp-method"]);
   if (methodHeader !== method) return "MCP method header does not match the request.";
   const nameHeader = headerValue(headers["mcp-name"]);
   if (method === "tools/call") {
-    const name = plain(message.params) && typeof message.params.name === "string" ? message.params.name : undefined;
+    const name = typeof message.params.name === "string" ? message.params.name : undefined;
     if (!name || nameHeader !== name) return "MCP name header does not match the request.";
   } else if (nameHeader !== undefined) return "MCP name header is not valid for this request.";
   return undefined;
