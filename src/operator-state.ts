@@ -53,6 +53,8 @@ export interface OperatorStateSnapshot {
   setupPath: string | null;
 }
 
+type LocalCommand = "git" | "ssh-keygen";
+
 const MAX_OUTPUT = 65536;
 const HOST = /^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|[0-9A-Fa-f:]+)$/;
 const USER = /^[a-z_][a-z0-9_-]{0,31}$/;
@@ -105,8 +107,9 @@ function packageRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 }
 
-async function run(command: string, args: readonly string[], cwd?: string): Promise<{ code: number | null; stdout: string }> {
-  const child = spawn(command, args, {
+async function run(command: LocalCommand, args: readonly string[], cwd?: string): Promise<{ code: number | null; stdout: string }> {
+  const executable = command === "git" ? "/usr/bin/git" : "/usr/bin/ssh-keygen";
+  const child = spawn(executable, args, {
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],
     ...(cwd ? { cwd } : {}),
@@ -194,7 +197,7 @@ async function ensureKeys(paths: Paths): Promise<void> {
   if (restrictedPrivate !== restrictedPublic) throw new OpsHavenError("CONFIG_INVALID", "Restricted SSH key state is incomplete.");
   if (!restrictedPrivate) {
     try {
-      const result = await run("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "opshaven-restricted", "-f", paths.restrictedPrivate]);
+      const result = await run("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "opshaven-restricted", "-f", paths.restrictedPrivate]);
       if (result.code !== 0) throw new Error("failed");
     } catch {
       throw new OpsHavenError("CONFIG_INVALID", "OpenSSH key generation is unavailable.");
@@ -237,7 +240,7 @@ async function sourceSha(args: readonly string[]): Promise<string> {
   const supplied = flag(args, "--source-sha") ?? process.env.OPSHAVEN_SOURCE_SHA;
   if (supplied && SHA.test(supplied)) return supplied;
   try {
-    const result = await run("/usr/bin/git", ["rev-parse", "HEAD"], packageRoot());
+    const result = await run("git", ["rev-parse", "HEAD"], packageRoot());
     const discovered = result.stdout.trim();
     if (result.code === 0 && SHA.test(discovered)) return discovered;
   } catch {}
