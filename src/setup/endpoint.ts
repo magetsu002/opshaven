@@ -3,6 +3,7 @@ import path from "node:path";
 import { loadConfig } from "../config.js";
 import { OpsHavenError } from "../errors.js";
 import { parseRemoteMcpConfig, remoteConfigPath, type EnabledRemoteMcpConfig } from "../remote-mcp/config.js";
+import { readRegularTextFile } from "../safe-fs.js";
 import { readRemoteCertification } from "./certify.js";
 import type { RemoteSetupConfig } from "./remote.js";
 
@@ -17,7 +18,8 @@ export interface EndpointHandoffReceipt {
   readonly externalStatus: number | null;
 }
 
-export interface EndpointVerificationRuntime {
+export interface EndpointHandoffRuntime {
+  certification(setup: RemoteSetupConfig): Promise<{ certified: boolean; boundarySha256: string | null; sourceSha: string | null }>;
   verify(url: string): Promise<{ status: number; body: string; headers: Record<string, string> }>;
 }
 
@@ -54,8 +56,9 @@ function validateEndpointConfig(config: EnabledRemoteMcpConfig, external: URL): 
   if (config.requests.maximumBodyBytes > config.requests.maximumResponseBytes * 4) throw new OpsHavenError("CONFIG_INVALID", "Request and response bounds are disproportionate.");
 }
 
-function defaultRuntime(): EndpointVerificationRuntime {
+function defaultRuntime(): EndpointHandoffRuntime {
   return {
+    certification: async (setup) => await readRemoteCertification(setup),
     verify: async (url) => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 15000);
@@ -94,13 +97,17 @@ export async function exposeEndpoint(
   endpointConfigPath: string,
   externalValue: string,
   verifyExternal: boolean,
-  injected?: EndpointVerificationRuntime,
+  injected?: EndpointHandoffRuntime,
 ): Promise<EndpointHandoffReceipt> {
-  const certification = await readRemoteCertification(setup);
+  const runtime = injected ?? defaultRuntime();
+  const certification = await runtime.certification(setup);
   if (!certification.certified || !certification.boundarySha256) throw new OpsHavenError("POLICY_DENIED", "Endpoint setup is blocked until exact remote boundary certification passes.");
   let raw: unknown;
-  try { raw = JSON.parse(await fs.readFile(endpointConfigPath, "utf8")) as unknown; }
-  catch { throw new OpsHavenError("CONFIG_INVALID", "Endpoint companion configuration is invalid JSON."); }
+  try { raw = JSON.parse(await readRegularTextFile(endpointConfigPath, "Endpoint companion configuration", { ownerOnly: true, maxBytes: 262144, code: "CONFIG_INVALID" })) as unknown; }
+  catch (error) {
+    if (error instanceof OpsHavenError) throw error;
+    throw new OpsHavenError("CONFIG_INVALID", "Endpoint companion configuration is invalid JSON.");
+  }
   const policy = await loadConfig(setup.policyConfigPath);
   const parsed = parseRemoteMcpConfig(raw, policy);
   if (!parsed.enabled) throw new OpsHavenError("CONFIG_INVALID", "Endpoint companion configuration must explicitly enable remote MCP.");
@@ -110,7 +117,7 @@ export async function exposeEndpoint(
   let externalStatus: number | null = null;
   let status: "prepared" | "verified" = "prepared";
   if (verifyExternal) {
-    const result = await (injected ?? defaultRuntime()).verify(external.toString());
+    const result = await runtime.verify(external.toString());
     externalStatus = result.status;
     const anonymousDenied = result.status === 401 || result.status === 403;
     const challengePresent = /Bearer/i.test(result.headers["www-authenticate"] ?? "") || /AUTH|TOKEN|UNAUTHORIZED/i.test(result.body);
@@ -121,12 +128,12 @@ export async function exposeEndpoint(
   return Object.freeze({ ok: true, status, localUrl: `http://${parsed.bindHost === "::1" ? "[::1]" : parsed.bindHost}:${parsed.port}${parsed.path}`, externalUrl: external.toString(), authentication: "oidc-bearer", boundarySha256: certification.boundarySha256, instructions: instructions(parsed, external), externalStatus });
 }
 
-export async function endpointStatus(setup: RemoteSetupConfig): Promise<Record<string, unknown>> {
-  const certification = await readRemoteCertification(setup);
+export async function endpointStatus(setup: RemoteSetupConfig, injected?: EndpointHandoffRuntime): Promise<Record<string, unknown>> {
+  const certification = await (injected ?? defaultRuntime()).certification(setup);
   const policy = await loadConfig(setup.policyConfigPath);
   let remote;
   try {
-    const text = await fs.readFile(remoteConfigPath(setup.policyConfigPath), "utf8");
+    const text = await readRegularTextFile(remoteConfigPath(setup.policyConfigPath), "Installed endpoint companion configuration", { ownerOnly: true, maxBytes: 262144, code: "CONFIG_INVALID" });
     remote = parseRemoteMcpConfig(JSON.parse(text) as unknown, policy);
   } catch { remote = { enabled: false } as const; }
   return Object.freeze({ ok: certification.certified && remote.enabled, certified: certification.certified, boundarySha256: certification.boundarySha256, sourceSha: certification.sourceSha, remoteMcp: remote.enabled ? { enabled: true, bindHost: remote.bindHost, port: remote.port, path: remote.path, oauthIssuer: remote.oauth.issuer, profiles: remote.profiles.map((item) => item.id) } : { enabled: false } });
