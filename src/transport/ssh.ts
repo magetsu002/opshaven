@@ -71,10 +71,12 @@ export class SshTransport {
     return await this.trustPromise;
   }
 
-  async execute(host: HostResource, request: RemoteRequest): Promise<RemoteResponse> {
+  async execute(host: HostResource, request: RemoteRequest, signal?: AbortSignal): Promise<RemoteResponse> {
+    if (signal?.aborted) throw new OpsHavenError("TIMEOUT", "SSH operation was cancelled.", true);
     await verifyRegularFile(host.identityFile, "SSH identity", { ownerOnly: true, maxBytes: 65536, code: "SSH_FAILED" });
     await verifyRegularFile(host.knownHostsFile, "SSH known-hosts file", { maxBytes: 1048576, code: "SSH_HOST_KEY_FAILED" });
     const trust = await this.trust();
+    if (signal?.aborted) throw new OpsHavenError("TIMEOUT", "SSH operation was cancelled.", true);
     const authenticated = trust ? createAuthenticatedRequest(request, trust.capability, trust.requestPrivateKey) : undefined;
     const payload = `${JSON.stringify(authenticated?.envelope ?? request)}\n`;
     if (Buffer.byteLength(payload, "utf8") > 65536) throw new OpsHavenError("OUTPUT_LIMIT", "Remote request exceeds the protocol limit.");
@@ -85,11 +87,19 @@ export class SshTransport {
       let bytes = 0;
       let lines = 0;
       let settled = false;
+      const cleanup = (): void => signal?.removeEventListener("abort", abort);
       const finishReject = (error: OpsHavenError): void => {
         if (settled) return;
         settled = true;
+        cleanup();
         reject(error);
       };
+      const abort = (): void => {
+        child.kill("SIGKILL");
+        finishReject(new OpsHavenError("TIMEOUT", "SSH operation was cancelled.", true));
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) { abort(); return; }
       const consume = (chunk: Uint8Array, collect: Uint8Array[]): void => {
         bytes += chunk.length;
         lines += Buffer.from(chunk).toString("utf8").split("\n").length - 1;
@@ -128,6 +138,7 @@ export class SshTransport {
             ? verifyAuthenticatedResponse(parsed, authenticated.requestHash, request.requestId, trust.capability, trust.responsePublicKey)
             : parseRemoteResponse(parsed, request.requestId);
           settled = true;
+          cleanup();
           resolve(response);
         } catch (error) {
           finishReject(error instanceof OpsHavenError ? error : new OpsHavenError("REMOTE_PROTOCOL_INVALID", "Remote response was not valid JSON."));
