@@ -31,9 +31,32 @@ OpsHaven does not ask you to trust the project author with your server.
 - Sensitive sources are summarized, bounded, and redacted before they reach the AI client.
 - Future builds declare their capabilities so authority expansion can be detected and blocked.
 - `opshaven boundary verify` tests the installed restrictions.
-- `opshaven trust-report` explains the active boundary and remaining assumptions.
+- `opshaven authorization-report` explains the active boundary and remaining assumptions.
 
 OpsHaven does not claim absolute security. The operator still trusts the VPS kernel, OpenSSH, Node.js, systemd, configured resource mappings, identity provider, proxy or tunnel, and operator-owned keys.
+
+## Executables
+
+OpsHaven intentionally separates the human interface from the protocol process:
+
+```text
+opshaven
+    Human CLI for setup, diagnostics, verification, reports, and approvals.
+
+opshaven-mcp
+    JSON-RPC MCP protocol server launched by an MCP client.
+```
+
+Use `opshaven help` in a terminal. Configure an MCP client with `opshaven-mcp`; do not run it expecting an interactive prompt.
+
+The package scripts make the same distinction:
+
+```bash
+npm run cli -- help
+npm run start:mcp -- --config /absolute/path/to/local.config.json
+```
+
+`npm start` prints human CLI help rather than starting a protocol server.
 
 ## How it works
 
@@ -49,7 +72,7 @@ Local AI client
 → audit log
 ```
 
-The default `opshaven-mcp` command remains stdio-only and starts no network listener.
+The `opshaven-mcp` command is stdio-only and starts no network listener.
 
 ### Opt-in remote MCP
 
@@ -110,7 +133,7 @@ opshaven setup remote \
   --config /absolute/path/to/remote-setup.json
 ```
 
-The setup command pins the host key, verifies the exact source head and signing key pair, installs the complete read-only runtime atomically, generates signed trust locally, keeps private operator keys off the VPS, and refuses endpoint handoff until boundary certification passes.
+The setup command pins the host key, verifies the exact source head and signing key pair, installs the complete read-only runtime atomically, generates signed authorization artifacts locally, keeps private operator keys off the VPS, and refuses endpoint handoff until boundary certification passes.
 
 ```bash
 opshaven doctor --config /absolute/path/to/local.config.json
@@ -126,7 +149,7 @@ opshaven setup remote --rollback --approve --config /absolute/path/to/remote-set
 opshaven uninstall remote --approve --config /absolute/path/to/remote-setup.json
 ```
 
-See the [setup guide](docs/setup.md) for the reviewed configuration schema and end-to-end workflow, and the [security guide](docs/security.md) for the trust model. The [architecture guide](docs/architecture.md) explains the enforcement layers in more detail.
+See the [setup guide](docs/setup.md) for the reviewed configuration schema and end-to-end workflow, and the [security guide](docs/security.md) for the security boundary. The [architecture guide](docs/architecture.md) explains the enforcement layers in more detail.
 
 ## Development
 
@@ -145,11 +168,17 @@ npm run security
 npm run reproducible:check
 ```
 
-Build and start the local stdio MCP server:
+Build and inspect the human CLI:
 
 ```bash
 npm run build
-node dist/src/index.js --config /absolute/path/to/local.config.json
+npm run cli -- help
+```
+
+Start the local stdio MCP server only when testing the protocol process:
+
+```bash
+npm run start:mcp -- --config /absolute/path/to/local.config.json
 ```
 
 The native remote command is explicit and uses the reviewed companion configuration:
