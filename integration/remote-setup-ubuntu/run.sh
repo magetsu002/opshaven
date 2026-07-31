@@ -46,6 +46,26 @@ const common = {
   limits: { timeoutMs: 15000, maxBytes: 131072, maxLines: 1000 },
   secretFingerprints: [],
 };
+const localResources = [
+  { id: "host.fixture", kind: "host", address: "127.0.0.1", port, user: "opshaven", knownHostsFile: path.join(gen, "known_hosts"), identityFile: path.join(gen, "restricted_id"), connectTimeoutMs: 5000 },
+  { id: "app.fixture", kind: "application", hostId: "host.fixture", runtimeConfigKeys: ["NODE_ENV"] },
+  { id: "svc.fixture", kind: "service", hostId: "host.fixture", unit: "ssh.service" },
+  { id: "probe.fixture", kind: "probe", hostId: "host.fixture", url: "http://127.0.0.1:18080/health", method: "GET", expectedStatus: [200], timeoutMs: 3000 },
+  { id: "dep.fixture", kind: "deployment", hostId: "host.fixture", repositoryPath: "/srv/opshaven/repository", releasesPath: "/srv/opshaven/releases", currentSymlink: "/srv/opshaven/current", allowedRefs: ["refs/heads/main"], activation: "systemd", serviceIds: ["svc.fixture"], probeIds: ["probe.fixture"], buildSteps: [], checkSteps: [], fetchBeforeDeploy: false, migrationPolicy: "none" },
+  { id: "proxy.fixture", kind: "proxy", hostId: "host.fixture", provider: "nginx", serviceId: "svc.fixture", publicNames: ["fixture.example.test"] },
+  { id: "monitor.fixture", kind: "monitoring", hostId: "host.fixture", serviceIds: ["svc.fixture"], probeIds: ["probe.fixture"] },
+  { id: "backup.fixture", kind: "backup", hostId: "host.fixture", statusFile: "/var/lib/opshaven/backup-status.json", maximumAgeHours: 24 },
+];
+const remoteResources = [
+  { id: "host.fixture", kind: "host", address: "localhost", port: 22, user: "opshaven", knownHostsFile: "/etc/opshaven/unused-known-hosts", identityFile: "/etc/opshaven/unused-identity", connectTimeoutMs: 5000 },
+  { id: "app.fixture", kind: "application", hostId: "host.fixture", runtimeConfigKeys: ["NODE_ENV"] },
+  { id: "svc.fixture", kind: "service", hostId: "host.fixture", unit: "ssh.service" },
+  { id: "probe.fixture", kind: "probe", hostId: "host.fixture", url: "http://127.0.0.1:18080/health", method: "GET", expectedStatus: [200], timeoutMs: 3000 },
+  { id: "dep.fixture", kind: "deployment", hostId: "host.fixture", repositoryPath: "/srv/opshaven/repository", releasesPath: "/srv/opshaven/releases", currentSymlink: "/srv/opshaven/current", allowedRefs: ["refs/heads/main"], activation: "systemd", serviceIds: ["svc.fixture"], probeIds: ["probe.fixture"], buildSteps: [], checkSteps: [], fetchBeforeDeploy: false, migrationPolicy: "none" },
+  { id: "proxy.fixture", kind: "proxy", hostId: "host.fixture", provider: "nginx", serviceId: "svc.fixture", publicNames: ["fixture.example.test"] },
+  { id: "monitor.fixture", kind: "monitoring", hostId: "host.fixture", serviceIds: ["svc.fixture"], probeIds: ["probe.fixture"] },
+  { id: "backup.fixture", kind: "backup", hostId: "host.fixture", statusFile: "/var/lib/opshaven/backup-status.json", maximumAgeHours: 24 },
+];
 const localConfig = {
   ...common,
   audit: { path: path.join(gen, "audit.jsonl") },
@@ -57,7 +77,7 @@ const localConfig = {
     remoteUsedDirectory: path.join(gen, "local-remote-used"),
     defaultTtlSeconds: 300,
   },
-  resources: [{ id: "host.fixture", kind: "host", address: "127.0.0.1", port, user: "opshaven", knownHostsFile: path.join(gen, "known_hosts"), identityFile: path.join(gen, "restricted_id"), connectTimeoutMs: 5000 }],
+  resources: localResources,
 };
 const remoteConfig = {
   ...common,
@@ -70,7 +90,7 @@ const remoteConfig = {
     remoteUsedDirectory: "/var/lib/opshaven/remote-used",
     defaultTtlSeconds: 300,
   },
-  resources: [{ id: "host.fixture", kind: "host", address: "localhost", port: 22, user: "opshaven", knownHostsFile: "/etc/opshaven/unused-known-hosts", identityFile: "/etc/opshaven/unused-identity", connectTimeoutMs: 5000 }],
+  resources: remoteResources,
 };
 const policyPath = path.join(gen, "config.json");
 const setup = {
