@@ -1,150 +1,177 @@
 # Operator workflow
 
-This guide describes the parts an operator runs, the material each side stores, and the checks that authorize an operation. It avoids relying on product-specific shorthand.
+OpsHaven keeps setup details behind the human CLI. A normal operator does not create policy JSON, capability files, declaration bindings, dispatcher hashes, or remote installation manifests by hand.
 
 ## Executables
 
-`opshaven` is the human command-line interface. Use it for setup, diagnostics, boundary verification, authorization reports, endpoint handoff, and controlled approvals.
+`opshaven` is the human command-line interface. Use it for initialization, remote setup, diagnostics, boundary verification, reports, endpoint handoff, and controlled approvals.
 
-`opshaven-mcp` is the stdio MCP protocol server. An MCP client launches it and exchanges JSON-RPC messages through standard input and output. It is not an interactive terminal command.
+`opshaven-mcp` is the stdio MCP protocol server launched by an MCP client. It is not an interactive terminal command.
 
-The remote dispatcher is installed under a dedicated restricted account. It is invoked only by the forced SSH command and does not provide a shell.
+## First run
 
-## What runs locally
+Build the reviewed checkout, then initialize the local operator environment:
 
-The operator machine runs:
+```bash
+npm run build
+opshaven init
+```
 
-- the `opshaven` CLI;
-- the `opshaven-mcp` protocol process for local MCP clients;
-- local policy validation;
-- request signing and response verification;
-- approval creation for controlled operations;
-- audit-chain verification;
-- remote setup, rollback, uninstall, and boundary-verification commands.
+In an interactive terminal, OpsHaven asks only for deployment facts an operator can reasonably provide:
 
-The local policy maps logical resource IDs to reviewed hosts, services, probes, deployments, and other allowed targets. AI clients never supply executable paths, SSH identities, service names, or arbitrary shell text.
+- remote hostname or IP address;
+- SSH port and administrator user;
+- administrator SSH private-key path;
+- pinned known-hosts file;
+- separately verified SHA-256 host-key fingerprint.
 
-## What runs remotely
+OpsHaven creates the protected local directories, authorization keys, restricted SSH key, local policy, remote dispatcher policy, and setup state automatically. Normal output does not reveal their internal filenames.
 
-The VPS contains:
+For reviewed non-interactive automation, the same information can be supplied as operator-facing flags:
 
-- a dedicated non-root `opshaven` account;
-- a forced-command wrapper;
-- the isolated read-only dispatcher, or the separately reviewed controlled dispatcher for local-only mutation workflows;
-- root-owned policy and signed authorization artifacts;
-- replay state and audit state;
-- a response-signing private key generated on the VPS.
+```bash
+opshaven init \
+  --non-interactive \
+  --host vps.example.test \
+  --admin-user ubuntu \
+  --admin-identity "$HOME/.ssh/vps-admin" \
+  --known-hosts "$HOME/.ssh/known_hosts" \
+  --host-key-sha256 "SHA256:verified-value" \
+  --privilege sudo-noninteractive
+```
 
-The remote account has no interactive shell. The read-only installation has no sudo rule, deployment write access, system Docker socket access, or mutation handler.
+If `opshaven init` runs without remote details in a non-interactive environment, it still prepares local keys and state. `opshaven doctor` then reports `LOCAL_INITIALIZED`, and `opshaven setup remote` explains that initialization must be completed.
 
-## Keys that stay local
+## Install the remote runtime
 
-The following private material stays on the operator machine:
+Preview the plan:
 
-- administrator SSH private key used only for installation lifecycle work;
-- restricted-account SSH private key used by the local client;
-- capability-authorization signing private key;
-- approval signing private key and approval replay secret;
-- release-signing private material;
-- OAuth client secrets, when a chosen identity-provider flow requires them.
+```bash
+opshaven setup remote --dry-run
+```
 
-OpsHaven does not upload these private keys as installation artifacts. File permissions are validated before use.
+Run the guided terminal workflow:
 
-## Material uploaded to the VPS
+```bash
+opshaven setup remote --tui
+```
 
-Remote setup uploads only the material required for independent enforcement:
+For reviewed automation, mutation approval remains explicit:
 
-- the reviewed dispatcher runtime and forced-command wrapper;
-- the remote policy containing logical resource mappings;
-- the restricted SSH public key;
-- operator public verification keys;
-- signed capability authorization;
-- the signed build capability declaration and binding;
-- installation metadata required for rollback and uninstall.
+```bash
+opshaven setup remote --non-interactive --approve
+```
 
-The VPS generates its response-signing private key locally. Only the corresponding public key is copied back to the operator machine.
+The CLI automatically locates the state created by `opshaven init`. Existing installations may continue passing `--config <setup-path>` explicitly.
 
-## Authorization flow
-
-An operation is permitted only when all applicable checks agree:
-
-1. The MCP tool and logical resource exist in the local policy.
-2. The signed capability authorization permits the operation, resource, limits, policy version, and dispatcher identity.
-3. The local process signs a bounded request containing a nonce and expiry.
-4. Restricted SSH invokes only the forced dispatcher.
-5. The dispatcher independently validates the request, policy, signatures, artifact hashes, time bounds, and replay state.
-6. Controlled mutations also require a separate short-lived approval for the exact operation and arguments.
-7. The VPS signs the bounded response.
-8. The local process verifies the response signature, request binding, dispatcher identity, and result hash.
-9. The operation is appended to the tamper-evident audit chain.
-
-Failure at any step blocks the operation. No fallback shell or unsigned execution path is provided.
-
-## Operator terminology
-
-The operator interface uses these terms:
-
-- **Authorization artifacts**: signed capability authorization, public verification keys, declaration binding, and related policy material.
-- **Capability authorization**: the signed operations, resources, limits, policy version, expiry, and dispatcher identity accepted by both sides.
-- **Deployment attestation**: evidence that the installed runtime, policy, wrapper, and recorded source identity match the reviewed installation.
-- **Runtime attestation**: verification that the executing dispatcher artifact matches the authorized hash.
-- **Boundary verification**: active checks proving shell denial, command denial, signature enforcement, replay resistance, host-key pinning, and audit integrity.
-- **Signed policy artifacts**: the root-owned policy, capability authorization, declarations, bindings, and public keys used by the dispatcher.
-
-Some internal source files, JSON fields, and the legacy `opshaven trust-report` command retain older names to avoid an unnecessary compatibility migration. Operators should use `opshaven authorization-report`; both commands currently produce the same report.
-
-## Diagnostics
+## Check current state
 
 Run:
 
 ```bash
-opshaven doctor --config /absolute/path/to/local.config.json
+opshaven doctor
 ```
 
-The report separates:
+The normal report answers four questions:
 
-- local operator environment;
-- remote deployment state;
-- authorization artifacts;
-- endpoint readiness;
-- security boundary status.
+```text
+Current state:
+LOCAL_INITIALIZED
 
-`READY` means the configured local files passed validation, authenticated remote inspection succeeded, endpoint policy passed, and boundary verification completed successfully. `BLOCKED` means at least one required check failed. The command never prints private key contents or secret values.
+Completed:
+✓ Operator keys
+✓ Local configuration
 
-Use JSON only for automation:
+Blocked:
+✗ Remote deployment not configured
+
+Next action:
+opshaven setup remote
+```
+
+Possible states are:
+
+- `NOT_INITIALIZED`: run `opshaven init`;
+- `LOCAL_INITIALIZED`: local state exists; run `opshaven setup remote`;
+- `REMOTE_CONFIGURED`: setup exists but the installed deployment is not ready; rerun setup;
+- `READY`: local state, remote deployment, authorization, and boundary checks passed;
+- `BLOCKED`: local state needs repair; rerun initialization.
+
+Use `opshaven doctor --debug` only when troubleshooting. Debug output includes lower-level validation details but still sanitizes protected paths and never prints secret or private-key contents.
+
+## Verify the installed boundary
+
+After setup succeeds:
 
 ```bash
-opshaven doctor \
-  --json \
-  --config /absolute/path/to/local.config.json
+opshaven boundary verify
 ```
+
+The CLI automatically locates both local policy and remote setup state. Boundary verification still proves shell denial, arbitrary-command denial, host-key pinning, signed authorization, replay resistance, response verification, read-only enforcement, and audit integrity.
+
+## Normal sequence
+
+```bash
+npm run build
+opshaven init
+opshaven setup remote --dry-run
+opshaven setup remote --tui
+opshaven doctor
+opshaven boundary verify
+opshaven authorization-report --mode read-only
+```
+
+Rollback and uninstall use the same generated setup state:
+
+```bash
+opshaven setup remote --rollback --approve
+opshaven uninstall remote --approve
+```
+
+## What remains local
+
+The administrator SSH private key, restricted SSH private key, authorization signing private key, approval secret, release-signing material, and optional OAuth client secrets remain on the operator machine. OpsHaven validates file type and permissions before using them.
+
+## What is installed remotely
+
+Remote setup installs only what the VPS needs to enforce the boundary independently:
+
+- a locked non-root `opshaven` account;
+- a forced-command wrapper;
+- the isolated read-only dispatcher;
+- root-owned policy and public verification material;
+- signed authorization data;
+- replay and audit state;
+- a response-signing private key generated on the VPS.
+
+The remote account has no interactive shell. The read-only installation has no sudo rule, deployment write access, system Docker socket access, or mutation handler.
+
+## Authorization flow
+
+An operation succeeds only when all applicable checks agree:
+
+1. the requested tool and logical resource are allowed;
+2. signed capability authorization permits the exact operation and limits;
+3. the local process signs a bounded request with a nonce and expiry;
+4. restricted SSH invokes only the forced dispatcher;
+5. the dispatcher independently verifies policy, signatures, hashes, time bounds, and replay state;
+6. controlled mutations also require a separate one-time approval;
+7. the VPS signs the bounded response;
+8. the local process verifies the response and request binding;
+9. the operation is appended to the tamper-evident audit chain.
+
+Failure at any step blocks the operation. No fallback shell or unsigned execution path is provided.
 
 ## MCP exposure
 
 Local stdio is the default. Configure the MCP client to run:
 
 ```text
-opshaven-mcp --config /absolute/path/to/local.config.json
+opshaven-mcp --config <generated local configuration path>
 ```
 
-No network listener starts in this mode.
+Use `opshaven print-mcp-config` to obtain the generated client configuration without locating internal files manually.
 
-Remote MCP is opt-in. The reviewed deployment binds the Streamable HTTP server to loopback and places an HTTPS tunnel or explicitly configured reverse proxy in front of it. Before a tool is exposed, the request must pass OIDC bearer verification, exact origin and host checks, explicit proxy handling, profile mapping, rate and concurrency limits, and signed read-only capability intersection.
+Remote MCP remains opt-in. It binds to loopback and requires an HTTPS tunnel or explicitly configured reverse proxy, OIDC verification, exact Host and Origin checks, profile mapping, rate limits, request bounds, and signed read-only capability intersection. Remote profiles cannot expose restart, deployment, rollback, or approval tools.
 
-Remote profiles cannot expose restart, deployment, rollback, or approval tools. Direct public binding, wildcard origins, wildcard hosts, unauthenticated fallback, and generic stdio-to-HTTP relays remain outside the reviewed boundary.
-
-## Normal sequence
-
-```bash
-opshaven setup remote --dry-run --config /absolute/path/to/remote-setup.json
-opshaven setup remote --tui --config /absolute/path/to/remote-setup.json
-opshaven doctor --config /absolute/path/to/local.config.json
-opshaven boundary verify \
-  --config /absolute/path/to/local.config.json \
-  --setup-config /absolute/path/to/remote-setup.json
-opshaven authorization-report \
-  --mode read-only \
-  --config /absolute/path/to/local.config.json
-```
-
-Do not expose an MCP endpoint until diagnostics and boundary verification both pass on the installed deployment.
+Do not expose an MCP endpoint until `opshaven doctor` reports `READY` and `opshaven boundary verify` passes.

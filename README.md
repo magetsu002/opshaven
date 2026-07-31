@@ -39,7 +39,7 @@ OpsHaven intentionally separates the human interface from the protocol process:
 
 ```text
 opshaven
-    Human CLI for setup, diagnostics, verification, reports, and approvals.
+    Human CLI for initialization, setup, diagnostics, verification, reports, and approvals.
 
 opshaven-mcp
     JSON-RPC MCP protocol server launched by an MCP client.
@@ -112,47 +112,58 @@ Remote profiles cannot include these mutation tools.
 
 ## Recommended first run
 
-Prepare reviewed local policy, setup, SSH, and signing-key files, then preview every VPS mutation:
+Validate and build the reviewed checkout:
 
 ```bash
-opshaven setup remote \
-  --dry-run \
-  --config /absolute/path/to/remote-setup.json
+npm ci --ignore-scripts --no-audit --no-fund
+npm run release:check
+npm run security
+npm run build
 ```
 
-Apply the same plan interactively or in explicit non-interactive automation:
+Initialize the operator environment:
 
 ```bash
-opshaven setup remote --tui --config /absolute/path/to/remote-setup.json
-
-opshaven setup remote \
-  --non-interactive \
-  --approve \
-  --config /absolute/path/to/remote-setup.json
+opshaven init
 ```
 
-The setup command pins the host key, verifies the exact source head and signing key pair, installs the complete read-only runtime atomically, generates signed authorization artifacts locally, keeps private operator keys off the VPS, and refuses endpoint handoff until boundary certification passes.
+The guided command prepares protected local state, authorization keys, a restricted SSH key, local policy, remote policy, and setup state. New operators do not create internal JSON schemas or signed authorization files manually.
+
+Preview and apply remote setup:
 
 ```bash
-opshaven doctor --config /absolute/path/to/local.config.json
-opshaven boundary verify \
-  --config /absolute/path/to/local.config.json \
-  --setup-config /absolute/path/to/remote-setup.json
-opshaven authorization-report \
-  --mode read-only \
-  --config /absolute/path/to/local.config.json
+opshaven setup remote --dry-run
+opshaven setup remote --tui
 ```
 
-Rollback and uninstall require explicit approval:
+For reviewed non-interactive automation, approval remains explicit:
 
 ```bash
-opshaven setup remote --rollback --approve --config /absolute/path/to/remote-setup.json
-opshaven uninstall remote --approve --config /absolute/path/to/remote-setup.json
+opshaven setup remote --non-interactive --approve
 ```
 
-Read the [operator workflow](docs/operator-workflow.md) first. It explains what runs locally, what runs remotely, which keys stay local, what gets uploaded, how authorization works, and how MCP exposure is controlled.
+Check readiness and certify the installed boundary:
 
-See the [setup guide](docs/setup.md) for the reviewed configuration schema and end-to-end installation workflow, the [security guide](docs/security.md) for the enforced boundary, and the [architecture guide](docs/architecture.md) for the enforcement layers.
+```bash
+opshaven doctor
+opshaven boundary verify
+opshaven authorization-report --mode read-only
+```
+
+`opshaven doctor` reports the current workflow state, completed steps, blocker, and exact next command. Add `--debug` only when lower-level validation details are needed.
+
+Rollback and uninstall automatically use the generated setup state:
+
+```bash
+opshaven setup remote --rollback --approve
+opshaven uninstall remote --approve
+```
+
+Existing installations may continue passing `--config` and `--setup-config` explicitly. No existing policy, signature, receipt, rollback, or audit format is removed.
+
+Read the [operator workflow](docs/operator-workflow.md) for the guided sequence and the [setup guide](docs/setup.md) for host-key verification, non-interactive initialization, compatibility, and troubleshooting.
+
+See the [security guide](docs/security.md) for the enforced boundary and the [architecture guide](docs/architecture.md) for the enforcement layers.
 
 ## Development
 
