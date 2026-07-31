@@ -46,7 +46,7 @@ declare module "node:fs" {
   export function createWriteStream(path: string, options?: any): any;
 }
 declare module "node:path" { const path: any; export default path; }
-declare module "node:os" { export function tmpdir(): string; }
+declare module "node:os" { export function homedir(): string; export function tmpdir(): string; }
 declare module "node:child_process" { export function spawn(command: string, args?: readonly string[], options?: any): any; }
 declare module "node:http" {
   export function request(options: any, callback: (response: any) => void): any;
