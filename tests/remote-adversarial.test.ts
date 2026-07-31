@@ -12,7 +12,7 @@ const config = parseConfig({
   limits: { timeoutMs: 5000, maxBytes: 65536, maxLines: 500 },
   audit: { path: `/tmp/opshaven-remote-adversarial-${process.pid}.jsonl` },
   approvals: { directory: `/tmp/opshaven-remote-approvals-${process.pid}`, secretFile: `/tmp/opshaven-remote-secret-${process.pid}`, signingPrivateKeyFile: `/tmp/opshaven-remote-private-${process.pid}.pem`, verificationPublicKeyFile: `/tmp/opshaven-remote-public-${process.pid}.pem`, remoteUsedDirectory: `/tmp/opshaven-remote-used-${process.pid}`, defaultTtlSeconds: 300 },
-  secretFingerprints: ["planted-secret-value"],
+  secretFingerprints: ["da6c2195916f072b2dc510f8c430913536c26e249f22a426120e541ebf7b2a6b"],
   resources: [{ id: "host.main", kind: "host", address: "host.internal", port: 22, user: "opshaven", knownHostsFile: "/etc/opshaven/known_hosts", identityFile: "/etc/opshaven/id", connectTimeoutMs: 5000 }],
 });
 
