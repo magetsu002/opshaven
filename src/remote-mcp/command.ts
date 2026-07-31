@@ -4,6 +4,7 @@ import { OperationService } from "../operations.js";
 import { OidcPrincipalVerifier } from "./auth.js";
 import { loadRemoteMcpConfig } from "./config.js";
 import { StreamableHttpServer } from "./http.js";
+import { RemoteSessionManager } from "./sessions.js";
 
 export interface RemoteServeFlags {
   readonly transport: string;
@@ -25,6 +26,7 @@ export async function runRemoteServe(config: OpsHavenConfig, configPath: string,
     mcp: new McpServer(new OperationService(config, undefined, configPath)),
     verifier: new OidcPrincipalVerifier(remote),
     boundary,
+    sessionManager: new RemoteSessionManager(remote),
     bindHost: remote.bindHost,
     port: remote.port,
     path: remote.path,
