@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
+on_error() {
+  local status=$?
+  trap - ERR
+  printf 'disposable-vps failed at line %s\n' "$1" >&2
+  exit "$status"
+}
+trap 'on_error "$LINENO"' ERR
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIR="$ROOT/integration/disposable-vps"
 GEN="$DIR/generated"
