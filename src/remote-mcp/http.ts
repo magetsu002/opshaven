@@ -81,7 +81,13 @@ async function readBody(request: any, maximum: number, signal: AbortSignal): Pro
     request.on("data", (chunk: Uint8Array) => {
       if (finished) return;
       bytes += chunk.length;
-      if (bytes > maximum) { request.destroy(); fail(); return; }
+      if (bytes > maximum) {
+        finished = true;
+        cleanup();
+        request.resume();
+        reject(new RemoteLimitError(413, "Remote MCP request body exceeds the configured limit."));
+        return;
+      }
       chunks.push(chunk);
     });
     request.on("end", () => { if (!finished) { finished = true; cleanup(); resolve(Buffer.concat(chunks).toString("utf8")); } });
