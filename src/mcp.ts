@@ -2,7 +2,7 @@ import type { OperationService, ResultEnvelope } from "./operations.js";
 
 interface JsonRpcRequest { jsonrpc: "2.0"; id?: string | number | null; method: string; params?: unknown }
 export interface ToolDefinition { name: string; description: string; inputSchema: Record<string, unknown> }
-export interface ToolExecutor { execute(operation: string, args: unknown, approvalToken?: string, actor?: string): Promise<ResultEnvelope> }
+export interface ToolExecutor { execute(operation: string, args: unknown, approvalToken?: string, actor?: string, signal?: AbortSignal): Promise<ResultEnvelope> }
 export interface McpPrincipal {
   readonly id: string;
   readonly transport: "stdio" | "streamable-http";
@@ -38,9 +38,7 @@ const TOOLS: readonly ToolDefinition[] = [
 const TOOL_NAMES = new Set(TOOLS.map((tool) => tool.name));
 export const MUTATION_TOOL_NAMES: ReadonlySet<string> = new Set(["restart_service", "deploy_commit", "rollback_deployment"]);
 
-function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
-  return Object.keys(value).every((key) => allowed.includes(key));
-}
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean { return Object.keys(value).every((key) => allowed.includes(key)); }
 function request(value: unknown): JsonRpcRequest | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const item = value as Record<string, unknown>;
@@ -67,7 +65,7 @@ function resourceAllowed(principal: McpPrincipal, args: Record<string, unknown>)
 export class McpServer {
   constructor(private readonly executor: ToolExecutor) {}
 
-  async handle(value: unknown, principal: McpPrincipal = STDIO_PRINCIPAL): Promise<Record<string, unknown> | null> {
+  async handle(value: unknown, principal: McpPrincipal = STDIO_PRINCIPAL, signal?: AbortSignal): Promise<Record<string, unknown> | null> {
     const message = request(value);
     if (!message) return failure(null, -32600, "Invalid Request");
     if (message.method === "notifications/initialized") {
@@ -87,7 +85,8 @@ export class McpServer {
       if (args.approvalToken !== undefined && !approvalToken) return failure(message.id, -32602, "Approval token must be a string");
       if (approvalToken && (!MUTATION_TOOL_NAMES.has(params.name) || args.dryRun === true)) return failure(message.id, -32602, "Approval token is not accepted for this call");
       delete args.approvalToken;
-      const result = await this.executor.execute(params.name, args, approvalToken, actor(principal));
+      if (signal?.aborted) throw new Error("Operation was cancelled.");
+      const result = await this.executor.execute(params.name, args, approvalToken, actor(principal), signal);
       return success(message.id, { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: !result.ok });
     }
     return failure(message.id, -32601, "Method not found");
