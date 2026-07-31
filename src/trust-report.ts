@@ -90,40 +90,40 @@ export async function buildTrustReport(
     declarationSha256: declarationBinding.payload.declarationSha256,
     boundaryVerification,
     capabilityChanges,
-    enforcedBoundary: "The restricted SSH key can invoke only the forced dispatcher. Remote MCP is disabled unless a reviewed localhost listener, OIDC verification, exact origin and host policy, signed read-only capability, and operator-owned profile mapping all validate.",
+    enforcedBoundary: "The restricted SSH key can invoke only the forced dispatcher. Remote MCP remains disabled unless a reviewed localhost listener, OIDC verification, exact origin and host policy, signed read-only capability authorization, and operator-owned profile mapping all validate.",
     remainingAssumptions: [
-      "The VPS kernel, OpenSSH, Node.js runtime, systemd, fixed executables, and operator signing keys remain trustworthy.",
+      "The VPS kernel, OpenSSH, Node.js runtime, systemd, fixed executables, and operator signing keys remain correctly controlled.",
       "Configured root ownership, sudo rules, rootless Docker setup, health probes, backups, and logical resource mappings remain correct.",
-      "The configured OAuth issuer, trusted reverse proxy or HTTPS tunnel, DNS, and token revocation policy remain trustworthy when remote MCP is enabled.",
-      "A valid report demonstrates the enforced boundary at the reported time; it is not a claim of absolute security or vulnerability absence.",
+      "The configured OAuth issuer, reviewed reverse proxy or HTTPS tunnel, DNS, and token revocation policy remain correctly controlled when remote MCP is enabled.",
+      "A valid report records boundary verification at the reported time; it is not a claim of absolute security or vulnerability absence.",
     ],
   };
 }
 
 export function formatTrustReport(report: OperatorTrustReport): string {
   const lines = [
-    `OpsHaven operator trust report: ${report.ok ? "BOUNDARY VERIFIED" : "BOUNDARY FAILED"}`,
+    `OpsHaven authorization report: ${report.ok ? "BOUNDARY VERIFIED" : "BOUNDARY FAILED"}`,
     `Active mode: ${report.activeMode}`,
     `Policy version: ${report.policyVersion}`,
-    `Capability signature: ${report.capabilitySignatureStatus}`,
-    `Build declaration signature: ${report.declarationSignatureStatus}`,
-    `Dispatcher artifact: ${report.dispatcherArtifactStatus}`,
+    `Capability authorization: ${report.capabilitySignatureStatus}`,
+    `Signed policy declaration: ${report.declarationSignatureStatus}`,
+    `Deployment attestation: ${report.dispatcherArtifactStatus}`,
     `Shell access: ${report.access.shellAccess}`,
     `Sudo access: ${report.access.sudoAccess}`,
     `Write access: ${report.access.writeAccess.length ? report.access.writeAccess.join(", ") : "unavailable"}`,
     `Docker socket access: ${report.access.dockerSocketAccess}`,
     `Allowed operations: ${report.allowedOperations.join(", ")}`,
-    `Remote MCP: ${report.remoteMcp.enabled ? "enabled" : "disabled"}`,
-    `Remote authentication: ${report.remoteMcp.authentication}`,
-    `Remote read-only: ${report.remoteMcp.readOnly ? "yes" : "no"}`,
+    `Remote MCP exposure: ${report.remoteMcp.enabled ? "enabled" : "disabled"}`,
+    `Endpoint authentication: ${report.remoteMcp.authentication}`,
+    `Remote capability: ${report.remoteMcp.readOnly ? "read-only" : "contains mutation authority"}`,
   ];
-  if (report.remoteMcp.bindAddress) lines.push(`Remote bind: ${report.remoteMcp.bindAddress}${report.remoteMcp.path ?? ""}`);
-  if (report.remoteMcp.trustedProxies.length) lines.push(`Trusted proxies: ${report.remoteMcp.trustedProxies.join(", ")}`);
+  if (report.remoteMcp.bindAddress) lines.push(`Endpoint bind: ${report.remoteMcp.bindAddress}${report.remoteMcp.path ?? ""}`);
+  if (report.remoteMcp.trustedProxies.length) lines.push(`Reviewed proxy addresses: ${report.remoteMcp.trustedProxies.join(", ")}`);
   for (const [operation, resources] of Object.entries(report.allowedResources)) lines.push(`  ${operation}: ${resources.join(", ")}`);
-  for (const [profile, tools] of Object.entries(report.remoteMcp.effectiveTools)) lines.push(`  remote.${profile}: ${tools.join(", ")}`);
+  for (const [profile, tools] of Object.entries(report.remoteMcp.effectiveTools)) lines.push(`  endpoint.${profile}: ${tools.join(", ")}`);
   lines.push("", formatBoundaryReport(report.boundaryVerification).trim());
   if (report.capabilityChanges) {
-    lines.push("", `Capability changes: ${report.capabilityChanges.authorityExpanded ? "authority expansion detected" : "no authority expansion"}`);
+    lines.push("", `Capability authorization changes: ${report.capabilityChanges.authorityExpanded ? "authority expansion detected" : "no authority expansion"}`);
     for (const mode of ["controlled", "read-only"] as const) {
       for (const change of report.capabilityChanges.modes[mode]) {
         for (const item of change.added) lines.push(`  + ${mode}.${change.field}: ${item}`);
@@ -131,7 +131,7 @@ export function formatTrustReport(report: OperatorTrustReport): string {
       }
     }
   }
-  lines.push("", "Enforced boundary:", report.enforcedBoundary, "", "Remaining assumptions:");
+  lines.push("", "Enforced boundary:", report.enforcedBoundary, "", "Remaining platform assumptions:");
   for (const assumption of report.remainingAssumptions) lines.push(`- ${assumption}`);
   return `${lines.join("\n")}\n`;
 }

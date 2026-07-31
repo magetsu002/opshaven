@@ -5,7 +5,7 @@
   "description": "A fail-closed MCP server for safe VPS inspection and controlled operations over restricted SSH.",
   "type": "module",
   "bin": {
-    "opshaven": "dist/src/cli.js",
+    "opshaven": "dist/src/cli-entry.js",
     "opshaven-mcp": "dist/src/index.js",
     "opshaven-dispatcher": "dist/src/remote/dispatcher.js",
     "opshaven-readonly-dispatcher": "dist-readonly/src/remote/read-only-dispatcher.js"
@@ -20,7 +20,10 @@
     "build:readonly": "tsc -p tsconfig.readonly.json",
     "build": "npm run clean && npm run build:main && npm run build:readonly",
     "test": "npm run build && node --test dist/tests/*.test.js",
-    "start": "node dist/src/index.js",
+    "cli": "node dist/src/cli-entry.js",
+    "mcp": "node dist/src/index.js",
+    "start": "npm run cli -- help",
+    "start:mcp": "npm run mcp",
     "check": "npm run lint && npm run typecheck && npm test",
     "package:check": "node scripts/package-inspect.mjs",
     "docs:check": "node scripts/docs-check.mjs",

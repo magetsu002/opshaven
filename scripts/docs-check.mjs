@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-const required = ["README.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE", "docs/setup.md", "docs/security.md", "docs/architecture.md", "docs/confinement.md", "docs/reproducible-builds.md", "docs/sudoers.example", "security/capability-declaration.json"];
+const required = ["README.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE", "docs/operator-workflow.md", "docs/setup.md", "docs/security.md", "docs/architecture.md", "docs/confinement.md", "docs/reproducible-builds.md", "docs/sudoers.example", "security/capability-declaration.json"];
 const obsolete = ["docs/milestones.md", "RELEASE_NOTES.md", "docs/operations.md", "docs/threat-model.md", "docs/release.md"];
 const failures = [];
 for (const file of required) {
@@ -24,6 +24,6 @@ for (const file of required.filter((item) => item.endsWith(".md"))) {
   }
 }
 const readme = await fs.readFile("README.md", "utf8");
-for (const target of ["docs/setup.md", "docs/security.md", "CONTRIBUTING.md", "LICENSE"]) if (!readme.includes(`](${target})`)) failures.push(`README.md: missing link to ${target}`);
+for (const target of ["docs/operator-workflow.md", "docs/setup.md", "docs/security.md", "CONTRIBUTING.md", "LICENSE"]) if (!readme.includes(`](${target})`)) failures.push(`README.md: missing link to ${target}`);
 if (failures.length) { console.error([...new Set(failures)].join("\n")); process.exitCode = 1; }
 else console.log(`docs: ${required.length} required files and internal links checked`);

@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 
 const pkg = JSON.parse(await fs.readFile("package.json", "utf8"));
 const expectedBins = {
-  opshaven: "dist/src/cli.js",
+  opshaven: "dist/src/cli-entry.js",
   "opshaven-mcp": "dist/src/index.js",
   "opshaven-dispatcher": "dist/src/remote/dispatcher.js",
   "opshaven-readonly-dispatcher": "dist-readonly/src/remote/read-only-dispatcher.js",
@@ -18,6 +18,9 @@ for (const [name, file] of Object.entries(expectedBins)) {
   const stat = await fs.stat(file).catch(() => null);
   if (!stat?.isFile()) failures.push(`${name}: built entrypoint is missing`);
 }
+if (pkg.scripts?.cli !== "node dist/src/cli-entry.js") failures.push("human CLI script must use cli-entry.js");
+if (pkg.scripts?.mcp !== "node dist/src/index.js") failures.push("MCP script must use index.js");
+if (pkg.scripts?.start !== "npm run cli -- help") failures.push("npm start must show human CLI help");
 const isolatedFiles = [
   "src/remote/read-only-dispatcher.ts",
   "src/remote/read-only-protocol.ts",
@@ -40,5 +43,5 @@ if (failures.length) {
   console.error(failures.join("\n"));
   process.exitCode = 1;
 } else {
-  console.log("package: metadata, isolated target, and built entrypoints verified");
+  console.log("package: human CLI, protocol server, isolated target, and built entrypoints verified");
 }
