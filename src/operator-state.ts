@@ -194,7 +194,7 @@ async function ensureKeys(paths: Paths): Promise<void> {
   if (restrictedPrivate !== restrictedPublic) throw new OpsHavenError("CONFIG_INVALID", "Restricted SSH key state is incomplete.");
   if (!restrictedPrivate) {
     try {
-      const result = await run(process.env.OPSHAVEN_SSH_KEYGEN ?? "/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "opshaven-restricted", "-f", paths.restrictedPrivate]);
+      const result = await run("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "opshaven-restricted", "-f", paths.restrictedPrivate]);
       if (result.code !== 0) throw new Error("failed");
     } catch {
       throw new OpsHavenError("CONFIG_INVALID", "OpenSSH key generation is unavailable.");
