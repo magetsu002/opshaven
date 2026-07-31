@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import type { McpPrincipal, McpServer } from "../mcp.js";
 import { RemoteBoundaryError, validateHttpBoundary, type HttpBoundaryPolicy } from "./boundary.js";
+import { RemoteSessionError, type RemoteSessionManager, type SessionLease } from "./sessions.js";
 
 export const CURRENT_MCP_PROTOCOL = "2026-07-28";
 const SUPPORTED_PROTOCOLS = new Set([CURRENT_MCP_PROTOCOL, "2025-11-25", "2025-06-18", "2025-03-26"]);
@@ -19,6 +20,7 @@ export interface StreamableHttpOptions {
   readonly mcp: McpServer;
   readonly verifier: PrincipalVerifier;
   readonly boundary?: HttpBoundaryPolicy;
+  readonly sessionManager?: RemoteSessionManager;
   readonly bindHost?: string;
   readonly port?: number;
   readonly path?: string;
@@ -35,17 +37,14 @@ export interface StartedHttpServer {
 export class RemoteAuthenticationError extends Error {
   constructor(readonly status: 401 | 403 = 401, message = "Remote authentication failed.") { super(message); }
 }
-
 export class RejectAllVerifier implements PrincipalVerifier {
   async verify(): Promise<McpPrincipal> { throw new RemoteAuthenticationError(401); }
 }
 
-function jsonRpcError(code: number, message: string, id: string | number | null = null): Record<string, unknown> {
-  return { jsonrpc: "2.0", id, error: { code, message } };
-}
+function jsonRpcError(code: number, message: string, id: string | number | null = null): Record<string, unknown> { return { jsonrpc: "2.0", id, error: { code, message } }; }
 function headerValue(value: string | string[] | undefined): string | undefined {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value) && value.length === 1) return value[0];
+  if (typeof value === "string" && value.length <= 4096 && !value.includes(",") && !/[\r\n]/.test(value)) return value;
+  if (Array.isArray(value) && value.length === 1) return headerValue(value[0]);
   return undefined;
 }
 function sendJson(response: any, status: number, value: unknown, extraHeaders: Record<string, string> = {}): void {
@@ -85,13 +84,10 @@ function modernDiscovery(id: string | number | null): Record<string, unknown> {
 function validateModernEnvelope(message: unknown, headers: Readonly<Record<string, string | string[] | undefined>>): string | undefined {
   const method = requestMethod(message);
   if (!method) return "Malformed MCP request.";
-  const bodyVersion = protocolFromMessage(message);
-  if (bodyVersion !== CURRENT_MCP_PROTOCOL) return "Missing or incompatible MCP request metadata.";
+  if (protocolFromMessage(message) !== CURRENT_MCP_PROTOCOL) return "Missing or incompatible MCP request metadata.";
   if (!plain(message) || !plain(message.params) || !plain(message.params._meta)) return "Missing or incompatible MCP request metadata.";
-  const meta = message.params._meta;
-  if (!plain(meta["io.modelcontextprotocol/clientCapabilities"])) return "Missing or incompatible MCP request metadata.";
-  const methodHeader = headerValue(headers["mcp-method"]);
-  if (methodHeader !== method) return "MCP method header does not match the request.";
+  if (!plain(message.params._meta["io.modelcontextprotocol/clientCapabilities"])) return "Missing or incompatible MCP request metadata.";
+  if (headerValue(headers["mcp-method"]) !== method) return "MCP method header does not match the request.";
   const nameHeader = headerValue(headers["mcp-name"]);
   if (method === "tools/call") {
     const name = typeof message.params.name === "string" ? message.params.name : undefined;
@@ -99,7 +95,6 @@ function validateModernEnvelope(message: unknown, headers: Readonly<Record<strin
   } else if (nameHeader !== undefined) return "MCP name header is not valid for this request.";
   return undefined;
 }
-
 async function readBody(request: any, maximum: number): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
     const chunks: Uint8Array[] = [];
@@ -117,6 +112,12 @@ async function readBody(request: any, maximum: number): Promise<string> {
     request.on("aborted", fail);
   });
 }
+function protocolForRequest(message: unknown, headers: Readonly<Record<string, string | string[] | undefined>>): string | undefined {
+  const supplied = headerValue(headers["mcp-protocol-version"]);
+  const method = requestMethod(message);
+  const initialized = method === "initialize" && plain(message) && plain(message.params) && typeof message.params.protocolVersion === "string" ? message.params.protocolVersion : undefined;
+  return supplied ?? initialized;
+}
 
 export class StreamableHttpServer {
   private server: any;
@@ -133,14 +134,23 @@ export class StreamableHttpServer {
     if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("The remote MCP port is invalid.");
     const maximum = this.options.maxBodyBytes ?? 1048576;
     this.server = createServer(async (request: any, response: any) => {
+      let lease: SessionLease | undefined;
       try {
         const identity = { authorization: headerValue(request.headers.authorization), remoteAddress: request.socket?.remoteAddress ?? "", requestTarget: request.url ?? "/", headers: request.headers };
-        const principal = await this.options.verifier.verify(identity);
+        let principal = await this.options.verifier.verify(identity);
         if (this.options.boundary) validateHttpBoundary(this.options.boundary, identity.remoteAddress, request.headers);
         const target = new URL(identity.requestTarget, `http://${request.headers.host ?? "localhost"}`);
         if (target.pathname !== endpoint || target.search || target.hash) { sendJson(response, 404, jsonRpcError(-32601, "Not found")); return; }
-        if (request.method === "GET") { response.setHeader("allow", "POST"); sendJson(response, 405, jsonRpcError(-32601, "Method not allowed")); return; }
-        if (request.method !== "POST") { response.setHeader("allow", "POST"); sendJson(response, 405, jsonRpcError(-32601, "Method not allowed")); return; }
+        const sessionHeader = headerValue(request.headers["mcp-session-id"]);
+        if (request.method === "DELETE") {
+          const protocol = headerValue(request.headers["mcp-protocol-version"]);
+          if (!this.options.sessionManager || !protocol || protocol === CURRENT_MCP_PROTOCOL || !SUPPORTED_PROTOCOLS.has(protocol) || !sessionHeader) throw new RemoteSessionError(400);
+          this.options.sessionManager.delete(sessionHeader, principal);
+          sendEmpty(response, 204);
+          return;
+        }
+        if (request.method === "GET") { response.setHeader("allow", "POST, DELETE"); sendJson(response, 405, jsonRpcError(-32601, "Method not allowed")); return; }
+        if (request.method !== "POST") { response.setHeader("allow", "POST, DELETE"); sendJson(response, 405, jsonRpcError(-32601, "Method not allowed")); return; }
         const contentType = headerValue(request.headers["content-type"]);
         if (!contentType || contentType.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") { sendJson(response, 415, jsonRpcError(-32600, "Content-Type must be application/json")); return; }
         const accept = headerValue(request.headers.accept);
@@ -152,23 +162,35 @@ export class StreamableHttpServer {
         try { message = JSON.parse(body) as unknown; }
         catch { sendJson(response, 400, jsonRpcError(-32700, "Parse error")); return; }
         const method = requestMethod(message);
-        const suppliedVersion = headerValue(request.headers["mcp-protocol-version"]);
-        const initializeVersion = method === "initialize" && plain(message) && plain(message.params) && typeof message.params.protocolVersion === "string" ? message.params.protocolVersion : undefined;
-        const protocol = suppliedVersion ?? initializeVersion;
+        const protocol = protocolForRequest(message, request.headers);
         if (!protocol || !SUPPORTED_PROTOCOLS.has(protocol)) { sendJson(response, 400, jsonRpcError(-32022, "Unsupported MCP protocol version", requestId(message))); return; }
+        const responseHeaders: Record<string, string> = {};
         if (protocol === CURRENT_MCP_PROTOCOL) {
+          if (sessionHeader !== undefined) throw new RemoteSessionError(400);
           const invalid = validateModernEnvelope(message, request.headers);
           if (invalid) { sendJson(response, 400, jsonRpcError(-32020, invalid, requestId(message))); return; }
+        } else if (this.options.sessionManager) {
+          if (method === "initialize") {
+            if (sessionHeader !== undefined) throw new RemoteSessionError(400);
+            const created = this.options.sessionManager.create(principal, protocol);
+            principal = Object.freeze({ ...principal, sessionId: created });
+            responseHeaders["mcp-session-id"] = created;
+          } else {
+            if (!sessionHeader) throw new RemoteSessionError(400);
+            lease = this.options.sessionManager.acquire(sessionHeader, principal, protocol, requestId(message));
+            principal = lease.principal;
+          }
         }
         if (protocol === CURRENT_MCP_PROTOCOL && method === "server/discover") { sendJson(response, 200, modernDiscovery(requestId(message))); return; }
         const result = await this.options.mcp.handle(stripTransportMeta(message), principal);
-        if (isNotification(message)) { sendEmpty(response, 202); return; }
-        sendJson(response, 200, protocol === CURRENT_MCP_PROTOCOL ? decorateCurrentResponse(result) : result ?? jsonRpcError(-32603, "Internal error", requestId(message)));
+        if (isNotification(message)) { sendEmpty(response, 202, responseHeaders); return; }
+        sendJson(response, 200, protocol === CURRENT_MCP_PROTOCOL ? decorateCurrentResponse(result) : result ?? jsonRpcError(-32603, "Internal error", requestId(message)), responseHeaders);
       } catch (error) {
         if (error instanceof RemoteAuthenticationError) { sendJson(response, error.status, jsonRpcError(-32600, error.message), { "www-authenticate": "Bearer" }); return; }
         if (error instanceof RemoteBoundaryError) { sendJson(response, error.status, jsonRpcError(-32600, error.message)); return; }
+        if (error instanceof RemoteSessionError) { sendJson(response, error.status, jsonRpcError(-32030, error.message)); return; }
         sendJson(response, 500, jsonRpcError(-32603, "Internal error"));
-      }
+      } finally { lease?.release(); }
     });
     this.server.maxHeadersCount = 64;
     this.server.requestTimeout = 30000;
@@ -185,6 +207,7 @@ export class StreamableHttpServer {
   }
 
   async close(): Promise<void> {
+    this.options.sessionManager?.close();
     if (!this.server) return;
     await new Promise<void>((resolve, reject) => this.server.close((error?: Error) => error ? reject(error) : resolve()));
     this.server = undefined;
