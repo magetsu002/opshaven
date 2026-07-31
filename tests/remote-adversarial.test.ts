@@ -75,7 +75,7 @@ test("origin, body, JSON, and MCP metadata failures occur before remote operatio
 test("unknown tools, resources, mutations, and runtime override attempts never reach remote operations", async () => {
   const { remote, server, url } = await fixture();
   const unknown = await request(url, modern("tools/call", { name: "run_shell", arguments: { resourceId: "host.main", command: "id" } }));
-  assert.equal((await unknown.json() as any).result.structuredContent, undefined);
+  assert.equal((await unknown.json() as any).error.code, -32602);
   const wrongResource = await request(url, modern("tools/call", { name: "get_host_summary", arguments: { resourceId: "host.other" } }));
   assert.equal((await wrongResource.json() as any).error.code, -32602);
   const mutation = await request(url, modern("tools/call", { name: "restart_service", arguments: { resourceId: "svc.web", dryRun: true } }));
