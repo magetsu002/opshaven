@@ -38,7 +38,10 @@ class TrustTransport implements RemoteAdminTransport {
   uploadedNames: string[] = [];
 
   async run(): Promise<SetupCommandResult> { return { code: 0, stdout: "", stderr: "" }; }
-  async runPrivileged(): Promise<SetupCommandResult> { return { code: 0, stdout: "", stderr: "" }; }
+
+  async runPrivileged(): Promise<SetupCommandResult> {
+    return { code: 0, stdout: JSON.stringify({ ok: true, hashes: this.hashes, responsePublic: "/etc/opshaven/config.json.response-public.pem", changed: ["/etc/opshaven/config.json.capability.json"] }), stderr: "" };
+  }
 
   async upload(localPath: string): Promise<SetupCommandResult> {
     this.uploadedNames = (await fs.readdir(localPath)).sort();
@@ -52,9 +55,7 @@ class TrustTransport implements RemoteAdminTransport {
     return { code: 0, stdout: "", stderr: "" };
   }
 
-  async runPython(): Promise<SetupCommandResult> {
-    return { code: 0, stdout: JSON.stringify({ ok: true, hashes: this.hashes, responsePublic: "/etc/opshaven/config.json.response-public.pem" }), stderr: "" };
-  }
+  async runPython(): Promise<SetupCommandResult> { return { code: 1, stdout: "", stderr: "unexpected embedded installer" }; }
 
   async download(_remotePath: string, localPath: string): Promise<SetupCommandResult> {
     await fs.writeFile(localPath, String(this.response.publicKey.export({ type: "spki", format: "pem" })), { mode: 0o644 });
@@ -92,13 +93,16 @@ test("trust provisioning signs read-only authority locally and uploads no privat
     const receipt = await provisionRemoteTrust(setup, install, transport);
     assert.equal(receipt.ok, true);
     assert.match(receipt.dispatcherSha256, /^[a-f0-9]{64}$/);
-    assert.deepEqual(transport.uploadedNames, ["binding.json", "capability.json", "declaration.json", "operator-public.pem"]);
-    assert.equal(transport.uploadedNames.some((item) => /private|identity/i.test(item)), false);
+    assert.deepEqual(transport.uploadedNames, ["binding.json", "capability.json", "declaration.json", "installer.py", "operator-public.pem", "trust-plan.json"]);
+    assert.equal(transport.uploadedNames.some((item) => /operator-private|identity/i.test(item)), false);
     const capability = JSON.parse(await fs.readFile(`${policyPath}.capability.json`, "utf8")) as { payload: string };
     const payload = JSON.parse(Buffer.from(capability.payload, "base64url").toString("utf8")) as { mode: string; dispatcherSha256: string };
     assert.equal(payload.mode, "read-only");
     assert.equal(payload.dispatcherSha256, receipt.dispatcherSha256);
     assert.equal(await fs.readFile(`${policyPath}.response-public.pem`, "utf8").then((value: string) => value.includes("PRIVATE KEY")), false);
+    const installer = await fs.readFile(path.join(process.cwd(), "packaging", "remote-trust-installer.py"), "utf8");
+    assert.equal(installer.includes("receipt[\"changed\"] = receipt_changed"), true);
+    assert.equal(installer.includes("restore(journal)"), true);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
