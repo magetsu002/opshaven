@@ -1,7 +1,7 @@
 import { OpsHavenError } from "./errors.js";
 
 function debugEnabled(args: readonly string[]): boolean {
-  return args.includes("--debug");
+  return args.includes("--debug") || process.argv.includes("--debug") || process.env.OPSHAVEN_DEBUG === "1";
 }
 
 function startup(message: string, action: string): string {

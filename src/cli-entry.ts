@@ -125,10 +125,11 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (!COMMANDS_WITHOUT_LOCAL_CONFIG.has(requested) && !path) {
+  const requiresLocalConfig = !COMMANDS_WITHOUT_LOCAL_CONFIG.has(requested);
+  if (requiresLocalConfig && !path) {
     throw startupBlocked("Operator setup is not initialized.", "Run:\nopshaven init");
   }
-  if (path && !explicit) process.argv.push("--config", path);
+  if (requiresLocalConfig && path && !explicit) process.argv.push("--config", path);
 
   if ((requested === "boundary" || requested === "verify-boundary") && !flag("--setup-config") && !explicit) {
     const setupPath = await resolveSetupConfigPath(commandArgs);

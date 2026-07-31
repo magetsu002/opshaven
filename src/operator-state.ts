@@ -1,6 +1,7 @@
 import { createPublicKey, generateKeyPairSync, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -52,6 +53,8 @@ export interface OperatorStateSnapshot {
   setupPath: string | null;
 }
 
+type LocalCommand = "git" | "ssh-keygen";
+
 const MAX_OUTPUT = 65536;
 const HOST = /^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|[0-9A-Fa-f:]+)$/;
 const USER = /^[a-z_][a-z0-9_-]{0,31}$/;
@@ -72,17 +75,16 @@ function absolute(value: string, label: string): string {
   return expanded;
 }
 
-export function operatorStateRoot(args: readonly string[] = process.argv.slice(2)): string {
-  const root = flag(args, "--state-dir")
-    ?? process.env.OPSHAVEN_HOME
-    ?? (process.env.XDG_CONFIG_HOME ? path.join(process.env.XDG_CONFIG_HOME, "opshaven") : undefined)
-    ?? (process.env.HOME ? path.join(process.env.HOME, ".config", "opshaven") : undefined);
-  if (!root) throw new OpsHavenError("CONFIG_INVALID", "A local operator home directory could not be determined.");
-  return absolute(root, "Operator state directory");
+export function operatorStateRoot(): string {
+  const home = homedir();
+  if (!home || !path.isAbsolute(home) || path.normalize(home) !== home) {
+    throw new OpsHavenError("CONFIG_INVALID", "A local operator home directory could not be determined.");
+  }
+  return path.join(home, ".config", "opshaven");
 }
 
-function locations(args: readonly string[] = process.argv.slice(2)): Paths {
-  const root = operatorStateRoot(args);
+function locations(): Paths {
+  const root = operatorStateRoot();
   const keys = path.join(root, "keys");
   return {
     root,
@@ -105,8 +107,9 @@ function packageRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 }
 
-async function run(command: string, args: readonly string[], cwd?: string): Promise<{ code: number | null; stdout: string }> {
-  const child = spawn(command, args, {
+async function run(command: LocalCommand, args: readonly string[], cwd?: string): Promise<{ code: number | null; stdout: string }> {
+  const executable = command === "git" ? "/usr/bin/git" : "/usr/bin/ssh-keygen";
+  const child = spawn(executable, args, {
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],
     ...(cwd ? { cwd } : {}),
@@ -194,7 +197,7 @@ async function ensureKeys(paths: Paths): Promise<void> {
   if (restrictedPrivate !== restrictedPublic) throw new OpsHavenError("CONFIG_INVALID", "Restricted SSH key state is incomplete.");
   if (!restrictedPrivate) {
     try {
-      const result = await run(process.env.OPSHAVEN_SSH_KEYGEN ?? "/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "opshaven-restricted", "-f", paths.restrictedPrivate]);
+      const result = await run("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "opshaven-restricted", "-f", paths.restrictedPrivate]);
       if (result.code !== 0) throw new Error("failed");
     } catch {
       throw new OpsHavenError("CONFIG_INVALID", "OpenSSH key generation is unavailable.");
@@ -237,7 +240,7 @@ async function sourceSha(args: readonly string[]): Promise<string> {
   const supplied = flag(args, "--source-sha") ?? process.env.OPSHAVEN_SOURCE_SHA;
   if (supplied && SHA.test(supplied)) return supplied;
   try {
-    const result = await run("/usr/bin/git", ["rev-parse", "HEAD"], packageRoot());
+    const result = await run("git", ["rev-parse", "HEAD"], packageRoot());
     const discovered = result.stdout.trim();
     if (result.code === 0 && SHA.test(discovered)) return discovered;
   } catch {}
@@ -305,7 +308,7 @@ async function configure(paths: Paths, answers: Answers): Promise<void> {
 }
 
 export async function runInit(args: readonly string[]): Promise<void> {
-  const paths = locations(args);
+  const paths = locations();
   for (const directory of [paths.root, paths.keys, paths.approvals, paths.remoteUsed]) await privateDirectory(directory);
   await ensureKeys(paths);
   const previous = await readState(paths);
@@ -318,7 +321,7 @@ export async function runInit(args: readonly string[]): Promise<void> {
 }
 
 export async function ensureRemoteSetupState(args: readonly string[]): Promise<string> {
-  const paths = locations(args);
+  const paths = locations();
   if (await safeFile(paths.setup, true)) return paths.setup;
   if (!(await readState(paths))) throw new OpsHavenError("CONFIG_INVALID", "Setup is not initialized.");
   const answers = await collectAnswers(args);
@@ -331,7 +334,7 @@ export async function resolveLocalConfigPath(args: readonly string[] = process.a
   const explicit = flag(args, "--config") ?? process.env.OPSHAVEN_CONFIG;
   if (explicit) return absolute(explicit, "Configuration path");
   try {
-    const paths = locations(args);
+    const paths = locations();
     return await safeFile(paths.policy, true) ? paths.policy : null;
   } catch {
     return null;
@@ -342,15 +345,15 @@ export async function resolveSetupConfigPath(args: readonly string[] = process.a
   const explicit = flag(args, "--setup-config") ?? process.env.OPSHAVEN_SETUP_CONFIG;
   if (explicit) return absolute(explicit, "Setup state path");
   try {
-    const paths = locations(args);
+    const paths = locations();
     return await safeFile(paths.setup, true) ? paths.setup : null;
   } catch {
     return null;
   }
 }
 
-export async function inspectOperatorState(args: readonly string[] = process.argv.slice(2)): Promise<OperatorStateSnapshot> {
-  const paths = locations(args);
+export async function inspectOperatorState(_args: readonly string[] = process.argv.slice(2)): Promise<OperatorStateSnapshot> {
+  const paths = locations();
   let state: StateDocument | null = null;
   try { state = await readState(paths); } catch {}
   const initialized = state !== null;
