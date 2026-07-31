@@ -10,7 +10,7 @@ const config = parseConfig({
   version: 1,
   policyVersion: "v1",
   limits: { timeoutMs: 5000, maxBytes: 65536, maxLines: 500 },
-  audit: { path: `/tmp/opshaven-remote-adversarial-${process.pid}.jsonl` },
+  audit: { path: `/tmp/opshaven-remote-adversarial-${process.pid}/audit.jsonl` },
   approvals: { directory: `/tmp/opshaven-remote-approvals-${process.pid}`, secretFile: `/tmp/opshaven-remote-secret-${process.pid}`, signingPrivateKeyFile: `/tmp/opshaven-remote-private-${process.pid}.pem`, verificationPublicKeyFile: `/tmp/opshaven-remote-public-${process.pid}.pem`, remoteUsedDirectory: `/tmp/opshaven-remote-used-${process.pid}`, defaultTtlSeconds: 300 },
   secretFingerprints: ["da6c2195916f072b2dc510f8c430913536c26e249f22a426120e541ebf7b2a6b"],
   resources: [{ id: "host.main", kind: "host", address: "host.internal", port: 22, user: "opshaven", knownHostsFile: "/etc/opshaven/known_hosts", identityFile: "/etc/opshaven/id", connectTimeoutMs: 5000 }],
@@ -100,7 +100,9 @@ test("authenticated read-only calls reach the shared operation service and remai
   try {
     const response = await request(url, modern("tools/call", { name: "get_host_summary", arguments: { resourceId: "host.main" } }));
     assert.equal(response.status, 200);
-    const text = await response.text();
+    const payload = await response.json() as any;
+    assert.equal(payload.result.structuredContent.ok, true);
+    const text = JSON.stringify(payload);
     assert.equal(remote.calls, 1);
     assert.equal(text.includes("planted-secret-value"), false);
     assert.equal(text.includes("[REDACTED]"), true);
