@@ -62,11 +62,14 @@ async function main(): Promise<void> {
   if (!path) throw new Error("A configuration path is required.");
   const config = await loadConfig(path);
   if (selected === "serve") {
+    const bindHost = flag("--bind");
+    const port = optionalPort();
+    const endpoint = flag("--path");
     await runRemoteServe(config, path, {
       transport: required("--transport"),
-      ...(flag("--bind") ? { bindHost: flag("--bind") } : {}),
-      ...(optionalPort() !== undefined ? { port: optionalPort() } : {}),
-      ...(flag("--path") ? { path: flag("--path") } : {}),
+      ...(bindHost !== undefined ? { bindHost } : {}),
+      ...(port !== undefined ? { port } : {}),
+      ...(endpoint !== undefined ? { path: endpoint } : {}),
       unsafeAllowNonLoopback: process.argv.includes("--unsafe-allow-non-loopback"),
     });
     return;
