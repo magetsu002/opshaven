@@ -293,9 +293,9 @@ export async function detectKnownHostFingerprint(host: string, remotePort: numbe
       return { fingerprint: parts[1] ?? "", algorithm: (parts[parts.length - 1] ?? "").replace(/[()]/g, "") };
     }).filter((candidate) => FINGERPRINT.test(candidate.fingerprint));
     const ed25519 = unique(candidates.filter((candidate) => candidate.algorithm === "ED25519").map((candidate) => candidate.fingerprint));
-    if (ed25519.length === 1) return ed25519[0];
+    if (ed25519.length === 1) return ed25519[0] ?? null;
     const all = unique(candidates.map((candidate) => candidate.fingerprint));
-    return all.length === 1 ? all[0] : null;
+    return all.length === 1 ? (all[0] ?? null) : null;
   } catch {
     return null;
   } finally {
