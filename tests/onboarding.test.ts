@@ -34,10 +34,7 @@ async function run(command: string, args: string[], env: Record<string, string |
 }
 
 async function runCli(args: string[], home: string): Promise<Result> {
-  return await run(process.execPath, [path.join(process.cwd(), "dist/src/cli-entry.js"), ...args], {
-    HOME: home,
-    OPSHAVEN_HOME: path.join(home, "operator-state"),
-  });
+  return await run(process.execPath, [path.join(process.cwd(), "dist/src/cli-entry.js"), ...args], { HOME: home });
 }
 
 async function generateSshKey(filePath: string): Promise<void> {
@@ -57,7 +54,7 @@ test("empty environment initializes local state and reports the next action", as
     assert.equal(initialized.stderr, "");
     assert.doesNotMatch(initialized.stdout, /PRIVATE KEY|BEGIN [A-Z ]+ KEY|approval-secret|operator-private/);
 
-    const root = path.join(home, "operator-state");
+    const root = path.join(home, ".config", "opshaven");
     const privateStat = await fs.stat(path.join(root, "keys", "operator-private.pem"));
     assert.equal(privateStat.mode & 0o077, 0);
 
@@ -101,7 +98,7 @@ test("guided initialization creates internal setup state without manual configur
     assert.equal(initialized.code, 0, initialized.stderr);
     assert.doesNotMatch(initialized.stdout, /config\.json|setup\.json|operator-private|approval-secret/);
 
-    const root = path.join(home, "operator-state");
+    const root = path.join(home, ".config", "opshaven");
     const setupPath = path.join(root, "setup.json");
     const configPath = path.join(root, "config.json");
     assert.equal((await fs.stat(setupPath)).isFile(), true);
