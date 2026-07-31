@@ -1,4 +1,4 @@
-import { createPublicKey } from "node:crypto";
+import { createHash, createPublicKey } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { OpsHavenError } from "../errors.js";
 import type { RemoteSetupConfig, SetupCheck } from "./remote.js";
@@ -38,13 +38,35 @@ export interface PreflightRuntime {
   lstat(filePath: string): Promise<any>;
 }
 
+const CHECK_STATES = Object.freeze(["failed", "passed"] as const);
+const SUPPORTED_LOCAL_PLATFORMS = new Set(["Linux", "Darwin"]);
+
+function reviewAll(...signals: readonly boolean[]): boolean {
+  let accepted = 0;
+  for (const signal of signals) accepted += Number(signal);
+  return accepted === signals.length;
+}
+
 function check(id: string, passed: boolean, detail: string): SetupCheck {
-  return Object.freeze({ id, state: passed ? "passed" : "failed", detail });
+  return Object.freeze({ id, state: CHECK_STATES[Number(passed)], detail });
 }
 
 function safeVersion(value: string): number {
   const match = /^v?(\d+)\./.exec(value.trim());
   return match ? Number(match[1]) : 0;
+}
+
+function digestEquals(actual: string, expected: string): boolean {
+  const actualDigest = createHash("sha256").update(actual.trim(), "utf8").digest("hex");
+  const expectedDigest = createHash("sha256").update(expected, "utf8").digest("hex");
+  return actualDigest === expectedDigest;
+}
+
+function reviewedFingerprint(result: SetupCommandResult, expected: string): boolean {
+  const tokens = result.stdout
+    .split(/\s+/)
+    .filter((item) => /^SHA256:[A-Za-z0-9+/]{20,60}$/.test(item));
+  return reviewAll(result.code === 0, tokens.map((item) => digestEquals(item, expected)).includes(true));
 }
 
 async function regular(runtime: PreflightRuntime, filePath: string, ownerOnly: boolean): Promise<boolean> {
@@ -131,10 +153,13 @@ export async function preflightRemoteSetup(config: RemoteSetupConfig, injected?:
   const runtime = injected ?? actualRuntime(config);
   const checks: SetupCheck[] = [];
   const uname = await runtime.runLocal("/usr/bin/uname", ["-s"]);
-  checks.push(check("local-platform", uname.code === 0 && /^(?:Linux|Darwin)\s*$/.test(uname.stdout), "Local platform must be Linux or macOS."));
-  checks.push(check("local-node", safeVersion(process.versions?.node ?? "") >= 22 && process.execPath.startsWith("/"), "Local Node.js 22+ must use an absolute executable path."));
+  const localPlatformAccepted = reviewAll(uname.code === 0, SUPPORTED_LOCAL_PLATFORMS.has(uname.stdout.trim()));
+  checks.push(check("local-platform", localPlatformAccepted, "Local platform must be Linux or macOS."));
+  const localNodeAccepted = reviewAll(safeVersion(process.versions?.node ?? "") >= 22, process.execPath.startsWith("/"));
+  checks.push(check("local-node", localNodeAccepted, "Local Node.js 22+ must use an absolute executable path."));
   const source = await runtime.runLocal("/usr/bin/git", ["rev-parse", "HEAD"], process.cwd());
-  checks.push(check("source-head", source.code === 0 && source.stdout.trim() === config.expectedSourceSha, "Local checkout must match expectedSourceSha exactly."));
+  const sourceAccepted = reviewAll(source.code === 0, digestEquals(source.stdout, config.expectedSourceSha));
+  checks.push(check("source-head", sourceAccepted, "Local checkout must match expectedSourceSha exactly."));
   const localFiles = [
     ["policy-config", config.policyConfigPath, true],
     ["known-hosts", config.target.knownHostsFile, false],
@@ -149,21 +174,20 @@ export async function preflightRemoteSetup(config: RemoteSetupConfig, injected?:
   for (const [id, filePath, ownerOnly] of localFiles) checks.push(check(id, await regular(runtime, filePath, ownerOnly), `${filePath} must be a safe regular file${ownerOnly ? " with owner-only permissions" : ""}.`));
   checks.push(check("operator-key-pair", await keysCorrespond(config, runtime), "Operator signing private and public keys must correspond."));
   const fingerprint = await runtime.runLocal("/usr/bin/ssh-keygen", ["-lf", config.target.knownHostsFile, "-E", "sha256"]);
-  const fingerprintMatches = fingerprint.code === 0 && fingerprint.stdout.split(/\r?\n/).filter(Boolean).some((line) => line.split(/\s+/).includes(config.target.expectedHostKeySha256));
-  checks.push(check("host-key-fingerprint", fingerprintMatches, "Pinned known-hosts material must contain the separately verified SHA-256 fingerprint."));
+  checks.push(check("host-key-fingerprint", reviewedFingerprint(fingerprint, config.target.expectedHostKeySha256), "Pinned known-hosts material must contain the separately verified SHA-256 fingerprint."));
   const remoteResult = await runtime.remote.runPython(remoteScript(config));
   const remote = parseRemoteFacts(remoteResult);
   checks.push(check("ssh-connectivity", remote !== null, "Pinned-host SSH connectivity must return bounded structured preflight facts."));
   if (remote) {
     checks.push(check("remote-platform", supportedDistribution(remote), "Remote platform must be a supported Ubuntu or Debian release."));
     checks.push(check("remote-architecture", /^(?:x86_64|aarch64|arm64)$/.test(remote.architecture), "Remote architecture must be supported."));
-    checks.push(check("remote-node", config.remote.nodeCandidates.includes(remote.nodePath) && safeVersion(remote.nodeVersion) >= 22, "A reviewed Node.js 22+ candidate must resolve to an exact executable."));
+    checks.push(check("remote-node", reviewAll(config.remote.nodeCandidates.includes(remote.nodePath), safeVersion(remote.nodeVersion) >= 22), "A reviewed Node.js 22+ candidate must resolve to an exact executable."));
     checks.push(check("remote-disk", remote.freeBytes >= 134217728, "At least 128 MiB of free remote disk space is required."));
   } else {
     for (const id of ["remote-platform", "remote-architecture", "remote-node", "remote-disk"]) checks.push(check(id, false, "Remote facts were unavailable."));
   }
   const privilege = await runtime.remote.runPrivileged(["/usr/bin/id", "-u"]);
-  checks.push(check("remote-privilege", privilege.code === 0 && privilege.stdout.trim() === "0", "Root or non-interactive narrowly invoked sudo is required for installation."));
+  checks.push(check("remote-privilege", reviewAll(privilege.code === 0, digestEquals(privilege.stdout, "0")), "Root or non-interactive narrowly invoked sudo is required for installation."));
   return Object.freeze({ ok: checks.every((item) => item.state === "passed"), checkedAt: new Date().toISOString(), nodePath: remote?.nodePath || null, remote, checks: Object.freeze(checks) });
 }
 
