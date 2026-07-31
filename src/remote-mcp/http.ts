@@ -58,6 +58,32 @@ function headerValue(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value) && value.length === 1) return headerValue(value[0]);
   return undefined;
 }
+function listHeaderValue(value: string | string[] | undefined): string | undefined {
+  if (typeof value === "string" && value.length <= 16384 && !/[\r\n]/.test(value)) return value;
+  if (Array.isArray(value) && value.length === 1) return listHeaderValue(value[0]);
+  return undefined;
+}
+function acceptsJson(value: string | string[] | undefined): boolean {
+  const accept = listHeaderValue(value);
+  if (!accept) return false;
+  const ranges = accept.split(",");
+  if (ranges.length > 32) return false;
+  return ranges.some((range) => {
+    const parts = range.split(";").map((part) => part.trim());
+    if (parts[0]?.toLowerCase() !== "application/json") return false;
+    let quality = 1;
+    for (const parameter of parts.slice(1)) {
+      const separator = parameter.indexOf("=");
+      if (separator < 1) continue;
+      const name = parameter.slice(0, separator).trim().toLowerCase();
+      if (name !== "q") continue;
+      const raw = parameter.slice(separator + 1).trim();
+      if (!/^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/.test(raw)) return false;
+      quality = Number(raw);
+    }
+    return quality > 0;
+  });
+}
 function rpcError(code: number, message: string): string { return `${JSON.stringify({ jsonrpc: "2.0", id: null, error: { code, message } })}\n`; }
 function sendResult(response: any, result: RemoteHttpResult): void {
   const base = { "cache-control": "no-store", "x-content-type-options": "nosniff", ...result.headers };
@@ -128,8 +154,7 @@ export class StreamableHttpServer {
         if (request.method !== "POST") { response.setHeader("allow", "POST, DELETE"); sendError(response, 405, -32601, "Method not allowed"); return; }
         const contentType = headerValue(request.headers["content-type"]);
         if (!contentType || contentType.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") { sendError(response, 415, -32600, "Content-Type must be application/json"); return; }
-        const accept = headerValue(request.headers.accept);
-        if (!accept || !accept.toLowerCase().includes("application/json")) { sendError(response, 406, -32600, "Accept must include application/json"); return; }
+        if (!acceptsJson(request.headers.accept)) { sendError(response, 406, -32600, "Accept must include application/json"); return; }
         const disconnected = new AbortController();
         request.once?.("aborted", () => disconnected.abort());
         const result = await withRemoteTimeout(async (signal) => {
