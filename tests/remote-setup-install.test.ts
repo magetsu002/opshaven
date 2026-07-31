@@ -137,6 +137,13 @@ test("restricted authorized key forces the exact read-only wrapper and denies cl
   assert.throws(() => buildRestrictedAuthorizedKey("ssh-rsa bad", "/usr/local/bin/opshaven-readonly-force-command", "/etc/opshaven/config.json"), /Ed25519/);
 });
 
+test("remote installer validates an existing parent without changing its ownership", async () => {
+  const installer = await fs.readFile(path.join(process.cwd(), "packaging", "remote-setup-installer.py"), "utf8");
+  const atomicCopy = installer.slice(installer.indexOf("def atomic_copy"), installer.indexOf("def backup_path"));
+  assert.equal(atomicCopy.includes("require_directory(destination.parent)"), true);
+  assert.equal(atomicCopy.includes("ensure_directory(destination.parent"), false);
+});
+
 test("installer stages only public and runtime material and validates installed tree evidence", async () => {
   const root = await fs.mkdtemp(path.join(tmpdir(), "opshaven-install-test-"));
   try {
