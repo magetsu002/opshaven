@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import pathlib
+import pwd
 import shutil
 import stat
 import subprocess
@@ -12,9 +13,9 @@ import tempfile
 CONFIG = pathlib.Path("/etc/opshaven/config.json")
 DESTINATIONS = {
     "operator-public.pem": (pathlib.Path("/etc/opshaven/approval-public.pem"), 0o644),
-    "capability.json": (pathlib.Path(f"{CONFIG}.capability.json"), 0o600),
+    "capability.json": (pathlib.Path(f"{CONFIG}.capability.json"), 0o644),
     "declaration.json": (pathlib.Path(f"{CONFIG}.declaration.json"), 0o644),
-    "binding.json": (pathlib.Path(f"{CONFIG}.declaration-binding.json"), 0o600),
+    "binding.json": (pathlib.Path(f"{CONFIG}.declaration-binding.json"), 0o644),
 }
 RESPONSE_PRIVATE = pathlib.Path(f"{CONFIG}.response-private.pem")
 RESPONSE_PUBLIC = pathlib.Path(f"{CONFIG}.response-public.pem")
@@ -58,17 +59,18 @@ def backup_existing(destination, backup_root):
     if not destination.exists():
         return None
     regular(destination)
+    original = os.lstat(destination)
     backup = backup_path(destination, backup_root)
     backup.parent.mkdir(parents=True, exist_ok=True)
     if backup.exists():
         fail(f"trust backup already exists: {backup}")
     shutil.copy2(destination, backup, follow_symlinks=False)
-    os.chmod(backup, stat.S_IMODE(os.lstat(destination).st_mode))
-    os.chown(backup, 0, 0)
+    os.chmod(backup, stat.S_IMODE(original.st_mode))
+    os.chown(backup, original.st_uid, original.st_gid)
     return backup
 
 
-def atomic_copy(source, destination, mode):
+def atomic_copy(source, destination, mode, uid=0, gid=0):
     regular(source)
     directory(destination.parent)
     descriptor, temporary = tempfile.mkstemp(prefix=".opshaven-trust-", dir=destination.parent)
@@ -78,7 +80,7 @@ def atomic_copy(source, destination, mode):
             output.flush()
             os.fsync(output.fileno())
         os.chmod(temporary, mode)
-        os.chown(temporary, 0, 0)
+        os.chown(temporary, uid, gid)
         os.replace(temporary, destination)
     finally:
         if os.path.exists(temporary):
@@ -101,17 +103,17 @@ def atomic_json(value, destination):
             os.unlink(temporary)
 
 
-def install_changed(source, destination, mode, backup_root, journal, changed):
+def install_changed(source, destination, mode, backup_root, journal, changed, uid=0, gid=0):
     source_hash = sha256_file(source)
     if destination.exists():
         regular(destination)
         if sha256_file(destination) == source_hash:
             os.chmod(destination, mode)
-            os.chown(destination, 0, 0)
+            os.chown(destination, uid, gid)
             return
     backup = backup_existing(destination, backup_root)
     journal.append((destination, backup))
-    atomic_copy(source, destination, mode)
+    atomic_copy(source, destination, mode, uid, gid)
     changed.append(str(destination))
 
 
@@ -204,6 +206,7 @@ def main():
     stage = pathlib.Path(sys.argv[1])
     if not stage.is_absolute() or stage.parent != pathlib.Path("/tmp") or stage.is_symlink() or not stage.is_dir():
         fail("remote trust stage is invalid")
+    runtime_gid = pwd.getpwnam("opshaven").pw_gid
     plan, backup_root = load_plan(stage)
     receipt = load_receipt(plan)
     journal = []
@@ -212,7 +215,7 @@ def main():
         for name, (destination, mode) in DESTINATIONS.items():
             install_changed(stage / name, destination, mode, backup_root, journal, changed)
         private_stage, public_stage = generate_response_pair(stage)
-        install_changed(private_stage, RESPONSE_PRIVATE, 0o600, backup_root, journal, changed)
+        install_changed(private_stage, RESPONSE_PRIVATE, 0o640, backup_root, journal, changed, 0, runtime_gid)
         install_changed(public_stage, RESPONSE_PUBLIC, 0o644, backup_root, journal, changed)
         receipt_changed = list(receipt["changed"])
         for item in changed:
