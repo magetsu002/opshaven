@@ -2,7 +2,7 @@ import type { McpPrincipal } from "../mcp.js";
 import type { EnabledRemoteMcpConfig } from "./config.js";
 
 export class RemoteLimitError extends Error {
-  constructor(readonly status: 400 | 408 | 413 | 429 | 503, message = "Remote MCP resource limit was exceeded.") { super(message); }
+  constructor(readonly status: 400 | 403 | 408 | 413 | 429 | 503, message = "Remote MCP resource limit was exceeded.") { super(message); }
 }
 
 export function validateHeaderLimits(headers: Readonly<Record<string, string | string[] | undefined>>, maximumHeaders: number, maximumBytes: number): void {
@@ -57,9 +57,7 @@ export class RemoteAdmissionController {
   private closed = false;
   constructor(private readonly config: EnabledRemoteMcpConfig, private readonly clock: () => number = Date.now) {}
 
-  private profile(principal: McpPrincipal) {
-    return this.config.profiles.find((profile) => profile.id === principal.profileId);
-  }
+  private profile(principal: McpPrincipal) { return this.config.profiles.find((profile) => profile.id === principal.profileId); }
   private consumeRate(window: RateWindow, seconds: number, maximum: number): void {
     const now = this.clock();
     if (now - window.startedAt >= seconds * 1000) { window.startedAt = now; window.count = 0; }
@@ -67,9 +65,9 @@ export class RemoteAdmissionController {
     window.count += 1;
   }
   private checkRate(principal: McpPrincipal): void {
-    this.consumeRate(this.globalRate, this.config.rateLimits.windowSeconds, this.config.rateLimits.maximumRequests);
     const profile = this.profile(principal);
-    if (!profile) throw new RemoteLimitError(403 as 400, "Remote MCP profile is unavailable.");
+    if (!profile) throw new RemoteLimitError(403, "Remote MCP profile is unavailable.");
+    this.consumeRate(this.globalRate, this.config.rateLimits.windowSeconds, this.config.rateLimits.maximumRequests);
     const window = this.principalRates.get(principal.id) ?? { startedAt: 0, count: 0 };
     this.principalRates.set(principal.id, window);
     this.consumeRate(window, profile.rateLimits.windowSeconds, profile.rateLimits.maximumRequests);
@@ -133,9 +131,8 @@ export async function withRemoteTimeout<T>(work: (signal: AbortSignal) => Promis
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const disconnect = (): void => controller.abort();
   disconnected?.addEventListener("abort", disconnect, { once: true });
-  try {
-    return await work(controller.signal);
-  } catch (error) {
+  try { return await work(controller.signal); }
+  catch (error) {
     if (controller.signal.aborted) throw new RemoteLimitError(408, "Remote MCP request timed out or was cancelled.");
     throw error;
   } finally {
