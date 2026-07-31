@@ -75,7 +75,7 @@ export async function verifyBoundary(config: OpsHavenConfig, configPath: string,
   }
   assertions.push(assertion("artifact and capability hashes valid", validResponse, validDetail));
   const denialCases = [
-    ["unknown operation denied", { ...baseRequest, requestId: "boundary-unknown-op", operation: "unknown_operation" }, "REMOTE_PROTOCOL_INVALID"],
+    ["unknown operation denied", { ...baseRequest, requestId: "boundary-unknown-op", operation: "unknown_operation" }, mode === "read-only" ? "REMOTE_PROTOCOL_INVALID" : "UNKNOWN_OPERATION"],
     ["unknown resource denied", { ...baseRequest, requestId: "boundary-unknown-resource", resourceId: "host.unknown", args: { resourceId: "host.unknown" } }, "UNKNOWN_RESOURCE"],
   ] as const;
   for (const [name, request, expectedCode] of denialCases) {
