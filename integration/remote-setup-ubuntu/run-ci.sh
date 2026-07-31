@@ -5,7 +5,7 @@ LOG="$(mktemp)"
 cleanup() { rm -f "$LOG"; }
 trap cleanup EXIT
 set +e
-bash "$ROOT/integration/remote-setup-ubuntu/run.sh" >"$LOG" 2>&1
+OPSHAVEN_DEBUG=1 bash "$ROOT/integration/remote-setup-ubuntu/run.sh" >"$LOG" 2>&1
 STATUS=$?
 set -e
 if [[ $STATUS -ne 0 ]]; then
