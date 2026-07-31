@@ -2,7 +2,7 @@
 
 OpsHaven gives AI clients useful VPS visibility and narrowly controlled operations without giving them a general-purpose shell.
 
-The goal is not to make the operator trust the project author. The operator owns the keys, capability policy, resource mappings, installation, and updates. OpsHaven makes that authority visible, testable, and independently enforced on the VPS.
+The goal is not to make the operator trust the project author. The operator owns the keys, capability policy, resource mappings, installation, updates, remote identity policy, and proxy or tunnel configuration. OpsHaven makes that authority visible, testable, and independently enforced on the VPS.
 
 ## Recommended trust posture
 
@@ -20,11 +20,11 @@ In that mode, use:
 - `opshaven verify-boundary` before connecting an AI client;
 - `opshaven trust-report` to review the active boundary.
 
-Move to controlled mode only when restart, deployment, or rollback authority is actually needed and its exact privileges have been reviewed.
+Move to controlled mode only when restart, deployment, or rollback authority is actually needed and its exact privileges have been reviewed. Controlled mutation tools remain unavailable through the remote MCP transport.
 
 ## Operator ownership
 
-Keep SSH private keys, approval signing material, capability-signing keys, release keys, configuration, known-hosts files, and audit state private. Key material should be owned by the local user with mode `0600`.
+Keep SSH private keys, approval signing material, capability-signing keys, release keys, configuration, known-hosts files, OAuth policy, and audit state private. Key material should be owned by the local user with mode `0600`.
 
 Configuration and trust files should be regular files rather than symlinks. Approval and audit directories should only be accessible to the operator.
 
@@ -46,6 +46,8 @@ The VPS rejects missing, altered, expired, incompatible, or non-canonical capabi
 
 Each build also declares its non-API authority, including handlers, filesystem access, executables, network requirements, sudo requirements, and output fields. Capability comparison is intended to make permission growth visible before adoption.
 
+Remote MCP requires the separately signed read-only capability. The authenticated principal profile and the signed capability are intersected per tool and per logical resource. A tool or resource must be present in both authorities before it appears in discovery or can execute.
+
 ## Authenticated protocol
 
 Requests bind the validated operation, resource, arguments, capability hash, dispatcher hash, nonce, issue time, and expiry. The dispatcher rejects unsigned, stale, replayed, modified, or mismatched requests.
@@ -53,6 +55,35 @@ Requests bind the validated operation, resource, arguments, capability hash, dis
 Responses bind the originating request hash, result hash, active capability, dispatcher identity, and timestamp. The local process rejects unsigned, altered, stale, or mismatched responses.
 
 SSH already encrypts transport. These signatures add end-to-end integrity and authority binding, but they do not protect an endpoint whose trusted runtime or private keys are already compromised.
+
+## Remote MCP entrance
+
+Remote MCP is disabled when the reviewed companion configuration is absent. Enabling it starts only an explicitly requested Streamable HTTP listener. The supported deployment keeps that listener on loopback and exposes only the configured MCP path through a reviewed HTTPS tunnel or trusted reverse proxy.
+
+Every request passes these boundaries before MCP or SSH processing:
+
+- bounded header count and bytes;
+- OAuth/OIDC bearer verification with a configured algorithm allowlist;
+- exact issuer, audience, expiry, not-before, issue-time, and scope checks;
+- immutable issuer-and-subject principal identity;
+- operator-owned subject-to-profile mapping;
+- exact HTTPS Origin allowlist;
+- exact Host allowlist;
+- forwarding headers accepted only from configured proxy addresses;
+- request-body and JSON structural limits;
+- global and per-principal rate and concurrency limits;
+- protocol and session validation;
+- signed read-only capability intersection.
+
+Tokens in query strings are rejected. Raw bearer tokens are not included in logs, errors, audit records, responses, URLs printed by the CLI, fixtures, or generated artifacts. Provider discovery and JWKS retrieval use bounded HTTPS requests, exact issuer matching, an explicit JWKS host allowlist, bounded caches, and fail-closed refresh behavior.
+
+The finalized stateless MCP revision rejects session headers. Older supported revisions use cryptographically random in-memory sessions bound to the authenticated principal, profile, and protocol revision. Sessions have bounded lifetimes, inactivity limits, pending-request limits, replay protection, and are cleared on shutdown.
+
+Request timeout or client disconnect propagates cancellation to the operation service and restricted SSH child. The server bounds request, response, queue, connection, and idle resources before expensive work.
+
+The remote transport never accepts runtime configuration paths, SSH identities, executable paths, service names, repository paths, environment assignments, SQL, scripts, shell text, or profile selection from the client. It exposes no SSH, dispatcher, Docker, Podman, filesystem, configuration, diagnostics, or administrative HTTP endpoint.
+
+Direct public binding, plaintext public exposure, wildcard origins or hosts, unauthenticated fallback, and generic stdio-to-HTTP bridges are outside the reviewed boundary. See [Secure remote MCP](remote-mcp.md).
 
 ## Secrets, logs, and resources
 
@@ -88,17 +119,19 @@ The design specifically reduces risk from:
 - stolen restricted SSH credentials;
 - arbitrary command and argument injection;
 - malicious or oversized log output;
-- capability, request, response, or approval mutation;
+- capability, request, response, token, session, or approval mutation;
 - replay and stale authenticated messages;
 - path traversal, symlink substitution, and unsafe trust files;
 - silent permission growth across updates;
-- deployment state drift and rollback-record tampering.
+- deployment state drift and rollback-record tampering;
+- untrusted origins, hosts, forwarding headers, and cross-principal session reuse;
+- request, response, JSON, queue, rate, concurrency, and timeout exhaustion.
 
 ## Remaining assumptions
 
-OpsHaven is not a replacement for host hardening. The boundary still assumes a trustworthy VPS kernel, OpenSSH, Node.js runtime, systemd installation, fixed system executables, operator-owned keys, logical-resource mappings, and exact sudo configuration.
+OpsHaven is not a replacement for host hardening. The boundary still assumes a trustworthy VPS kernel, OpenSSH, Node.js runtime, systemd installation, fixed system executables, operator-owned keys, logical-resource mappings, exact sudo configuration, OAuth issuer, DNS, HTTPS tunnel or trusted proxy, and token revocation process.
 
-A root-level host compromise, compromised operator machine, stolen signing key, malicious trusted runtime, or incorrectly granted OS permission can break the intended boundary.
+A root-level host compromise, compromised operator machine, stolen signing key, compromised identity provider, malicious trusted runtime or proxy, or incorrectly granted OS permission can break the intended boundary.
 
 Use `opshaven trust-report` to review the enforced boundary and remaining assumptions. Do not claim that any deployment is unhackable or absolutely safe.
 
@@ -109,11 +142,12 @@ Before submitting changes, run:
 ```bash
 npm run release:check
 npm run security
-scripts/check-reproducible-build.sh
+npm run reproducible:check
 integration/disposable-vps/run.sh
+integration/remote-mcp-podman/run.sh
 ```
 
-CI checks formatting, lint, strict type safety, both dispatcher builds, tests, package contents, documentation links, lockfile integrity, action pinning, reproducibility, dependency audit, secret scanning, CodeQL, and the disposable restricted-SSH lifecycle.
+CI checks formatting, lint, strict type safety, both dispatcher builds, stdio and remote transport tests, package contents, documentation links, lockfile integrity, action pinning, reproducibility, dependency audit, secret scanning, CodeQL, the disposable restricted-SSH lifecycle, and rootless remote-MCP integration.
 
 ## Reporting a vulnerability
 
