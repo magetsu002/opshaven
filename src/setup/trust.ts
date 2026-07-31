@@ -19,6 +19,7 @@ import {
 } from "../capability-declaration.js";
 import { loadConfig } from "../config.js";
 import { OpsHavenError } from "../errors.js";
+import { readRegularFile } from "../safe-fs.js";
 import type { RemoteInstallResult } from "./install.js";
 import type { RemoteSetupConfig } from "./remote.js";
 import { PinnedSshAdminTransport, type RemoteAdminTransport } from "./transport.js";
@@ -79,8 +80,8 @@ async function buildTrustMaterial(config: RemoteSetupConfig): Promise<TrustMater
   const dispatcherSha256 = await dispatcherArtifactSha256(config.local.dispatcherPath);
   const declaration = await loadCapabilityDeclaration(config.local.capabilityDeclarationPath);
   const declarationSha256 = capabilityDeclarationHash(declaration);
-  const operatorPrivateKey = await fs.readFile(config.local.operatorPrivateKeyFile);
-  const operatorPublicKey = await fs.readFile(config.local.operatorPublicKeyFile);
+  const operatorPrivateKey = await readRegularFile(config.local.operatorPrivateKeyFile, "Operator signing private key", { ownerOnly: true, maxBytes: 1048576, code: "POLICY_DENIED" });
+  const operatorPublicKey = await readRegularFile(config.local.operatorPublicKeyFile, "Operator signing public key", { maxBytes: 1048576, code: "POLICY_DENIED" });
   assertKeyPair(operatorPrivateKey, operatorPublicKey);
   const issuedAt = new Date();
   const expiresAt = new Date(issuedAt.getTime() + config.trust.expiresInSeconds * 1000).toISOString();
@@ -89,20 +90,6 @@ async function buildTrustMaterial(config: RemoteSetupConfig): Promise<TrustMater
   verifyCapabilityManifest(remoteConfig, capability, operatorPublicKey, "read-only", dispatcherSha256, issuedAt.getTime());
   verifyDeclarationBinding(remoteConfig, binding, operatorPublicKey, "read-only", dispatcherSha256, declarationSha256, issuedAt.getTime());
   return Object.freeze({ capability, declaration, binding, operatorPublicKey, dispatcherSha256, declarationSha256, expiresAt });
-}
-
-function installScript(config: RemoteSetupConfig, remoteStage: string): string {
-  const paths = {
-    stage: remoteStage,
-    config: config.remote.configPath,
-    publicKey: "/etc/opshaven/approval-public.pem",
-    capability: `${config.remote.configPath}.capability.json`,
-    declaration: `${config.remote.configPath}.declaration.json`,
-    binding: `${config.remote.configPath}.declaration-binding.json`,
-    responsePrivate: `${config.remote.configPath}.response-private.pem`,
-    responsePublic: `${config.remote.configPath}.response-public.pem`,
-  };
-  return `import hashlib, json, os, pathlib, shutil, stat, subprocess, tempfile\npaths=json.loads(${JSON.stringify(JSON.stringify(paths))})\nos.umask(0o077)\ndef fail(message): raise RuntimeError(message)\ndef regular(path, maximum=1048576):\n    info=os.lstat(path)\n    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_size > maximum: fail('unsafe trust file')\ndef atomic_copy(source, destination, mode):\n    regular(source)\n    parent=pathlib.Path(destination).parent\n    info=os.lstat(parent)\n    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode): fail('unsafe trust destination')\n    descriptor, temporary=tempfile.mkstemp(prefix='.opshaven-trust-', dir=parent)\n    try:\n        with os.fdopen(descriptor, 'wb') as output, open(source, 'rb') as input_handle:\n            shutil.copyfileobj(input_handle, output, 1048576)\n            output.flush(); os.fsync(output.fileno())\n        os.chmod(temporary, mode); os.chown(temporary, 0, 0); os.replace(temporary, destination)\n    finally:\n        if os.path.exists(temporary): os.unlink(temporary)\nstage=pathlib.Path(paths['stage'])\nif not stage.is_absolute() or stage.parent != pathlib.Path('/tmp') or stage.is_symlink() or not stage.is_dir(): fail('invalid trust stage')\nfor name, destination, mode in (\n    ('operator-public.pem', paths['publicKey'], 0o644),\n    ('capability.json', paths['capability'], 0o600),\n    ('declaration.json', paths['declaration'], 0o644),\n    ('binding.json', paths['binding'], 0o600),\n): atomic_copy(stage / name, destination, mode)\nif not os.path.exists(paths['responsePrivate']):\n    result=subprocess.run(['/usr/bin/openssl','genpkey','-algorithm','Ed25519','-out',paths['responsePrivate']], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=False)\n    if result.returncode != 0: fail('response private key generation failed')\nos.chmod(paths['responsePrivate'], 0o600); os.chown(paths['responsePrivate'], 0, 0)\nresult=subprocess.run(['/usr/bin/openssl','pkey','-in',paths['responsePrivate'],'-pubout','-out',paths['responsePublic']], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=False)\nif result.returncode != 0: fail('response public key generation failed')\nos.chmod(paths['responsePublic'], 0o644); os.chown(paths['responsePublic'], 0, 0)\nevidence={}\nfor key in ('publicKey','capability','declaration','binding','responsePublic'):\n    file_path=paths[key]; regular(file_path); evidence[key]=hashlib.sha256(open(file_path,'rb').read()).hexdigest()\nprint(json.dumps({'ok':True,'hashes':evidence,'responsePublic':paths['responsePublic']}, sort_keys=True))\nshutil.rmtree(stage)\n`;
 }
 
 function parseRemoteEvidence(stdout: string): { hashes: Record<string, string>; responsePublic: string } {
@@ -127,24 +114,34 @@ export async function provisionRemoteTrust(
   install: RemoteInstallResult,
   transport: RemoteAdminTransport = new PinnedSshAdminTransport(config),
 ): Promise<RemoteTrustReceipt> {
-  if (!install.ok || !/^[a-f0-9]{64}$/.test(install.runtimeTreeSha256)) throw new OpsHavenError("POLICY_DENIED", "Trust provisioning requires verified runtime installation evidence.");
+  if (!install.ok || !/^[a-f0-9]{64}$/.test(install.runtimeTreeSha256) || !/^\/var\/lib\/opshaven\/backups\/[A-Za-z0-9]+$/.test(install.backupRoot)) throw new OpsHavenError("POLICY_DENIED", "Trust provisioning requires verified runtime installation and backup evidence.");
   const material = await buildTrustMaterial(config);
-  if (material.dispatcherSha256 !== createHash("sha256").update(await fs.readFile(config.local.dispatcherPath)).digest("hex")) throw new OpsHavenError("POLICY_DENIED", "Dispatcher changed during trust generation.");
+  if (material.dispatcherSha256 !== await dispatcherArtifactSha256(config.local.dispatcherPath)) throw new OpsHavenError("POLICY_DENIED", "Dispatcher changed during trust generation.");
   const stage = await fs.mkdtemp(path.join(tmpdir(), "opshaven-trust-"));
   const remoteStage = `/tmp/${path.basename(stage)}`;
   const capabilityText = `${JSON.stringify(material.capability)}\n`;
   const declarationText = `${JSON.stringify(material.declaration)}\n`;
   const bindingText = `${JSON.stringify(material.binding)}\n`;
+  const plan = Object.freeze({
+    version: 1,
+    stageRoot: remoteStage,
+    backupRoot: install.backupRoot,
+    receiptPath: config.remote.receiptPath,
+    receiptId: install.receiptId,
+    sourceSha: config.expectedSourceSha,
+  });
   try {
     await Promise.all([
       fs.writeFile(path.join(stage, "operator-public.pem"), material.operatorPublicKey, { mode: 0o600 }),
       fs.writeFile(path.join(stage, "capability.json"), capabilityText, { mode: 0o600 }),
       fs.writeFile(path.join(stage, "declaration.json"), declarationText, { mode: 0o600 }),
       fs.writeFile(path.join(stage, "binding.json"), bindingText, { mode: 0o600 }),
+      fs.writeFile(path.join(stage, "trust-plan.json"), `${JSON.stringify(plan)}\n`, { mode: 0o600 }),
+      fs.copyFile(path.join(process.cwd(), "packaging", "remote-trust-installer.py"), path.join(stage, "installer.py")),
     ]);
     const uploaded = await transport.upload(stage, "/tmp", true);
     if (uploaded.code !== 0) throw new OpsHavenError("SSH_FAILED", "Remote trust upload failed.", true);
-    const installed = await transport.runPython(installScript(config, remoteStage), true);
+    const installed = await transport.runPrivileged(["/usr/bin/python3", `${remoteStage}/installer.py`, remoteStage], { timeoutMs: 120000, maximumBytes: 1048576 });
     if (installed.code !== 0) throw new OpsHavenError("SSH_FAILED", `Remote trust installation failed safely: ${installed.stderr.trim() || "no diagnostic"}.`, true);
     const evidence = parseRemoteEvidence(installed.stdout);
     const expected = {
@@ -157,7 +154,7 @@ export async function provisionRemoteTrust(
     const localResponsePublic = `${config.policyConfigPath}.response-public.pem`;
     const downloaded = await transport.download(evidence.responsePublic, localResponsePublic);
     if (downloaded.code !== 0) throw new OpsHavenError("SSH_FAILED", "Response public-key download failed.", true);
-    const responsePublic = await fs.readFile(localResponsePublic);
+    const responsePublic = await readRegularFile(localResponsePublic, "Downloaded response public key", { maxBytes: 1048576, code: "POLICY_DENIED" });
     if (hashBytes(responsePublic) !== evidence.hashes.responsePublic) throw new OpsHavenError("POLICY_DENIED", "Downloaded response public key does not match remote evidence.");
     createPublicKey(responsePublic);
     await Promise.all([
