@@ -101,15 +101,18 @@ test("guided initialization creates internal setup state without manual configur
     const root = path.join(home, ".config", "opshaven");
     const setupPath = path.join(root, "setup.json");
     const configPath = path.join(root, "config.json");
-    assert.equal((await fs.stat(setupPath)).isFile(), true);
-    assert.equal((await fs.stat(configPath)).isFile(), true);
+    const [originalSetup, originalConfig] = await Promise.all([
+      fs.readFile(setupPath, "utf8"),
+      fs.readFile(configPath, "utf8"),
+    ]);
+    assert.doesNotThrow(() => JSON.parse(originalSetup));
+    assert.doesNotThrow(() => JSON.parse(originalConfig));
 
     const dryRun = await runCli(["setup", "remote", "--dry-run"], home);
     assert.equal(dryRun.code, 0, dryRun.stderr);
     assert.match(dryRun.stdout, /Remote setup plan/);
     assert.doesNotMatch(dryRun.stdout, /PRIVATE KEY|BEGIN [A-Z ]+ KEY/);
 
-    const originalSetup = await fs.readFile(setupPath, "utf8");
     await fs.writeFile(setupPath, "{\"version\":2}\n", { mode: 0o600 });
     const translated = await runCli(["setup", "remote", "--dry-run"], home);
     assert.equal(translated.code, 1);
