@@ -74,8 +74,12 @@ export async function certifyRemoteBoundary(setup: RemoteSetupConfig, injected?:
     "malformed input returns structured denial",
     "certification output contains no apparent secrets",
   ];
-  const complete = required.every((name) => assertions.some((item) => item.name === name && item.passed));
-  if (!report.ok || !complete || assertions.some((item) => !item.passed)) throw new OpsHavenError("POLICY_DENIED", "Remote boundary certification failed; endpoint setup remains blocked.");
+  const incomplete = required.filter((name) => !assertions.some((item) => item.name === name && item.passed));
+  const failed = assertions.filter((item) => !item.passed).map((item) => item.name);
+  if (!report.ok || incomplete.length > 0 || failed.length > 0) {
+    const names = [...new Set([...incomplete, ...failed])].sort();
+    throw new OpsHavenError("POLICY_DENIED", `Remote boundary certification failed (${names.join(", ") || "unknown assertion"}); endpoint setup remains blocked.`);
+  }
   const certifiedAt = new Date().toISOString();
   const canonical = JSON.stringify(assertions.map((item) => ({ detail: item.detail, name: item.name, passed: item.passed })).sort((a, b) => a.name.localeCompare(b.name)));
   const boundarySha256 = createHash("sha256").update(canonical).digest("hex");
