@@ -117,3 +117,18 @@ test("preflight fails closed when the pinned fingerprint is not the reviewed val
   assert.equal(report.ok, false);
   assert.equal(report.checks.find((item) => item.id === "host-key-fingerprint")?.state, "failed");
 });
+
+test("preflight rejects manipulated process output instead of treating a contained value as trusted", async () => {
+  const config = parseRemoteSetupConfig(fixture());
+  const runtime = preflightRuntime(config) as any;
+  const original = runtime.runLocal;
+  runtime.runLocal = async (command: string, args: readonly string[], cwd?: string) => {
+    if (command === "/usr/bin/git") return { code: 0, stdout: `${config.expectedSourceSha} attacker-controlled-suffix\n`, stderr: "" };
+    if (command === "/usr/bin/ssh-keygen") return { code: 0, stdout: `256 prefix${config.target.expectedHostKeySha256}suffix host (ED25519)\n`, stderr: "" };
+    return await original(command, args, cwd);
+  };
+  const report = await preflightRemoteSetup(config, runtime);
+  assert.equal(report.ok, false);
+  assert.equal(report.checks.find((item: any) => item.id === "source-head")?.state, "failed");
+  assert.equal(report.checks.find((item: any) => item.id === "host-key-fingerprint")?.state, "failed");
+});
