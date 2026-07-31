@@ -61,7 +61,7 @@ test("invalid CLI commands fail clearly before configuration loading", async () 
 test("operational CLI commands still require initialized operator state", async () => {
   const result = await runCli(["validate-config"]);
   assert.equal(result.code, 1);
-  assert.match(result.stderr, /Operator setup is not initialized\./);
+  assert.match(result.stderr, /Setup is not initialized\./);
   assert.match(result.stderr, /opshaven init/);
   assert.doesNotMatch(result.stderr, /RemoteSetupConfig|schema/i);
 });
