@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
+import { preflightRemoteSetup, type PreflightRuntime } from "../src/setup/preflight.js";
 import { buildRemoteSetupPlan, parseRemoteSetupConfig } from "../src/setup/remote.js";
 
-function fixture(): unknown {
+function fixture(): any {
   return {
     version: 1,
     policyConfigPath: "/home/operator/.config/opshaven/config.json",
@@ -52,13 +54,66 @@ test("remote setup plan is deterministic and contains exact reviewed mutations",
 });
 
 test("remote setup schema rejects unsafe paths and authority changes", () => {
-  const unsafe = fixture() as any;
+  const unsafe = fixture();
   unsafe.remote.runtimeRoot = "/opt/opshaven";
   assert.throws(() => parseRemoteSetupConfig(unsafe), /remote\.runtimeRoot/);
-  const traversal = fixture() as any;
+  const traversal = fixture();
   traversal.local.runtimeRoot = "/workspace/../secret";
   assert.throws(() => parseRemoteSetupConfig(traversal), /normalized absolute path/);
-  const account = fixture() as any;
+  const account = fixture();
   account.remote.account = "root";
   assert.throws(() => parseRemoteSetupConfig(account), /remote\.account/);
+});
+
+function preflightRuntime(configValue: ReturnType<typeof parseRemoteSetupConfig>, fingerprint = configValue.target.expectedHostKeySha256): PreflightRuntime {
+  const pair = generateKeyPairSync("ed25519");
+  const privatePem = pair.privateKey.export({ type: "pkcs8", format: "pem" });
+  const publicPem = pair.publicKey.export({ type: "spki", format: "pem" });
+  const files = new Map<string, Uint8Array>([
+    [configValue.local.operatorPrivateKeyFile, Buffer.from(String(privatePem))],
+    [configValue.local.operatorPublicKeyFile, Buffer.from(String(publicPem))],
+  ]);
+  const remoteFacts = JSON.stringify({
+    platform: "Linux",
+    distribution: "ubuntu",
+    version: "26.04",
+    architecture: "x86_64",
+    nodePath: "/usr/bin/node",
+    nodeVersion: "v22.23.1",
+    freeBytes: 536870912,
+    installation: { accountExists: false, runtimeExists: false, wrapperExists: false, configExists: false, receiptExists: false },
+  });
+  return {
+    remote: {
+      run: async () => ({ code: 0, stdout: "", stderr: "" }),
+      runPrivileged: async () => ({ code: 0, stdout: "0\n", stderr: "" }),
+      runPython: async () => ({ code: 0, stdout: remoteFacts, stderr: "" }),
+      upload: async () => ({ code: 0, stdout: "", stderr: "" }),
+      download: async () => ({ code: 0, stdout: "", stderr: "" }),
+    },
+    runLocal: async (command) => {
+      if (command === "/usr/bin/uname") return { code: 0, stdout: "Linux\n", stderr: "" };
+      if (command === "/usr/bin/git") return { code: 0, stdout: `${configValue.expectedSourceSha}\n`, stderr: "" };
+      if (command === "/usr/bin/ssh-keygen") return { code: 0, stdout: `256 ${fingerprint} host (ED25519)\n`, stderr: "" };
+      return { code: 1, stdout: "", stderr: "unexpected command" };
+    },
+    readFile: async (filePath) => files.get(filePath) ?? Buffer.from("fixture"),
+    lstat: async (filePath) => ({ isFile: () => true, isSymbolicLink: () => false, mode: filePath.includes("private") || filePath.endsWith("id_ed25519") || filePath.endsWith("config.json") ? 0o100600 : 0o100644 }),
+  };
+}
+
+test("preflight verifies exact source, pinned host key, local keys, remote platform, Node, disk, and privilege", async () => {
+  const config = parseRemoteSetupConfig(fixture());
+  const report = await preflightRemoteSetup(config, preflightRuntime(config));
+  assert.equal(report.ok, true);
+  assert.equal(report.nodePath, "/usr/bin/node");
+  assert.equal(report.remote?.installation.accountExists, false);
+  assert.equal(report.checks.every((item) => item.state === "passed"), true);
+});
+
+test("preflight fails closed when the pinned fingerprint is not the reviewed value", async () => {
+  const config = parseRemoteSetupConfig(fixture());
+  const report = await preflightRemoteSetup(config, preflightRuntime(config, "SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"));
+  assert.equal(report.ok, false);
+  assert.equal(report.checks.find((item) => item.id === "host-key-fingerprint")?.state, "failed");
 });
