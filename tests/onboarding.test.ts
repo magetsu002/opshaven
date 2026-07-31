@@ -89,6 +89,7 @@ test("guided initialization creates internal setup state without manual configur
     const sourceSha = "a".repeat(40);
     const initialized = await runCli([
       "init",
+      "--debug",
       "--non-interactive",
       "--host", "127.0.0.1",
       "--port", "2222",
