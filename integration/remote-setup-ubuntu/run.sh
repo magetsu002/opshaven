@@ -3,7 +3,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIR="$ROOT/integration/remote-setup-ubuntu"
 GEN="$DIR/generated"
-STATE="$GEN/operator-state"
 IMAGE="opshaven-remote-setup-ubuntu"
 CONTAINER="opshaven-remote-setup-ubuntu-$RANDOM"
 PORT=22224
@@ -34,8 +33,8 @@ FINGERPRINT="$(ssh-keygen -lf "$GEN/known_hosts" -E sha256 | awk 'NR==1 {print $
 SOURCE_SHA="$(git -C "$ROOT" rev-parse HEAD)"
 
 CLI=(node "$ROOT/dist/src/cli-entry.js")
-export OPSHAVEN_HOME="$STATE"
 export HOME="$GEN/home"
+STATE="$HOME/.config/opshaven"
 install -d -m 700 "$HOME"
 
 "${CLI[@]}" init \
