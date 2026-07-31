@@ -8,6 +8,7 @@ const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 export interface HttpRequestIdentity {
   readonly authorization: string | undefined;
   readonly remoteAddress: string;
+  readonly requestTarget: string;
   readonly headers: Readonly<Record<string, string | string[] | undefined>>;
 }
 export interface PrincipalVerifier {
@@ -131,7 +132,7 @@ export class StreamableHttpServer {
     const maximum = this.options.maxBodyBytes ?? 1048576;
     this.server = createServer(async (request: any, response: any) => {
       try {
-        const principal = await this.options.verifier.verify({ authorization: headerValue(request.headers.authorization), remoteAddress: request.socket?.remoteAddress ?? "", headers: request.headers });
+        const principal = await this.options.verifier.verify({ authorization: headerValue(request.headers.authorization), remoteAddress: request.socket?.remoteAddress ?? "", requestTarget: request.url ?? "/", headers: request.headers });
         const target = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
         if (target.pathname !== endpoint || target.search || target.hash) { sendJson(response, 404, jsonRpcError(-32601, "Not found")); return; }
         if (request.method === "GET") { response.setHeader("allow", "POST"); sendJson(response, 405, jsonRpcError(-32601, "Method not allowed")); return; }
