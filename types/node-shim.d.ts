@@ -19,7 +19,7 @@ declare const Buffer: {
   concat(chunks: readonly Uint8Array[]): Uint8Array & { toString(encoding?: string): string; length: number };
   isBuffer(value: unknown): value is Uint8Array;
 };
-declare const URL: { new(input: string): { protocol: string; username: string; password: string; hostname: string; port: string; pathname: string; search: string; hash: string; toString(): string } };
+declare const URL: { new(input: string, base?: string): { protocol: string; username: string; password: string; hostname: string; port: string; pathname: string; search: string; hash: string; toString(): string } };
 declare namespace NodeJS {
   interface ReadableStream { on(event: string, listener: (...args: any[]) => void): this; resume(): void; }
   interface WritableStream { write(chunk: string | Uint8Array): boolean; }
@@ -34,8 +34,9 @@ declare module "node:crypto" {
   export function randomBytes(size: number): Uint8Array & { toString(encoding: "hex" | "base64url"): string };
   export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean;
   export function sign(algorithm: null, data: Uint8Array, key: string | Uint8Array): Uint8Array & { toString(encoding: "base64url"): string };
-  export function verify(algorithm: null, data: Uint8Array, key: string | Uint8Array, signature: Uint8Array): boolean;
+  export function verify(algorithm: null | string, data: Uint8Array, key: any, signature: Uint8Array): boolean;
   export function generateKeyPairSync(type: "ed25519"): { publicKey: { export(options: any): Uint8Array | string }; privateKey: { export(options: any): Uint8Array | string } };
+  export function createPublicKey(options: any): any;
 }
 declare module "node:fs" {
   export const constants: any;
@@ -46,7 +47,10 @@ declare module "node:fs" {
 declare module "node:path" { const path: any; export default path; }
 declare module "node:os" { export function tmpdir(): string; }
 declare module "node:child_process" { export function spawn(command: string, args?: readonly string[], options?: any): any; }
-declare module "node:http" { export function request(options: any, callback: (response: any) => void): any; }
+declare module "node:http" {
+  export function request(options: any, callback: (response: any) => void): any;
+  export function createServer(listener: (request: any, response: any) => void | Promise<void>): any;
+}
 declare module "node:https" { export function request(options: any, callback: (response: any) => void): any; }
 declare module "node:readline" { export function createInterface(options: any): any; }
 declare module "node:url" { export function fileURLToPath(url: string): string; }
