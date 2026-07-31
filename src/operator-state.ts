@@ -1,7 +1,7 @@
 import { createPublicKey, generateKeyPairSync, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
-import { promises as fs } from "node:fs";
-import { homedir } from "node:os";
+import { constants, promises as fs } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -230,6 +230,11 @@ async function ask(question: string, fallback = ""): Promise<string> {
   }));
 }
 
+async function confirm(question: string): Promise<boolean> {
+  const answer = await ask(`${question} [y/N]`);
+  return answer === "y" || answer === "Y";
+}
+
 function port(value: string | undefined): number {
   const parsed = value === undefined ? 22 : Number(value);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) throw new OpsHavenError("CONFIG_INVALID", "Remote SSH port is invalid.");
@@ -247,6 +252,62 @@ async function sourceSha(args: readonly string[]): Promise<string> {
   throw new OpsHavenError("CONFIG_INVALID", "Verified OpsHaven source identity is unavailable. Run from a checked-out release or pass --source-sha <commit>.");
 }
 
+function hostLookup(host: string, remotePort: number): string {
+  return remotePort === 22 ? host : `[${host}]:${remotePort}`;
+}
+
+function unique(values: readonly string[]): string[] {
+  return [...new Set(values)].sort();
+}
+
+export async function detectKnownHostFingerprint(host: string, remotePort: number, knownHosts: string): Promise<string | null> {
+  if (!HOST.test(host) || !Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535) return null;
+  let source = "";
+  try {
+    const handle = await fs.open(knownHosts, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size < 1 || stat.size > MAX_OUTPUT) return null;
+      source = await handle.readFile("utf8");
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return null;
+  }
+
+  const directory = await fs.mkdtemp(path.join(tmpdir(), "opshaven-host-identity-"));
+  const sourcePath = path.join(directory, "known_hosts");
+  const matchesPath = path.join(directory, "matches");
+  try {
+    await fs.writeFile(sourcePath, source, { mode: 0o600, flag: "wx" });
+    const found = await run("ssh-keygen", ["-F", hostLookup(host, remotePort), "-f", sourcePath]);
+    if (found.code !== 0) return null;
+    const matches = found.stdout.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
+    if (matches.length === 0) return null;
+    await fs.writeFile(matchesPath, `${matches.join("\n")}\n`, { mode: 0o600, flag: "wx" });
+    const listed = await run("ssh-keygen", ["-lf", matchesPath, "-E", "sha256"]);
+    if (listed.code !== 0) return null;
+    const candidates = listed.stdout.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
+      const parts = line.split(/\s+/);
+      return { fingerprint: parts[1] ?? "", algorithm: (parts[parts.length - 1] ?? "").replace(/[()]/g, "") };
+    }).filter((candidate) => FINGERPRINT.test(candidate.fingerprint));
+    const ed25519 = unique(candidates.filter((candidate) => candidate.algorithm === "ED25519").map((candidate) => candidate.fingerprint));
+    if (ed25519.length === 1) return ed25519[0] ?? null;
+    const all = unique(candidates.map((candidate) => candidate.fingerprint));
+    return all.length === 1 ? (all[0] ?? null) : null;
+  } catch {
+    return null;
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+}
+
+async function acceptDetectedFingerprint(fingerprint: string): Promise<void> {
+  process.stderr.write(`\nDetected host identity:\n${fingerprint}\n\n`);
+  if (!(await confirm("Accept?"))) throw new OpsHavenError("CONFIG_INVALID", "Host identity was not accepted. No setup state was created.");
+}
+
 async function collectAnswers(args: readonly string[]): Promise<Answers | null> {
   if (args.includes("--local-only")) return null;
   const interactive = (process.stdin as any).isTTY === true && !args.includes("--non-interactive");
@@ -254,20 +315,63 @@ async function collectAnswers(args: readonly string[]): Promise<Answers | null> 
   let fingerprint = flag(args, "--host-key-sha256") ?? "";
   if (!host && !fingerprint && !interactive) return null;
   if (!host && interactive) host = await ask("Remote host");
-  if (!fingerprint && interactive) fingerprint = await ask("Verified SSH host-key fingerprint");
-  if (!HOST.test(host) || !FINGERPRINT.test(fingerprint)) throw new OpsHavenError("CONFIG_INVALID", "Remote deployment details are incomplete or invalid.");
+  if (!HOST.test(host)) throw new OpsHavenError("CONFIG_INVALID", "Remote host is incomplete or invalid.");
+  const remotePort = port(flag(args, "--port"));
 
   const home = process.env.HOME ?? "";
-  const adminUser = flag(args, "--admin-user") ?? (interactive ? await ask("Administrator SSH user", "root") : "root");
-  if (!USER.test(adminUser)) throw new OpsHavenError("CONFIG_INVALID", "Administrator SSH user is invalid.");
   const defaultIdentity = home ? path.join(home, ".ssh", "id_ed25519") : "";
   const defaultKnownHosts = home ? path.join(home, ".ssh", "known_hosts") : "";
+  let knownHosts = flag(args, "--known-hosts") ?? defaultKnownHosts;
+  if (knownHosts) knownHosts = absolute(knownHosts, "Pinned known-hosts file");
+  let detected = knownHosts ? await detectKnownHostFingerprint(host, remotePort, knownHosts) : null;
+
+  if (fingerprint) {
+    if (!FINGERPRINT.test(fingerprint)) throw new OpsHavenError("CONFIG_INVALID", "SSH host-key fingerprint is invalid.");
+    if (detected && detected !== fingerprint) throw new OpsHavenError("CONFIG_INVALID", "SSH host-key fingerprint does not match the pinned known_hosts source.");
+  } else if (detected) {
+    if (!interactive) {
+      throw new OpsHavenError("CONFIG_INVALID", `Detected host identity ${detected}. Confirm it interactively or pass --host-key-sha256 ${detected} after independent verification.`);
+    }
+    await acceptDetectedFingerprint(detected);
+    fingerprint = detected;
+  } else if (interactive) {
+    process.stderr.write("\nHost identity unavailable.\n\nProvide a valid SSH fingerprint or configure a known_hosts source.\n\n");
+    if (!flag(args, "--known-hosts")) {
+      const selected = await ask("Pinned known-hosts file", defaultKnownHosts);
+      if (selected) {
+        knownHosts = absolute(selected, "Pinned known-hosts file");
+        detected = await detectKnownHostFingerprint(host, remotePort, knownHosts);
+      }
+    }
+    if (detected) {
+      await acceptDetectedFingerprint(detected);
+      fingerprint = detected;
+    } else {
+      fingerprint = await ask("Verified SSH host-key fingerprint");
+      if (!FINGERPRINT.test(fingerprint)) {
+        throw new OpsHavenError("CONFIG_INVALID", "Host identity unavailable. Provide a valid SSH fingerprint or configure a known_hosts source.");
+      }
+      process.stderr.write(`\nHost identity:\n${fingerprint}\n\n`);
+      if (!(await confirm("Accept?"))) throw new OpsHavenError("CONFIG_INVALID", "Host identity was not accepted. No setup state was created.");
+    }
+  } else {
+    throw new OpsHavenError("CONFIG_INVALID", "Host identity unavailable. Provide a valid SSH fingerprint or configure a known_hosts source.");
+  }
+
+  if (!FINGERPRINT.test(fingerprint)) throw new OpsHavenError("CONFIG_INVALID", "SSH host-key fingerprint is invalid.");
+  const adminUser = flag(args, "--admin-user") ?? (interactive ? await ask("Administrator SSH user", "root") : "root");
+  if (!USER.test(adminUser)) throw new OpsHavenError("CONFIG_INVALID", "Administrator SSH user is invalid.");
   const adminIdentity = flag(args, "--admin-identity") ?? (interactive ? await ask("Administrator SSH private key", defaultIdentity) : defaultIdentity);
-  const knownHosts = flag(args, "--known-hosts") ?? (interactive ? await ask("Pinned known-hosts file", defaultKnownHosts) : defaultKnownHosts);
+  if (!knownHosts && interactive) knownHosts = await ask("Pinned known-hosts file", defaultKnownHosts);
   if (!adminIdentity || !knownHosts) throw new OpsHavenError("CONFIG_INVALID", "Remote deployment details are not configured.");
+  const normalizedIdentity = absolute(adminIdentity, "Administrator SSH private key");
+  const normalizedKnownHosts = absolute(knownHosts, "Pinned known-hosts file");
+  if (!(await safeFile(normalizedIdentity, true)) || !(await safeFile(normalizedKnownHosts, false))) {
+    throw new OpsHavenError("CONFIG_INVALID", "Administrator SSH identity or pinned host-key file is unavailable.");
+  }
   const privilege = flag(args, "--privilege") ?? (adminUser === "root" ? "root" : "sudo-noninteractive");
   if (privilege !== "root" && privilege !== "sudo-noninteractive") throw new OpsHavenError("CONFIG_INVALID", "Remote privilege is invalid.");
-  return { host, port: port(flag(args, "--port")), adminUser, adminIdentity: absolute(adminIdentity, "Administrator SSH private key"), knownHosts: absolute(knownHosts, "Pinned known-hosts file"), fingerprint, privilege, sourceSha: await sourceSha(args) };
+  return { host, port: remotePort, adminUser, adminIdentity: normalizedIdentity, knownHosts: normalizedKnownHosts, fingerprint, privilege, sourceSha: await sourceSha(args) };
 }
 
 function common() {
@@ -308,12 +412,12 @@ async function configure(paths: Paths, answers: Answers): Promise<void> {
 }
 
 export async function runInit(args: readonly string[]): Promise<void> {
+  const answers = await collectAnswers(args);
   const paths = locations();
   for (const directory of [paths.root, paths.keys, paths.approvals, paths.remoteUsed]) await privateDirectory(directory);
   await ensureKeys(paths);
   const previous = await readState(paths);
-  if (!previous) await saveState(paths, { version: 1, initializedAt: new Date().toISOString(), remoteConfigured: false });
-  const answers = await collectAnswers(args);
+  if (!previous && !answers) await saveState(paths, { version: 1, initializedAt: new Date().toISOString(), remoteConfigured: false });
   if (answers) await configure(paths, answers);
   const result = { ok: true, state: answers || previous?.remoteConfigured ? "REMOTE_CONFIGURED" : "LOCAL_INITIALIZED", next: "opshaven setup remote" };
   if (args.includes("--json")) process.stdout.write(`${JSON.stringify(result)}\n`);
