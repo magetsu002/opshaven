@@ -5,7 +5,7 @@
   "description": "A fail-closed MCP server for safe VPS inspection and controlled operations over restricted SSH.",
   "type": "module",
   "bin": {
-    "opshaven": "dist/src/cli.js",
+    "opshaven": "dist/src/cli-entry.js",
     "opshaven-mcp": "dist/src/index.js",
     "opshaven-dispatcher": "dist/src/remote/dispatcher.js",
     "opshaven-readonly-dispatcher": "dist-readonly/src/remote/read-only-dispatcher.js"
