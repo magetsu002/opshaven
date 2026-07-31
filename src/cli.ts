@@ -8,7 +8,8 @@ import { OperationService } from "./operations.js";
 import { runRemoteServe } from "./remote-mcp/command.js";
 import { loadRemoteTrust, remoteMcpUrl } from "./remote-mcp/report.js";
 import { certifyRemoteBoundary } from "./setup/certify.js";
-import { loadRemoteSetupConfig, runRemoteSetupCommand } from "./setup/remote.js";
+import { runEndpointHandoff, runRemoteSetup, runRemoteUninstall } from "./setup/command.js";
+import { loadRemoteSetupConfig } from "./setup/remote.js";
 import { buildTrustReport, formatTrustReport } from "./trust-report.js";
 
 function flag(name: string): string | undefined {
@@ -51,12 +52,21 @@ async function main(): Promise<void> {
   const requested = command();
   const selected = requested === "boundary" && process.argv[3] === "verify" ? "verify-boundary" : requested === "doctor" ? "diagnostics" : requested;
   if (selected === "help") {
-    process.stdout.write("OpsHaven commands: setup remote, doctor, boundary verify, serve, validate-config, verify-audit, compare-capabilities, trust-report, approve-restart, approve-deploy, approve-rollback, print-mcp-config, print-remote-mcp-url\n");
+    process.stdout.write("OpsHaven commands: setup remote, uninstall remote, doctor, boundary verify, endpoint expose, endpoint status, serve, validate-config, verify-audit, compare-capabilities, trust-report, approve-restart, approve-deploy, approve-rollback, print-mcp-config, print-remote-mcp-url\n");
     return;
   }
   if (selected === "setup") {
     if (process.argv[3] !== "remote") throw new Error("Setup target must be remote.");
-    await runRemoteSetupCommand(process.argv.slice(4));
+    await runRemoteSetup(process.argv.slice(4));
+    return;
+  }
+  if (selected === "uninstall") {
+    if (process.argv[3] !== "remote") throw new Error("Uninstall target must be remote.");
+    await runRemoteUninstall(process.argv.slice(4));
+    return;
+  }
+  if (selected === "endpoint") {
+    await runEndpointHandoff(process.argv.slice(3));
     return;
   }
   if (selected === "compare-capabilities") {
