@@ -10,7 +10,7 @@ const declaration: BuildCapabilityDeclaration = {
     controlled: {
       operations: ["get_host_summary", "restart_service"],
       remoteHandlers: ["inspection", "mutation"],
-      filesystemRead: ["root-owned trust files"],
+      filesystemRead: ["root-owned signed policy artifacts"],
       filesystemWrite: ["approval replay state"],
       executables: ["sudo", "systemctl"],
       networkAccess: ["restricted SSH stdio"],
@@ -20,7 +20,7 @@ const declaration: BuildCapabilityDeclaration = {
     "read-only": {
       operations: ["get_host_summary"],
       remoteHandlers: ["inspection"],
-      filesystemRead: ["root-owned trust files"],
+      filesystemRead: ["root-owned signed policy artifacts"],
       filesystemWrite: ["request replay state"],
       executables: ["uname"],
       networkAccess: ["restricted SSH stdio"],
@@ -30,12 +30,12 @@ const declaration: BuildCapabilityDeclaration = {
   },
 };
 
-test("trust report derives access only from the signed build declaration", () => {
+test("authorization report derives access only from the signed build declaration", () => {
   assert.deepEqual(summarizeDeclaredAccess(declaration, "controlled"), { shellAccess: "denied", sudoAccess: "exact-reviewed-commands", writeAccess: ["approval replay state"], dockerSocketAccess: "unavailable" });
   assert.deepEqual(summarizeDeclaredAccess(declaration, "read-only"), { shellAccess: "denied", sudoAccess: "unavailable", writeAccess: ["request replay state"], dockerSocketAccess: "unavailable" });
 });
 
-test("plain trust report states remote posture, enforced boundary, and remaining assumptions", () => {
+test("plain authorization report states endpoint posture, enforced boundary, and platform assumptions", () => {
   const report: OperatorTrustReport = {
     ok: true,
     generatedAt: "2026-07-30T20:00:00.000Z",
@@ -55,17 +55,19 @@ test("plain trust report states remote posture, enforced boundary, and remaining
     boundaryVerification: { ok: true, checkedAt: "2026-07-30T20:00:00.000Z", assertions: [{ name: "interactive shell denied", passed: true, detail: "forced-command policy denial" }] },
     capabilityChanges: null,
     enforcedBoundary: "Only signed, bounded requests reach the forced dispatcher.",
-    remainingAssumptions: ["The operator keys and VPS kernel remain trustworthy.", "This is not a claim of absolute security."],
+    remainingAssumptions: ["The operator keys and VPS kernel remain correctly controlled.", "This is not a claim of absolute security."],
   };
   const text = formatTrustReport(report);
+  assert.match(text, /OpsHaven authorization report/);
   assert.match(text, /BOUNDARY VERIFIED/);
   assert.match(text, /Shell access: denied/);
   assert.match(text, /Sudo access: exact-reviewed-commands/);
-  assert.match(text, /Capability signature: valid/);
-  assert.match(text, /Dispatcher artifact: valid/);
-  assert.match(text, /Remote MCP: enabled/);
-  assert.match(text, /Remote authentication: oidc-bearer/);
-  assert.match(text, /Remote read-only: yes/);
-  assert.match(text, /Remaining assumptions:/);
+  assert.match(text, /Capability authorization: valid/);
+  assert.match(text, /Signed policy declaration: valid/);
+  assert.match(text, /Deployment attestation: valid/);
+  assert.match(text, /Remote MCP exposure: enabled/);
+  assert.match(text, /Endpoint authentication: oidc-bearer/);
+  assert.match(text, /Remote capability: read-only/);
+  assert.match(text, /Remaining platform assumptions:/);
   assert.match(text, /not a claim of absolute security/i);
 });
