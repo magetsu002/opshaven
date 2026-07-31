@@ -21,19 +21,17 @@ Instead of opening an SSH session, checking several tools manually, and copying 
 
 ## Why operators can verify the boundary
 
-OpsHaven does not ask you to trust the project author with your server.
-
 - You generate and own the SSH, approval, capability, response-signing, and OAuth configuration.
 - A separate read-only dispatcher contains no restart, deployment, rollback, sudo, or Docker control handlers.
-- Operator-signed capability manifests bind the exact operations, resources, limits, policy version, and dispatcher identity.
+- Operator-signed capability authorization binds the exact operations, resources, limits, policy version, and dispatcher identity.
 - Requests and responses are authenticated, time-bounded, and replay-resistant.
 - The dispatcher accepts logical resource IDs, not arbitrary commands, paths, services, scripts, or flags.
 - Sensitive sources are summarized, bounded, and redacted before they reach the AI client.
 - Future builds declare their capabilities so authority expansion can be detected and blocked.
 - `opshaven boundary verify` tests the installed restrictions.
-- `opshaven authorization-report` explains the active boundary and remaining assumptions.
+- `opshaven authorization-report` explains active capability authorization and remaining platform assumptions.
 
-OpsHaven does not claim absolute security. The operator still trusts the VPS kernel, OpenSSH, Node.js, systemd, configured resource mappings, identity provider, proxy or tunnel, and operator-owned keys.
+OpsHaven does not claim absolute security. The boundary still depends on the VPS kernel, OpenSSH, Node.js, systemd, configured resource mappings, identity provider, proxy or tunnel, and operator-owned keys behaving as configured.
 
 ## Executables
 
@@ -78,7 +76,7 @@ The `opshaven-mcp` command is stdio-only and starts no network listener.
 
 ```text
 Hosted MCP client
-→ HTTPS tunnel or trusted reverse proxy
+→ HTTPS tunnel or configured reverse proxy
 → localhost-bound OpsHaven Streamable HTTP server
 → OIDC bearer verification and operator profile mapping
 → signed read-only capability intersection
@@ -140,6 +138,9 @@ opshaven doctor --config /absolute/path/to/local.config.json
 opshaven boundary verify \
   --config /absolute/path/to/local.config.json \
   --setup-config /absolute/path/to/remote-setup.json
+opshaven authorization-report \
+  --mode read-only \
+  --config /absolute/path/to/local.config.json
 ```
 
 Rollback and uninstall require explicit approval:
@@ -149,7 +150,9 @@ opshaven setup remote --rollback --approve --config /absolute/path/to/remote-set
 opshaven uninstall remote --approve --config /absolute/path/to/remote-setup.json
 ```
 
-See the [setup guide](docs/setup.md) for the reviewed configuration schema and end-to-end workflow, and the [security guide](docs/security.md) for the security boundary. The [architecture guide](docs/architecture.md) explains the enforcement layers in more detail.
+Read the [operator workflow](docs/operator-workflow.md) first. It explains what runs locally, what runs remotely, which keys stay local, what gets uploaded, how authorization works, and how MCP exposure is controlled.
+
+See the [setup guide](docs/setup.md) for the reviewed configuration schema and end-to-end installation workflow, the [security guide](docs/security.md) for the enforced boundary, and the [architecture guide](docs/architecture.md) for the enforcement layers.
 
 ## Development
 
@@ -191,4 +194,4 @@ opshaven serve \
 
 ## Project links
 
-[Setup](docs/setup.md) · [Security](docs/security.md) · [Architecture](docs/architecture.md) · [Contributing](CONTRIBUTING.md) · [License](LICENSE)
+[Operator workflow](docs/operator-workflow.md) · [Setup](docs/setup.md) · [Security](docs/security.md) · [Architecture](docs/architecture.md) · [Contributing](CONTRIBUTING.md) · [License](LICENSE)
