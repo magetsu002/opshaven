@@ -19,7 +19,7 @@ declare const Buffer: {
   concat(chunks: readonly Uint8Array[]): Uint8Array & { toString(encoding?: string): string; length: number };
   isBuffer(value: unknown): value is Uint8Array;
 };
-declare const URL: { new(input: string, base?: string): { protocol: string; username: string; password: string; hostname: string; port: string; pathname: string; search: string; hash: string; toString(): string } };
+declare const URL: { new(input: string, base?: string): { protocol: string; username: string; password: string; hostname: string; port: string; pathname: string; search: string; searchParams: { has(name: string): boolean }; hash: string; origin: string; toString(): string } };
 declare namespace NodeJS {
   interface ReadableStream { on(event: string, listener: (...args: any[]) => void): this; resume(): void; }
   interface WritableStream { write(chunk: string | Uint8Array): boolean; }
@@ -29,13 +29,14 @@ declare namespace NodeJS {
 declare module "node:assert/strict" { const assert: any; export default assert; }
 declare module "node:test" { const test: any; export default test; }
 declare module "node:crypto" {
+  export const constants: { RSA_PKCS1_PSS_PADDING: number };
   export function createHash(algorithm: string): { update(data: string | Uint8Array): any; digest(encoding: "hex"): string };
   export function createHmac(algorithm: string, key: string | Uint8Array): { update(data: string | Uint8Array): any; digest(encoding?: "hex" | "base64url"): any };
   export function randomBytes(size: number): Uint8Array & { toString(encoding: "hex" | "base64url"): string };
   export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean;
-  export function sign(algorithm: null, data: Uint8Array, key: string | Uint8Array): Uint8Array & { toString(encoding: "base64url"): string };
+  export function sign(algorithm: null, data: Uint8Array, key: any): Uint8Array & { toString(encoding: "base64url"): string };
   export function verify(algorithm: null | string, data: Uint8Array, key: any, signature: Uint8Array): boolean;
-  export function generateKeyPairSync(type: "ed25519"): { publicKey: { export(options: any): Uint8Array | string }; privateKey: { export(options: any): Uint8Array | string } };
+  export function generateKeyPairSync(type: "ed25519"): { publicKey: { export(options: any): any }; privateKey: { export(options: any): any } };
   export function createPublicKey(options: any): any;
 }
 declare module "node:fs" {
