@@ -19,7 +19,7 @@ trap cleanup EXIT
 
 podman build \
   --format docker \
-  --pull=never \
+  --pull=missing \
   --file "$ROOT/integration/remote-mcp-podman/Containerfile" \
   --tag "$IMAGE" \
   "$ROOT"
