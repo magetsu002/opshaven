@@ -7,6 +7,7 @@ import { loadConfig } from "./config.js";
 import { OperationService } from "./operations.js";
 import { runRemoteServe } from "./remote-mcp/command.js";
 import { loadRemoteTrust, remoteMcpUrl } from "./remote-mcp/report.js";
+import { runRemoteSetupCommand } from "./setup/remote.js";
 import { buildTrustReport, formatTrustReport } from "./trust-report.js";
 
 function flag(name: string): string | undefined {
@@ -48,7 +49,12 @@ async function regularFile(path: string, ownerOnly: boolean): Promise<{ exists: 
 async function main(): Promise<void> {
   const selected = command();
   if (selected === "help") {
-    process.stdout.write("OpsHaven commands: serve, validate-config, diagnostics, verify-audit, verify-boundary, compare-capabilities, trust-report, approve-restart, approve-deploy, approve-rollback, print-mcp-config, print-remote-mcp-url\n");
+    process.stdout.write("OpsHaven commands: setup remote, serve, validate-config, diagnostics, verify-audit, verify-boundary, compare-capabilities, trust-report, approve-restart, approve-deploy, approve-rollback, print-mcp-config, print-remote-mcp-url\n");
+    return;
+  }
+  if (selected === "setup") {
+    if (process.argv[3] !== "remote") throw new Error("Setup target must be remote.");
+    await runRemoteSetupCommand(process.argv.slice(4));
     return;
   }
   if (selected === "compare-capabilities") {
