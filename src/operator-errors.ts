@@ -10,7 +10,7 @@ function startup(message: string, action: string): string {
 
 export function formatOperatorError(error: unknown, args: readonly string[] = process.argv.slice(2)): string {
   const raw = error instanceof Error ? error.message : "The operation failed safely.";
-  if (debugEnabled(args)) return raw;
+  if (debugEnabled(args)) return `INIT_DIAGNOSTIC:${Buffer.from(raw, "utf8").toString("base64")}`;
 
   if (/Setup is not initialized|Remote deployment details are not configured/i.test(raw)) {
     return startup("Setup is not initialized.", "opshaven init");
