@@ -10,6 +10,7 @@ export interface McpPrincipal {
   readonly sessionId?: string;
   readonly allowedTools?: ReadonlySet<string>;
   readonly allowedResources?: ReadonlySet<string>;
+  readonly allowedResourcesByTool?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 export const STDIO_PRINCIPAL: McpPrincipal = Object.freeze({ id: "mcp-client", transport: "stdio" });
@@ -57,9 +58,13 @@ function visibleTools(principal: McpPrincipal): readonly ToolDefinition[] {
   if (!principal.allowedTools) return TOOLS;
   return TOOLS.filter((tool) => principal.allowedTools?.has(tool.name));
 }
-function resourceAllowed(principal: McpPrincipal, args: Record<string, unknown>): boolean {
+function resourceAllowed(principal: McpPrincipal, tool: string, args: Record<string, unknown>): boolean {
+  const resourceId = typeof args.resourceId === "string" ? args.resourceId : undefined;
+  if (!resourceId) return false;
+  const toolResources = principal.allowedResourcesByTool?.get(tool);
+  if (toolResources) return toolResources.has(resourceId);
   if (!principal.allowedResources) return true;
-  return typeof args.resourceId === "string" && principal.allowedResources.has(args.resourceId);
+  return principal.allowedResources.has(resourceId);
 }
 
 export class McpServer {
@@ -80,7 +85,7 @@ export class McpServer {
       const params = message.params as Record<string, unknown>;
       if (!hasOnlyKeys(params, ["name", "arguments", "_meta"]) || typeof params.name !== "string" || !TOOL_NAMES.has(params.name) || (principal.allowedTools && !principal.allowedTools.has(params.name)) || !params.arguments || typeof params.arguments !== "object" || Array.isArray(params.arguments)) return failure(message.id, -32602, "Unknown tool or invalid arguments");
       const args = { ...(params.arguments as Record<string, unknown>) };
-      if (!resourceAllowed(principal, args)) return failure(message.id, -32602, "Unknown tool or invalid arguments");
+      if (!resourceAllowed(principal, params.name, args)) return failure(message.id, -32602, "Unknown tool or invalid arguments");
       const approvalToken = typeof args.approvalToken === "string" ? args.approvalToken : undefined;
       if (args.approvalToken !== undefined && !approvalToken) return failure(message.id, -32602, "Approval token must be a string");
       if (approvalToken && (!MUTATION_TOOL_NAMES.has(params.name) || args.dryRun === true)) return failure(message.id, -32602, "Approval token is not accepted for this call");
