@@ -33,11 +33,11 @@ export interface RemoteSetupEngineOptions {
 }
 
 const DEFAULT_DEPENDENCIES: RemoteSetupEngineDependencies = Object.freeze({
-  preflight: async (config) => await preflightRemoteSetup(config),
-  install: async (config, report) => await installRestrictedRuntime(config, report),
-  trust: async (config, installation) => await provisionRemoteTrust(config, installation),
-  certify: async (config) => await certifyRemoteBoundary(config),
-  rollback: async (config) => await rollbackRemoteSetup(config, true),
+  preflight: async (config: RemoteSetupConfig) => await preflightRemoteSetup(config),
+  install: async (config: RemoteSetupConfig, report: RemoteSetupPreflightReport) => await installRestrictedRuntime(config, report),
+  trust: async (config: RemoteSetupConfig, installation: RemoteInstallResult) => await provisionRemoteTrust(config, installation),
+  certify: async (config: RemoteSetupConfig) => await certifyRemoteBoundary(config),
+  rollback: async (config: RemoteSetupConfig) => await rollbackRemoteSetup(config, true),
 });
 
 async function writeLocalReceipt(config: RemoteSetupConfig, receipt: RemoteSetupLifecycleReceipt): Promise<void> {
