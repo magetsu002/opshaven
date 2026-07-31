@@ -18,7 +18,6 @@ WRAPPER_PATH = Path("/usr/local/bin/opshaven-readonly-force-command")
 STATE_DIRECTORY = Path("/var/lib/opshaven")
 RECEIPT_PATH = STATE_DIRECTORY / "setup-receipt.json"
 AUTHORIZED_KEYS = Path("/home/opshaven/.ssh/authorized_keys")
-ALLOWED_ROOTS = (Path("/etc/opshaven"), Path("/usr/lib/opshaven"), Path("/usr/local/bin"), Path("/var/lib/opshaven"), Path("/home/opshaven"))
 PRIVILEGED_GROUPS = {"sudo", "wheel", "docker", "lxd"}
 
 
@@ -50,6 +49,12 @@ def require_regular(file_path, maximum_bytes=16 * 1024 * 1024):
     info = os.lstat(file_path)
     if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_size > maximum_bytes:
         fail(f"Unsafe staged file: {file_path}")
+
+
+def require_directory(directory):
+    info = os.lstat(directory)
+    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        fail(f"Unsafe installation directory: {directory}")
 
 
 def ensure_exact_plan(plan, stage_root):
@@ -147,7 +152,7 @@ def fsync_directory(directory):
 
 def atomic_copy(source, destination, mode, uid, gid):
     require_regular(source)
-    ensure_directory(destination.parent, 0o755, 0, 0)
+    require_directory(destination.parent)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{destination.name}.opshaven-", dir=destination.parent)
     try:
         with os.fdopen(descriptor, "wb") as output, open(source, "rb") as input_handle:
@@ -274,6 +279,7 @@ def install_runtime(stage_root, manifest_relative, receipt_id, backup_root, back
 
 
 def atomic_text(text, destination, mode, uid, gid):
+    require_directory(destination.parent)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{destination.name}.opshaven-", dir=destination.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
