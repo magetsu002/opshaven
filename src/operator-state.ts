@@ -1,6 +1,7 @@
 import { createPublicKey, generateKeyPairSync, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -72,17 +73,16 @@ function absolute(value: string, label: string): string {
   return expanded;
 }
 
-export function operatorStateRoot(args: readonly string[] = process.argv.slice(2)): string {
-  const root = flag(args, "--state-dir")
-    ?? process.env.OPSHAVEN_HOME
-    ?? (process.env.XDG_CONFIG_HOME ? path.join(process.env.XDG_CONFIG_HOME, "opshaven") : undefined)
-    ?? (process.env.HOME ? path.join(process.env.HOME, ".config", "opshaven") : undefined);
-  if (!root) throw new OpsHavenError("CONFIG_INVALID", "A local operator home directory could not be determined.");
-  return absolute(root, "Operator state directory");
+export function operatorStateRoot(): string {
+  const home = homedir();
+  if (!home || !path.isAbsolute(home) || path.normalize(home) !== home) {
+    throw new OpsHavenError("CONFIG_INVALID", "A local operator home directory could not be determined.");
+  }
+  return path.join(home, ".config", "opshaven");
 }
 
-function locations(args: readonly string[] = process.argv.slice(2)): Paths {
-  const root = operatorStateRoot(args);
+function locations(): Paths {
+  const root = operatorStateRoot();
   const keys = path.join(root, "keys");
   return {
     root,
@@ -305,7 +305,7 @@ async function configure(paths: Paths, answers: Answers): Promise<void> {
 }
 
 export async function runInit(args: readonly string[]): Promise<void> {
-  const paths = locations(args);
+  const paths = locations();
   for (const directory of [paths.root, paths.keys, paths.approvals, paths.remoteUsed]) await privateDirectory(directory);
   await ensureKeys(paths);
   const previous = await readState(paths);
@@ -318,7 +318,7 @@ export async function runInit(args: readonly string[]): Promise<void> {
 }
 
 export async function ensureRemoteSetupState(args: readonly string[]): Promise<string> {
-  const paths = locations(args);
+  const paths = locations();
   if (await safeFile(paths.setup, true)) return paths.setup;
   if (!(await readState(paths))) throw new OpsHavenError("CONFIG_INVALID", "Setup is not initialized.");
   const answers = await collectAnswers(args);
@@ -331,7 +331,7 @@ export async function resolveLocalConfigPath(args: readonly string[] = process.a
   const explicit = flag(args, "--config") ?? process.env.OPSHAVEN_CONFIG;
   if (explicit) return absolute(explicit, "Configuration path");
   try {
-    const paths = locations(args);
+    const paths = locations();
     return await safeFile(paths.policy, true) ? paths.policy : null;
   } catch {
     return null;
@@ -342,15 +342,15 @@ export async function resolveSetupConfigPath(args: readonly string[] = process.a
   const explicit = flag(args, "--setup-config") ?? process.env.OPSHAVEN_SETUP_CONFIG;
   if (explicit) return absolute(explicit, "Setup state path");
   try {
-    const paths = locations(args);
+    const paths = locations();
     return await safeFile(paths.setup, true) ? paths.setup : null;
   } catch {
     return null;
   }
 }
 
-export async function inspectOperatorState(args: readonly string[] = process.argv.slice(2)): Promise<OperatorStateSnapshot> {
-  const paths = locations(args);
+export async function inspectOperatorState(_args: readonly string[] = process.argv.slice(2)): Promise<OperatorStateSnapshot> {
+  const paths = locations();
   let state: StateDocument | null = null;
   try { state = await readState(paths); } catch {}
   const initialized = state !== null;
