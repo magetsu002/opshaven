@@ -30,7 +30,7 @@ OpsHaven does not ask you to trust the project author with your server.
 - The dispatcher accepts logical resource IDs, not arbitrary commands, paths, services, scripts, or flags.
 - Sensitive sources are summarized, bounded, and redacted before they reach the AI client.
 - Future builds declare their capabilities so authority expansion can be detected and blocked.
-- `opshaven verify-boundary` tests the installed restrictions.
+- `opshaven boundary verify` tests the installed restrictions.
 - `opshaven trust-report` explains the active boundary and remaining assumptions.
 
 OpsHaven does not claim absolute security. The operator still trusts the VPS kernel, OpenSSH, Node.js, systemd, configured resource mappings, identity provider, proxy or tunnel, and operator-owned keys.
@@ -91,17 +91,42 @@ Remote profiles cannot include these mutation tools.
 
 ## Recommended first run
 
-```text
-1. Use a disposable VPS with no valuable data.
-2. Install the isolated read-only dispatcher.
-3. Register only the resources needed for one diagnosis.
-4. Run opshaven verify-boundary.
-5. Review opshaven trust-report.
-6. Connect a local stdio client first.
-7. Enable remote MCP only after reviewing OIDC, origin, host, proxy, session, and limit settings.
+Prepare reviewed local policy, setup, SSH, and signing-key files, then preview every VPS mutation:
+
+```bash
+opshaven setup remote \
+  --dry-run \
+  --config /absolute/path/to/remote-setup.json
 ```
 
-See the [setup guide](docs/setup.md) for installation and remote transport configuration, and the [security guide](docs/security.md) for the trust model. The [architecture guide](docs/architecture.md) explains the enforcement layers in more detail.
+Apply the same plan interactively or in explicit non-interactive automation:
+
+```bash
+opshaven setup remote --tui --config /absolute/path/to/remote-setup.json
+
+opshaven setup remote \
+  --non-interactive \
+  --approve \
+  --config /absolute/path/to/remote-setup.json
+```
+
+The setup command pins the host key, verifies the exact source head and signing key pair, installs the complete read-only runtime atomically, generates signed trust locally, keeps private operator keys off the VPS, and refuses endpoint handoff until boundary certification passes.
+
+```bash
+opshaven doctor --config /absolute/path/to/local.config.json
+opshaven boundary verify \
+  --config /absolute/path/to/local.config.json \
+  --setup-config /absolute/path/to/remote-setup.json
+```
+
+Rollback and uninstall require explicit approval:
+
+```bash
+opshaven setup remote --rollback --approve --config /absolute/path/to/remote-setup.json
+opshaven uninstall remote --approve --config /absolute/path/to/remote-setup.json
+```
+
+See the [setup guide](docs/setup.md) for the reviewed configuration schema and end-to-end workflow, and the [security guide](docs/security.md) for the trust model. The [architecture guide](docs/architecture.md) explains the enforcement layers in more detail.
 
 ## Development
 
