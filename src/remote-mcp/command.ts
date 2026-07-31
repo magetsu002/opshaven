@@ -20,9 +20,11 @@ export async function runRemoteServe(config: OpsHavenConfig, configPath: string,
   if (flags.bindHost !== undefined && flags.bindHost !== remote.bindHost) throw new Error("--bind cannot override the reviewed remote MCP configuration.");
   if (flags.port !== undefined && flags.port !== remote.port) throw new Error("--port cannot override the reviewed remote MCP configuration.");
   if (flags.path !== undefined && flags.path !== remote.path) throw new Error("--path cannot override the reviewed remote MCP configuration.");
+  const boundary = Object.freeze({ allowedOrigins: remote.allowedOrigins, allowedHosts: remote.allowedHosts, trustedProxies: remote.trustedProxies });
   const transport = new StreamableHttpServer({
     mcp: new McpServer(new OperationService(config, undefined, configPath)),
     verifier: new OidcPrincipalVerifier(remote),
+    boundary,
     bindHost: remote.bindHost,
     port: remote.port,
     path: remote.path,
