@@ -37,12 +37,15 @@ function selectedHost(config: OpsHavenConfig): HostResource {
   if (!found || found.kind !== "host") throw new OpsHavenError("CONFIG_INVALID", "Boundary verification requires a configured host resource.");
   return found;
 }
-function safeRemoteCode(value: unknown): string | null {
+function safeRemoteError(value: unknown): { code: string; message: string } | null {
   if (!value || typeof value !== "object") return null;
   const error = (value as Record<string, unknown>).error;
   if (!error || typeof error !== "object") return null;
   const code = (error as Record<string, unknown>).code;
-  return typeof code === "string" && /^[A-Z_]{3,64}$/.test(code) ? code : null;
+  const message = (error as Record<string, unknown>).message;
+  if (typeof code !== "string" || !/^[A-Z_]{3,64}$/.test(code)) return null;
+  if (typeof message !== "string" || !/^[A-Za-z0-9 .,:;()'/_-]{1,240}$/.test(message)) return { code, message: "safe message unavailable" };
+  return { code, message };
 }
 
 export async function verifyBoundary(config: OpsHavenConfig, configPath: string, mode: "controlled" | "read-only" = "controlled"): Promise<BoundaryReport> {
@@ -61,14 +64,14 @@ export async function verifyBoundary(config: OpsHavenConfig, configPath: string,
   let validDetail = "authenticated remote inspection succeeded";
   try {
     responseEnvelope = JSON.parse(validWire.stdout) as unknown;
-    const remoteCode = safeRemoteCode(responseEnvelope);
+    const remoteError = safeRemoteError(responseEnvelope);
     const verified = verifyAuthenticatedResponse(responseEnvelope, valid.requestHash, baseRequest.requestId, trust.capability, trust.responsePublicKey);
     validResponse = verified.ok;
-    if (!verified.ok) validDetail = `authenticated remote inspection returned ${verified.error.code}`;
-    else if (remoteCode) validDetail = `authenticated remote inspection returned ${remoteCode}`;
-  } catch (error) {
-    const remoteCode = safeRemoteCode(responseEnvelope);
-    validDetail = remoteCode ? `authenticated remote inspection failed with ${remoteCode}` : `authenticated remote inspection failed before response verification (ssh=${validWire.code ?? "unknown"})`;
+    if (!verified.ok) validDetail = `authenticated remote inspection returned ${verified.error.code}: ${verified.error.message}`;
+    else if (remoteError) validDetail = `authenticated remote inspection returned ${remoteError.code}: ${remoteError.message}`;
+  } catch {
+    const remoteError = safeRemoteError(responseEnvelope);
+    validDetail = remoteError ? `authenticated remote inspection failed with ${remoteError.code}: ${remoteError.message}` : `authenticated remote inspection failed before response verification (ssh=${validWire.code ?? "unknown"})`;
   }
   assertions.push(assertion("artifact and capability hashes valid", validResponse, validDetail));
   for (const [name, request] of [["unknown operation denied", { ...baseRequest, requestId: "boundary-unknown-op", operation: "unknown_operation" }], ["unknown resource denied", { ...baseRequest, requestId: "boundary-unknown-resource", resourceId: "host.unknown", args: { resourceId: "host.unknown" } }]] as const) {
