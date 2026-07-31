@@ -69,18 +69,26 @@ function keyMatches(header: JwtHeader, key: PublicJwk): boolean {
   if (header.alg === "EdDSA" && (key.kty !== "OKP" || key.crv !== "Ed25519")) return false;
   return true;
 }
+function attemptVerification(operation: () => boolean): boolean {
+  try { return operation(); }
+  catch { return false; }
+}
 function verifySignature(header: JwtHeader, key: PublicJwk, signingInput: string, signature: Uint8Array): boolean {
   let publicKey: unknown;
   try { publicKey = createPublicKey({ key, format: "jwk" }); }
   catch { return false; }
   const data = Buffer.from(signingInput, "utf8");
-  try {
-    if (header.alg === "EdDSA") return verify(null, data, publicKey, signature);
-    if (header.alg === "ES256") return verify("sha256", data, { key: publicKey, dsaEncoding: "ieee-p1363" }, signature);
-    if (header.alg === "PS256") return verify("sha256", data, { key: publicKey, padding: cryptoConstants.RSA_PKCS1_PSS_PADDING, saltLength: 32 }, signature);
-    if (header.alg === "RS256") return verify("RSA-SHA256", data, publicKey, signature);
-  } catch { return false; }
-  return false;
+  const eddsa = attemptVerification(() => verify(null, data, publicKey, signature));
+  const es256 = attemptVerification(() => verify("sha256", data, { key: publicKey, dsaEncoding: "ieee-p1363" }, signature));
+  const ps256 = attemptVerification(() => verify("sha256", data, { key: publicKey, padding: cryptoConstants.RSA_PKCS1_PSS_PADDING, saltLength: 32 }, signature));
+  const rs256 = attemptVerification(() => verify("RSA-SHA256", data, publicKey, signature));
+  switch (header.alg) {
+    case "EdDSA": return eddsa;
+    case "ES256": return es256;
+    case "PS256": return ps256;
+    case "RS256": return rs256;
+    default: return false;
+  }
 }
 function readonlySet(values: readonly string[]): ReadonlySet<string> { return new Set(values); }
 function safeTargetHasToken(target: string): boolean {
