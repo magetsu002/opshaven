@@ -5,20 +5,20 @@
     "controlled": {
       "operations": ["deploy_commit", "get_backup_status", "get_container_status", "get_deployed_commit", "get_firewall_summary", "get_host_summary", "get_monitoring_status", "get_redacted_logs", "get_restore_readiness", "get_reverse_proxy_summary", "get_runtime_config_status", "get_service_status", "get_state_fingerprint", "restart_service", "rollback_deployment", "run_health_probe"],
       "remoteHandlers": ["deployment", "inspection", "mutation", "probe", "service"],
-      "filesystemRead": ["configured backup status", "configured environment", "git repository", "root-owned trust files"],
+      "filesystemRead": ["configured backup status", "configured environment", "git repository", "optional remote MCP companion configuration", "root-owned trust files"],
       "filesystemWrite": ["approval replay state", "deployment releases", "deployment symlink", "private temporary state", "release ledger"],
       "executables": ["df", "docker", "git", "journalctl", "sudo", "systemctl", "ufw", "uname", "uptime"],
-      "networkAccess": ["configured health probes", "optional configured git fetch", "restricted SSH stdio"],
+      "networkAccess": ["configured health probes", "optional configured git fetch", "optional localhost Streamable HTTP", "outbound HTTPS OIDC discovery", "restricted SSH stdio"],
       "sudoRequirements": ["exact configured systemctl restart commands"],
       "outputFields": ["audit-safe evidence", "bounded redacted logs", "deployment metadata", "presence metadata", "structured status summaries"]
     },
     "read-only": {
       "operations": ["get_backup_status", "get_deployed_commit", "get_firewall_summary", "get_host_summary", "get_monitoring_status", "get_redacted_logs", "get_restore_readiness", "get_reverse_proxy_summary", "get_runtime_config_status", "get_service_status", "run_health_probe"],
       "remoteHandlers": ["inspection", "probe", "service"],
-      "filesystemRead": ["configured backup status", "configured environment", "git repository", "root-owned trust files"],
+      "filesystemRead": ["configured backup status", "configured environment", "git repository", "optional remote MCP companion configuration", "root-owned trust files"],
       "filesystemWrite": ["private temporary state", "request replay state"],
       "executables": ["df", "git", "journalctl", "systemctl", "ufw", "uname", "uptime"],
-      "networkAccess": ["configured health probes", "restricted SSH stdio"],
+      "networkAccess": ["configured health probes", "optional localhost Streamable HTTP", "outbound HTTPS OIDC discovery", "restricted SSH stdio"],
       "sudoRequirements": [],
       "outputFields": ["bounded redacted logs", "deployment metadata", "presence metadata", "structured status summaries"]
     }
