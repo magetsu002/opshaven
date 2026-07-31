@@ -12,7 +12,6 @@ esac
 
 exec /usr/bin/setpriv \
   --no-new-privs \
-  --bounding-set=-all \
   --inh-caps=-all \
   --ambient-caps=-all \
   --reset-env \
