@@ -74,15 +74,23 @@ export async function verifyBoundary(config: OpsHavenConfig, configPath: string,
     validDetail = remoteError ? `authenticated remote inspection failed with ${remoteError.code}: ${remoteError.message}` : `authenticated remote inspection failed before response verification (ssh=${validWire.code ?? "unknown"})`;
   }
   assertions.push(assertion("artifact and capability hashes valid", validResponse, validDetail));
-  for (const [name, request] of [["unknown operation denied", { ...baseRequest, requestId: "boundary-unknown-op", operation: "unknown_operation" }], ["unknown resource denied", { ...baseRequest, requestId: "boundary-unknown-resource", resourceId: "host.unknown", args: { resourceId: "host.unknown" } }]] as const) {
+  const denialCases = [
+    ["unknown operation denied", { ...baseRequest, requestId: "boundary-unknown-op", operation: "unknown_operation" }, "REMOTE_PROTOCOL_INVALID"],
+    ["unknown resource denied", { ...baseRequest, requestId: "boundary-unknown-resource", resourceId: "host.unknown", args: { resourceId: "host.unknown" } }, "UNKNOWN_RESOURCE"],
+  ] as const;
+  for (const [name, request, expectedCode] of denialCases) {
     const created = createAuthenticatedRequest(request as RemoteRequest, trust.capability, trust.requestPrivateKey);
     const wire = await runSsh(host, `${JSON.stringify(created.envelope)}\n`);
     let passed = false;
+    let detail = `expected signed ${expectedCode}`;
     try {
       const response = verifyAuthenticatedResponse(JSON.parse(wire.stdout) as unknown, created.requestHash, request.requestId, trust.capability, trust.responsePublicKey);
-      passed = !response.ok && /UNKNOWN_|POLICY_DENIED/.test(response.error.code);
+      if (!response.ok) {
+        passed = response.error.code === expectedCode;
+        detail = `signed ${response.error.code}`;
+      }
     } catch { passed = false; }
-    assertions.push(assertion(name, passed, "signed remote denial"));
+    assertions.push(assertion(name, passed, detail));
   }
   let readOnlyUnavailable = false;
   try { new ReadOnlyPolicyEngine(config).resolve("restart_service", { resourceId: host.id, dryRun: false }); }
