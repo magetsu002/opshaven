@@ -48,7 +48,7 @@ function reviewAll(...signals: readonly boolean[]): boolean {
 }
 
 function check(id: string, passed: boolean, detail: string): SetupCheck {
-  return Object.freeze({ id, state: CHECK_STATES[Number(passed)], detail });
+  return Object.freeze({ id, state: CHECK_STATES[Number(passed)]!, detail });
 }
 
 function safeVersion(value: string): number {
@@ -57,8 +57,8 @@ function safeVersion(value: string): number {
 }
 
 function digestEquals(actual: string, expected: string): boolean {
-  const actualDigest = createHash("sha256").update(actual.trim(), "utf8").digest("hex");
-  const expectedDigest = createHash("sha256").update(expected, "utf8").digest("hex");
+  const actualDigest = createHash("sha256").update(actual.trim()).digest("hex");
+  const expectedDigest = createHash("sha256").update(expected).digest("hex");
   return actualDigest === expectedDigest;
 }
 
