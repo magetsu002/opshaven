@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 
+if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
+  printf '%s\n' 'POLICY_DENIED: original SSH commands are forbidden' >&2
+  exit 126
+fi
 if [ "$#" -ne 2 ] || [ "$1" != "--config" ]; then
   printf '%s\n' 'read-only dispatcher requires --config and one absolute path' >&2
   exit 126

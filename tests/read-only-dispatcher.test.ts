@@ -76,6 +76,23 @@ test("read-only dispatcher does not expose container socket operations", async (
   assert.equal(calls, 0);
 });
 
+test("read-only dispatcher returns a structured denial for malformed JSON", async () => {
+  let calls = 0;
+  const runner: CommandRunner = {
+    async run() {
+      calls += 1;
+      return { stdout: "", exitCode: 0 };
+    },
+  };
+  const response = await dispatchReadOnlyEnvelope(config, "{\n", runner);
+  assert.equal(response.ok, false);
+  if (!response.ok) {
+    assert.equal(response.error.code, "REMOTE_PROTOCOL_INVALID");
+    assert.equal(response.error.message, "Read-only remote request is not valid JSON.");
+  }
+  assert.equal(calls, 0);
+});
+
 test("read-only dispatcher executes an allowlisted inspection", async () => {
   const runner: CommandRunner = {
     async run(executable) {

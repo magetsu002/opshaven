@@ -1,12 +1,22 @@
 # Setup
 
-This guide connects OpsHaven to a restricted Linux VPS. Start with a disposable server that contains no production secrets or customer data. The safest first installation uses the isolated read-only dispatcher.
+This guide connects OpsHaven to a restricted Linux VPS. Start with a disposable server that contains no production secrets or customer data. The automated setup workflow installs only the isolated read-only dispatcher.
 
 ## Requirements
 
-You need Node.js 22 or newer, SSH access to the VPS, and a dedicated non-root VPS account.
+The operator machine needs:
 
-Clone the repository, install dependencies, and verify the project:
+- Linux or macOS;
+- Node.js 22 or newer;
+- a clean checkout at the exact reviewed commit;
+- OpenSSH client tools, `ssh-keygen`, and `scp` at their standard absolute paths;
+- an administrator SSH identity and separately verified host-key fingerprint;
+- an Ed25519 restricted-account SSH key;
+- an Ed25519 operator signing key pair kept only on the operator machine.
+
+The VPS needs a supported Ubuntu or Debian release, Python 3, OpenSSH, OpenSSL, `setpriv`, at least 128 MiB of free space, and Node.js 22 or newer at one reviewed absolute path.
+
+Validate the repository before setup:
 
 ```bash
 npm ci --ignore-scripts --no-audit --no-fund
@@ -14,9 +24,9 @@ npm run release:check
 npm run security
 ```
 
-## Initialize local state
+## Prepare local state
 
-Create protected configuration, approval, and audit directories:
+Create protected configuration and audit directories:
 
 ```bash
 scripts/bootstrap-local.sh \
@@ -24,153 +34,259 @@ scripts/bootstrap-local.sh \
   "$HOME/.local/state/opshaven"
 ```
 
-Copy and edit the example configuration:
+Create the local policy from `examples/local.config.json`. Create a second remote dispatcher policy beside it using the suffix `.dispatcher.json`.
 
-```bash
-cp examples/local.config.json \
-  "$HOME/.config/opshaven/config.json"
+```text
+$HOME/.config/opshaven/config.json
+$HOME/.config/opshaven/config.json.dispatcher.json
 ```
 
-Use logical resource IDs and trusted absolute paths. Services, deployments, probes, logs, and other resources must be declared before an agent can access them.
+Both policies must use the same policy version, limits, logical resource IDs, and resource kinds. The local policy uses local SSH, approval, audit, and response-verification paths. The remote policy uses root-owned `/etc/opshaven` trust paths and `/var/lib/opshaven` state paths.
 
-Generate all operator keys locally. Keep private keys on the operator-controlled machine and copy only the public material required by the dispatcher to the VPS.
+Generate operator and restricted SSH keys locally. Never upload the administrator SSH private key or operator signing private key as installation material.
 
 ## Pin the VPS host key
 
-Collect the key into a temporary file:
+Collect the host key into a pending file:
 
 ```bash
-ssh-keyscan -H your-host.example \
+ssh-keyscan -t ed25519 your-host.example \
   > "$HOME/.config/opshaven/known_hosts.pending"
 ```
 
-Verify the fingerprint through a separate trusted channel, then install it:
+Display its SHA-256 fingerprint:
+
+```bash
+ssh-keygen -lf \
+  "$HOME/.config/opshaven/known_hosts.pending" \
+  -E sha256
+```
+
+Compare it through a separate trusted channel. Only then install the file:
 
 ```bash
 mv "$HOME/.config/opshaven/known_hosts.pending" \
   "$HOME/.config/opshaven/known_hosts"
 ```
 
-Do not use automatic host-key acceptance for production systems.
+OpsHaven does not silently use trust on first use.
 
-## Choose a dispatcher mode
+## Create the setup configuration
 
-### Read-only mode
+Create an owner-only JSON file such as `$HOME/.config/opshaven/remote-setup.json`:
 
-Use the isolated read-only dispatcher for first-time evaluation and routine diagnosis. It contains no restart, deployment, rollback, approval-consumption, sudo, or Docker control handlers.
+```json
+{
+  "version": 1,
+  "policyConfigPath": "/home/operator/.config/opshaven/config.json",
+  "expectedSourceSha": "0123456789abcdef0123456789abcdef01234567",
+  "target": {
+    "host": "vps.example.test",
+    "port": 22,
+    "adminUser": "ubuntu",
+    "knownHostsFile": "/home/operator/.config/opshaven/known_hosts",
+    "identityFile": "/home/operator/.ssh/vps-admin",
+    "expectedHostKeySha256": "SHA256:replace-with-separately-verified-value",
+    "privilege": "sudo-noninteractive"
+  },
+  "local": {
+    "runtimeRoot": "/absolute/opshaven/dist-readonly",
+    "dispatcherPath": "/absolute/opshaven/dist-readonly/src/remote/read-only-dispatcher.js",
+    "wrapperTemplatePath": "/absolute/opshaven/packaging/opshaven-readonly-force-command",
+    "capabilityDeclarationPath": "/absolute/opshaven/security/capability-declaration.json",
+    "operatorPrivateKeyFile": "/home/operator/.config/opshaven/operator-private.pem",
+    "operatorPublicKeyFile": "/home/operator/.config/opshaven/operator-public.pem",
+    "restrictedAuthorizedKeyFile": "/home/operator/.ssh/opshaven-readonly.pub"
+  },
+  "remote": {
+    "account": "opshaven",
+    "runtimeRoot": "/usr/lib/opshaven",
+    "configPath": "/etc/opshaven/config.json",
+    "wrapperPath": "/usr/local/bin/opshaven-readonly-force-command",
+    "stateDirectory": "/var/lib/opshaven",
+    "receiptPath": "/var/lib/opshaven/setup-receipt.json",
+    "nodeCandidates": [
+      "/usr/bin/node",
+      "/usr/local/bin/node"
+    ]
+  },
+  "trust": {
+    "expiresInSeconds": 86400
+  }
+}
+```
 
-A read-only installation should also have:
+The remote account and installation paths are fixed by the reviewed schema. Setup rejects unknown fields, changed authority paths, path traversal, duplicate Node candidates, unsupported privilege modes, and non-Ed25519 restricted keys.
 
-- no sudo rules;
-- no write access to application or deployment paths;
-- no system Docker socket access;
-- no approval private key on the VPS;
-- a root-owned dispatcher, policy, capability manifest, and trust files.
-
-Install `packaging/opshaven-readonly-force-command` as the forced command and use the read-only build produced by the repository. Review [Remote confinement](confinement.md) before adapting the reference systemd profile.
-
-### Controlled mode
-
-Controlled mode supports narrowly approved restart, deployment, and rollback operations for local stdio clients. Enable it only after reviewing the required filesystem writes, health-probe networking, rootless container access, and exact sudo rules.
-
-Do not permit wildcards, shells, editors, package managers, arbitrary environment assignment, unrestricted `systemctl`, or membership in a root-equivalent Docker group.
-
-Start from [the sudoers example](sudoers.example) and create one reviewed rule per allowed systemd unit.
-
-## Install the restricted dispatcher
-
-Build OpsHaven and copy the selected compiled dispatcher, validated remote configuration, restricted SSH public key, signed capability manifest, capability declaration and binding, operator public keys, and response-signing material to the VPS.
-
-The dispatcher trust files must be root-owned, regular files with strict modes, and must not be symlinks. The signed capability manifest must match the installed dispatcher artifact and declared authority.
-
-Use `scripts/bootstrap-remote.sh` for the controlled reference installation. For read-only mode, install the isolated dispatcher and read-only forced-command wrapper described above rather than granting controlled-mode privileges.
-
-Test that an attempted custom SSH command returns a policy denial instead of a shell.
-
-## Validate the boundary
-
-Run the local configuration checks:
+Protect the file:
 
 ```bash
-opshaven validate-config \
-  --config "$HOME/.config/opshaven/config.json"
+chmod 600 "$HOME/.config/opshaven/remote-setup.json"
+```
 
-opshaven diagnostics \
+## Preview and install
+
+Build the exact read-only runtime:
+
+```bash
+npm run build
+```
+
+Preview every local and VPS action without mutation:
+
+```bash
+opshaven setup remote \
+  --dry-run \
+  --config "$HOME/.config/opshaven/remote-setup.json"
+```
+
+Run the guided terminal interface:
+
+```bash
+opshaven setup remote \
+  --tui \
+  --config "$HOME/.config/opshaven/remote-setup.json"
+```
+
+For CI or other reviewed automation, approval remains explicit:
+
+```bash
+opshaven setup remote \
+  --non-interactive \
+  --approve \
+  --config "$HOME/.config/opshaven/remote-setup.json"
+```
+
+The engine performs these stages:
+
+1. verifies the exact local source head, local files, key correspondence, pinned host fingerprint, SSH connectivity, remote platform, resolved Node executable, disk space, privilege, and existing installation state;
+2. creates or validates the locked `opshaven` account with no sudo or privileged-group membership;
+3. installs the complete hashed read-only runtime tree, forced-command wrapper, policy, and restricted `authorized_keys` atomically;
+4. generates and verifies the read-only capability and declaration binding locally;
+5. uploads only public operator material and signed trust documents;
+6. generates the response-signing private key on the VPS and downloads only its public key;
+7. proves shell denial, host-key pinning, capability and declaration validity, authenticated read-only execution, replay and mutation resistance, malformed-input denial, and audit integrity;
+8. writes matching local and remote receipts only after certification succeeds.
+
+A repeat run is idempotent. Unchanged runtime and installation files are retained rather than replaced.
+
+## Diagnose and certify
+
+Inspect local policy and trust files:
+
+```bash
+opshaven doctor \
   --config "$HOME/.config/opshaven/config.json"
 ```
 
-Then prove the installed boundary:
+Run the complete installed boundary certification:
 
 ```bash
-opshaven verify-boundary \
-  --config "$HOME/.config/opshaven/config.json"
+opshaven boundary verify \
+  --config "$HOME/.config/opshaven/config.json" \
+  --setup-config "$HOME/.config/opshaven/remote-setup.json"
 ```
 
-A failed assertion returns a nonzero exit code. Do not connect an AI client until every expected assertion passes.
+A failed assertion returns nonzero. Endpoint handoff remains blocked until the protected remote receipt contains a matching successful certification.
 
-Review the active capabilities and assumptions:
+Review the active authority separately:
 
 ```bash
 opshaven trust-report \
-  --config "$HOME/.config/opshaven/config.json"
-```
-
-Use JSON output when integrating the report into another verification process.
-
-## Connect a local stdio client
-
-Generate the stdio MCP client configuration:
-
-```bash
-opshaven print-mcp-config \
-  --config "$HOME/.config/opshaven/config.json"
-```
-
-Add the generated entry to the local MCP client configuration. The default `opshaven-mcp` command starts no network listener.
-
-## Connect a hosted client
-
-Remote MCP is separate, opt-in, localhost-bound, OIDC-authenticated, and read-only. It uses the companion file `config.json.remote.json`; the client cannot select a profile or override the listener, SSH identity, dispatcher, key paths, resources, executables, or commands.
-
-Follow [Secure remote MCP](remote-mcp.md) to configure the external identity provider, exact origins and hosts, trusted proxy or HTTPS tunnel, session and request limits, read-only profiles, token lifecycle, and hosted-client endpoint.
-
-Validate the remote boundary before starting it:
-
-```bash
-opshaven verify-boundary \
   --mode read-only \
   --config "$HOME/.config/opshaven/config.json"
-
-opshaven print-remote-mcp-url \
-  --config "$HOME/.config/opshaven/config.json"
 ```
 
-Start it explicitly:
+## Roll back or uninstall
+
+Rollback restores files recorded in the protected setup receipt and removes newly created recorded files. It does not search for or remove unrelated server content.
 
 ```bash
-opshaven serve \
-  --transport streamable-http \
-  --config "$HOME/.config/opshaven/config.json"
+opshaven setup remote \
+  --rollback \
+  --approve \
+  --config "$HOME/.config/opshaven/remote-setup.json"
 ```
 
-Never bind the listener publicly or expose it without a reviewed HTTPS tunnel or reverse proxy.
+Uninstall removes only fixed OpsHaven paths and the exact forced-command key entry. It preserves unrelated `authorized_keys` entries, unrelated files, users, services, and SSH configuration.
 
-## Test safe operation
+```bash
+opshaven uninstall remote \
+  --approve \
+  --config "$HOME/.config/opshaven/remote-setup.json"
+```
 
-Begin with one or two read-only resources. Confirm that:
+Both commands emit a machine-readable receipt. Omit `--approve` to confirm that destructive execution remains blocked.
 
-- only configured logical resources are visible;
-- environment checks return presence information rather than values;
-- logs are bounded and redacted;
-- unknown operations and resources are rejected;
-- arbitrary SSH commands do not run;
-- responses authenticate against the expected request, capability, and dispatcher identity.
+## Prepare endpoint handoff
 
-In controlled local mode, test a mutation in dry-run mode and verify it reports `changed: false`.
+Create a reviewed remote MCP companion configuration as described in [Secure remote MCP](remote-mcp.md). It must keep `bindHost` on loopback, include exact Host and Origin allowlists, use only loopback trusted proxies, and define OIDC issuer, audience, JWKS hosts, scopes, operator profiles, sessions, replay controls, rate limits, concurrency, request bounds, and response bounds.
 
-A human should create an approval only after reviewing the exact target, expected state, operation digest, and expiry. Failed, expired, replayed, state-drifted, or modified approvals require a new review.
+Prepare generic HTTPS proxy or tunnel instructions:
 
-Deployments accept exact full commit IDs under configured refs and refuse dirty state or expected-current mismatches. Failed health verification restores the previous activation. Rollback accepts only releases recorded in the release ledger. Database migrations are not reversed automatically.
+```bash
+opshaven endpoint expose \
+  --setup-config "$HOME/.config/opshaven/remote-setup.json" \
+  --endpoint-config "$HOME/.config/opshaven/remote-endpoint.json" \
+  --external-url "https://mcp.example.test/mcp"
+```
+
+After the external HTTPS route exists, prove that anonymous access remains denied by OIDC:
+
+```bash
+opshaven endpoint expose \
+  --setup-config "$HOME/.config/opshaven/remote-setup.json" \
+  --endpoint-config "$HOME/.config/opshaven/remote-endpoint.json" \
+  --external-url "https://mcp.example.test/mcp" \
+  --verify-external
+```
+
+Inspect current handoff state:
+
+```bash
+opshaven endpoint status \
+  --setup-config "$HOME/.config/opshaven/remote-setup.json"
+```
+
+The command refuses public OpsHaven binding, credential-bearing URLs, mismatched paths, permissive proxy state, missing OIDC assumptions, wildcard CORS evidence, and endpoints that accept anonymous MCP requests.
+
+## Troubleshooting
+
+### `setpriv: apply bounding set: Operation not permitted`
+
+The current wrapper must not contain `--bounding-set=-all`. The restricted SSH user cannot change its capability bounding set after `sshd` drops privileges. Rebuild from the exact reviewed source and rerun setup. The wrapper still enforces `no_new_privs`, clears inheritable and ambient capabilities, resets the environment, and denies `SSH_ORIGINAL_COMMAND` before reset.
+
+### Missing `/usr/bin/node`
+
+Add the real absolute Node.js 22+ executable to `remote.nodeCandidates`. Preflight resolves and verifies the candidate before mutation, and the installed wrapper records that exact path. Setup fails closed when no candidate works.
+
+### Incomplete runtime dependency tree
+
+Run `npm run build` from the exact expected head. Setup requires every compiled read-only dependency and hashes each file through a no-follow descriptor before staging. It refuses partial copies and symbolic links.
+
+### Dispatcher is not executable
+
+Do not chmod files manually. Rerun setup. The atomic installer applies executable mode only to the reviewed read-only dispatcher entry and verifies it after replacement.
+
+### Host-key fingerprint mismatch
+
+Stop. Recollect the host key and verify its SHA-256 fingerprint through a separate trusted channel. Do not change the expected value merely to make preflight pass.
+
+### Operator public key mismatch
+
+Regenerate or select the correct Ed25519 public key for the configured private key. Setup verifies key correspondence before signing or upload.
+
+### Expired or changed trust files
+
+Rerun setup from the exact expected head to generate a new capability and declaration binding. Changed dispatcher hashes, stale signatures, expired trust, and incorrectly scoped authority are rejected locally and remotely.
+
+### Boundary certification fails
+
+Run `opshaven doctor`, preserve the setup and audit receipts, and inspect the failed assertion. Do not expose `/mcp` or weaken the failed check.
+
+## Local stdio and controlled mode
+
+The default `opshaven-mcp` entrypoint remains local stdio and starts no network listener. Controlled restart, deployment, and rollback operations remain separate from automated read-only remote setup. They still require exact local approvals, reviewed filesystem writes, and narrow sudo rules. See [the sudoers example](sudoers.example) and [Remote confinement](confinement.md).
 
 Verify the audit chain after testing:
 
@@ -179,4 +295,4 @@ opshaven verify-audit \
   --config "$HOME/.config/opshaven/config.json"
 ```
 
-Treat a failed boundary check, trust-file check, authenticated response, remote identity check, or audit-chain verification as a security incident. Preserve the surrounding evidence rather than rewriting it.
+Treat failed host-key checks, trust verification, authenticated responses, rollback receipts, endpoint authentication checks, or audit verification as security incidents. Preserve evidence rather than rewriting it.

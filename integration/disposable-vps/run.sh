@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
+on_error() {
+  local status=$?
+  trap - ERR
+  printf 'disposable-vps failed at line %s\n' "$1" >&2
+  exit "$status"
+}
+trap 'on_error "$LINENO"' ERR
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIR="$ROOT/integration/disposable-vps"
 GEN="$DIR/generated"
@@ -78,10 +85,11 @@ INSPECTION="$(node "$DIR/inspect.mjs" "$GEN/local.config.json")"
 node -e 'const x=JSON.parse(process.argv[1]); if(!x.ok || !x.data?.uname) process.exit(1)' "$INSPECTION"
 ssh-keygen -q -t ed25519 -N '' -f "$GEN/fake_host_key"
 printf '[127.0.0.1]:22222 %s\n' "$(cut -d' ' -f1,2 "$GEN/fake_host_key.pub")" > "$GEN/bad_known_hosts"
-set +e
-printf '{}\n' | ssh -p 22222 -i "$GEN/id_ed25519" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$GEN/bad_known_hosts" -o ClearAllForwardings=yes -o ForwardAgent=no -o RequestTTY=no opshaven@127.0.0.1 >/dev/null 2>&1
-BAD_HOST_STATUS=$?
-set -e
+if printf '{}\n' | ssh -p 22222 -i "$GEN/id_ed25519" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$GEN/bad_known_hosts" -o ClearAllForwardings=yes -o ForwardAgent=no -o RequestTTY=no opshaven@127.0.0.1 >/dev/null 2>&1; then
+  BAD_HOST_STATUS=0
+else
+  BAD_HOST_STATUS=$?
+fi
 [[ $BAD_HOST_STATUS -ne 0 ]]
 UNSIGNED='{"version":1,"requestId":"integration-unsigned","operation":"get_host_summary","resourceId":"host.fixture","args":{"resourceId":"host.fixture"},"limits":{"timeoutMs":15000,"maxBytes":131072,"maxLines":1000}}'
 REJECTED="$(printf '%s\n' "$UNSIGNED" | "${SSH[@]}")"

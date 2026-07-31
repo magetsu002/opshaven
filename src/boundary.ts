@@ -37,6 +37,16 @@ function selectedHost(config: OpsHavenConfig): HostResource {
   if (!found || found.kind !== "host") throw new OpsHavenError("CONFIG_INVALID", "Boundary verification requires a configured host resource.");
   return found;
 }
+function safeRemoteError(value: unknown): { code: string; message: string } | null {
+  if (!value || typeof value !== "object") return null;
+  const error = (value as Record<string, unknown>).error;
+  if (!error || typeof error !== "object") return null;
+  const code = (error as Record<string, unknown>).code;
+  const message = (error as Record<string, unknown>).message;
+  if (typeof code !== "string" || !/^[A-Z_]{3,64}$/.test(code)) return null;
+  if (typeof message !== "string" || !/^[A-Za-z0-9 .,:;()'/_-]{1,240}$/.test(message)) return { code, message: "safe message unavailable" };
+  return { code, message };
+}
 
 export async function verifyBoundary(config: OpsHavenConfig, configPath: string, mode: "controlled" | "read-only" = "controlled"): Promise<BoundaryReport> {
   const host = selectedHost(config);
@@ -51,20 +61,36 @@ export async function verifyBoundary(config: OpsHavenConfig, configPath: string,
   const validWire = await runSsh(host, `${JSON.stringify(valid.envelope)}\n`);
   let validResponse = false;
   let responseEnvelope: unknown;
+  let validDetail = "authenticated remote inspection succeeded";
   try {
     responseEnvelope = JSON.parse(validWire.stdout) as unknown;
-    validResponse = verifyAuthenticatedResponse(responseEnvelope, valid.requestHash, baseRequest.requestId, trust.capability, trust.responsePublicKey).ok;
-  } catch { validResponse = false; }
-  assertions.push(assertion("artifact and capability hashes valid", validResponse, "authenticated remote inspection succeeded"));
-  for (const [name, request] of [["unknown operation denied", { ...baseRequest, requestId: "boundary-unknown-op", operation: "unknown_operation" }], ["unknown resource denied", { ...baseRequest, requestId: "boundary-unknown-resource", resourceId: "host.unknown", args: { resourceId: "host.unknown" } }]] as const) {
+    const remoteError = safeRemoteError(responseEnvelope);
+    const verified = verifyAuthenticatedResponse(responseEnvelope, valid.requestHash, baseRequest.requestId, trust.capability, trust.responsePublicKey);
+    validResponse = verified.ok;
+    if (!verified.ok) validDetail = `authenticated remote inspection returned ${verified.error.code}: ${verified.error.message}`;
+    else if (remoteError) validDetail = `authenticated remote inspection returned ${remoteError.code}: ${remoteError.message}`;
+  } catch {
+    const remoteError = safeRemoteError(responseEnvelope);
+    validDetail = remoteError ? `authenticated remote inspection failed with ${remoteError.code}: ${remoteError.message}` : `authenticated remote inspection failed before response verification (ssh=${validWire.code ?? "unknown"})`;
+  }
+  assertions.push(assertion("artifact and capability hashes valid", validResponse, validDetail));
+  const denialCases = [
+    ["unknown operation denied", { ...baseRequest, requestId: "boundary-unknown-op", operation: "unknown_operation" }, mode === "read-only" ? "REMOTE_PROTOCOL_INVALID" : "UNKNOWN_OPERATION"],
+    ["unknown resource denied", { ...baseRequest, requestId: "boundary-unknown-resource", resourceId: "host.unknown", args: { resourceId: "host.unknown" } }, "UNKNOWN_RESOURCE"],
+  ] as const;
+  for (const [name, request, expectedCode] of denialCases) {
     const created = createAuthenticatedRequest(request as RemoteRequest, trust.capability, trust.requestPrivateKey);
     const wire = await runSsh(host, `${JSON.stringify(created.envelope)}\n`);
     let passed = false;
+    let detail = `expected signed ${expectedCode}`;
     try {
       const response = verifyAuthenticatedResponse(JSON.parse(wire.stdout) as unknown, created.requestHash, request.requestId, trust.capability, trust.responsePublicKey);
-      passed = !response.ok && /UNKNOWN_|POLICY_DENIED/.test(response.error.code);
+      if (!response.ok) {
+        passed = response.error.code === expectedCode;
+        detail = `signed ${response.error.code}`;
+      }
     } catch { passed = false; }
-    assertions.push(assertion(name, passed, "signed remote denial"));
+    assertions.push(assertion(name, passed, detail));
   }
   let readOnlyUnavailable = false;
   try { new ReadOnlyPolicyEngine(config).resolve("restart_service", { resourceId: host.id, dryRun: false }); }

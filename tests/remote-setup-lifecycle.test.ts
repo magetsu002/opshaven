@@ -1,0 +1,160 @@
+import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { exposeEndpoint, type EndpointHandoffRuntime } from "../src/setup/endpoint.js";
+import { executeRemoteSetup, type RemoteSetupEngineDependencies } from "../src/setup/engine.js";
+import type { SetupPresenter } from "../src/setup/presentation.js";
+import { buildRemoteSetupPlan, parseRemoteSetupConfig, type RemoteSetupConfig, type SetupStepState } from "../src/setup/remote.js";
+import { rollbackRemoteSetup, uninstallRemoteSetup } from "../src/setup/rollback.js";
+import type { RemoteAdminTransport, SetupCommandResult } from "../src/setup/transport.js";
+
+function rawSetup(root: string): any {
+  return {
+    version: 1,
+    policyConfigPath: path.join(root, "config.json"),
+    expectedSourceSha: "0123456789abcdef0123456789abcdef01234567",
+    target: { host: "vps.example.test", port: 22, adminUser: "ubuntu", knownHostsFile: path.join(root, "known_hosts"), identityFile: path.join(root, "identity"), expectedHostKeySha256: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", privilege: "sudo-noninteractive" },
+    local: { runtimeRoot: path.join(root, "runtime"), dispatcherPath: path.join(root, "runtime/src/remote/read-only-dispatcher.js"), wrapperTemplatePath: path.join(root, "wrapper"), capabilityDeclarationPath: path.join(root, "declaration.json"), operatorPrivateKeyFile: path.join(root, "private.pem"), operatorPublicKeyFile: path.join(root, "public.pem"), restrictedAuthorizedKeyFile: path.join(root, "restricted.pub") },
+    remote: { account: "opshaven", runtimeRoot: "/usr/lib/opshaven", configPath: "/etc/opshaven/config.json", wrapperPath: "/usr/local/bin/opshaven-readonly-force-command", stateDirectory: "/var/lib/opshaven", receiptPath: "/var/lib/opshaven/setup-receipt.json", nodeCandidates: ["/usr/bin/node"] },
+    trust: { expiresInSeconds: 3600 },
+  };
+}
+
+function policy(root: string): unknown {
+  return {
+    version: 1,
+    policyVersion: "setup-lifecycle-v1",
+    limits: { timeoutMs: 5000, maxBytes: 65536, maxLines: 500 },
+    audit: { path: path.join(root, "audit.jsonl") },
+    approvals: { directory: path.join(root, "approvals"), secretFile: path.join(root, "secret"), signingPrivateKeyFile: path.join(root, "private.pem"), verificationPublicKeyFile: path.join(root, "public.pem"), remoteUsedDirectory: path.join(root, "used"), defaultTtlSeconds: 300 },
+    secretFingerprints: [],
+    resources: [{ id: "host.main", kind: "host", address: "127.0.0.1", port: 22, user: "opshaven", knownHostsFile: path.join(root, "known_hosts"), identityFile: path.join(root, "restricted_id"), connectTimeoutMs: 5000 }],
+  };
+}
+
+function remoteConfig(): unknown {
+  return {
+    enabled: true,
+    bindHost: "127.0.0.1",
+    port: 43110,
+    path: "/mcp",
+    allowedOrigins: ["https://mcp.example.test"],
+    allowedHosts: ["mcp.example.test"],
+    trustedProxies: ["127.0.0.1"],
+    oauth: { issuer: "https://issuer.example.test", audience: "opshaven-remote", requiredScopes: ["mcp:invoke"], allowedAlgorithms: ["EdDSA"], allowedJwksHosts: ["issuer.example.test"], metadataCacheSeconds: 300, keyCacheSeconds: 300, minimumRefreshSeconds: 10, fetchTimeoutMs: 2000, clockSkewSeconds: 5 },
+    profiles: [{ id: "readonly", subjects: ["operator-subject"], requiredScopes: ["opshaven:read"], allowedTools: ["get_host_summary"], allowedResourceIds: ["host.main"], capability: "read-only", sessionLimits: { maximumSessions: 2, lifetimeSeconds: 3600, inactivitySeconds: 300, maximumPendingRequests: 4 }, rateLimits: { windowSeconds: 60, maximumRequests: 30, concurrency: 2 } }],
+    sessions: { maximumGlobal: 16, maximumPerPrincipal: 2, lifetimeSeconds: 3600, inactivitySeconds: 300, maximumPendingPerSession: 4 },
+    requests: { maximumBodyBytes: 65536, maximumHeaderBytes: 16384, maximumHeaders: 48, maximumJsonDepth: 16, maximumJsonNodes: 2048, timeoutMs: 10000, maximumResponseBytes: 262144, globalConcurrency: 8, perPrincipalConcurrency: 2, maximumQueue: 8 },
+    rateLimits: { windowSeconds: 60, maximumRequests: 100 },
+  };
+}
+
+class RecordingPresenter implements SetupPresenter {
+  readonly events: Array<{ id: string; state: SetupStepState }> = [];
+  plan(): void {}
+  fingerprint(): void {}
+  async approve(): Promise<boolean> { return true; }
+  receipt(): void {}
+  step(id: string, _scope: "local" | "vps", state: SetupStepState): void { this.events.push({ id, state }); }
+}
+
+function successfulDependencies(changed: readonly string[] = ["/usr/lib/opshaven"]): RemoteSetupEngineDependencies {
+  return {
+    preflight: async () => ({ ok: true, checkedAt: "2026-07-31T00:00:00.000Z", nodePath: "/usr/bin/node", remote: { platform: "Linux", distribution: "ubuntu", version: "26.04", architecture: "x86_64", nodePath: "/usr/bin/node", nodeVersion: "v22.23.1", freeBytes: 536870912, installation: { accountExists: changed.length === 0, runtimeExists: changed.length === 0, wrapperExists: changed.length === 0, configExists: changed.length === 0, receiptExists: changed.length === 0 } }, checks: [{ id: "preflight", state: "passed", detail: "fixture" }] }),
+    install: async () => ({ ok: true, changed, runtimeTreeSha256: "a".repeat(64), backupRoot: "/var/lib/opshaven/backups/fixture", receiptId: "fixture" }),
+    trust: async () => ({ ok: true, dispatcherSha256: "b".repeat(64), capabilitySha256: "c".repeat(64), declarationSha256: "d".repeat(64), bindingSha256: "e".repeat(64), responsePublicKeySha256: "f".repeat(64), expiresAt: "2026-08-01T00:00:00.000Z", installedPaths: [] }),
+    certify: async () => ({ ok: true, certifiedAt: "2026-07-31T00:01:00.000Z", boundarySha256: "1".repeat(64), assertions: [{ name: "authenticated read-only request succeeds", passed: true, detail: "fixture" }] }),
+    rollback: async () => ({ ok: true, action: "rollback", completedAt: "2026-07-31T00:02:00.000Z", restored: ["/usr/lib/opshaven"], removed: [], preserved: [] }),
+  };
+}
+
+class CleanupTransport implements RemoteAdminTransport {
+  calls = 0;
+  constructor(private readonly action: "rollback" | "uninstall") {}
+  async run(): Promise<SetupCommandResult> { return { code: 0, stdout: "", stderr: "" }; }
+  async runPrivileged(): Promise<SetupCommandResult> { return { code: 0, stdout: "", stderr: "" }; }
+  async upload(): Promise<SetupCommandResult> { return { code: 0, stdout: "", stderr: "" }; }
+  async download(): Promise<SetupCommandResult> { return { code: 0, stdout: "", stderr: "" }; }
+  async runPython(): Promise<SetupCommandResult> {
+    this.calls += 1;
+    return { code: 0, stdout: JSON.stringify({ ok: true, action: this.action, completedAt: "2026-07-31T00:00:00.000Z", restored: this.action === "rollback" ? ["/usr/lib/opshaven"] : [], removed: this.action === "uninstall" ? ["/usr/lib/opshaven"] : [], preserved: ["unrelated-authorized-key"] }), stderr: "" };
+  }
+}
+
+async function setupRoot(): Promise<{ root: string; setup: RemoteSetupConfig; endpointPath: string }> {
+  const root = await fs.mkdtemp(path.join(tmpdir(), "opshaven-lifecycle-"));
+  await fs.writeFile(path.join(root, "config.json"), `${JSON.stringify(policy(root))}\n`, { mode: 0o600 });
+  const endpointPath = path.join(root, "endpoint.json");
+  await fs.writeFile(endpointPath, `${JSON.stringify(remoteConfig())}\n`, { mode: 0o600 });
+  return { root, setup: parseRemoteSetupConfig(rawSetup(root)), endpointPath };
+}
+
+test("first and repeat setup runs use the same engine and produce certified idempotent receipts", async () => {
+  const { root, setup } = await setupRoot();
+  try {
+    const plan = buildRemoteSetupPlan(setup);
+    const first = await executeRemoteSetup(setup, plan, { nonInteractive: true, tui: false, approved: true, json: true, presenter: new RecordingPresenter(), dependencies: successfulDependencies() });
+    const repeat = await executeRemoteSetup(setup, plan, { nonInteractive: true, tui: false, approved: true, json: true, presenter: new RecordingPresenter(), dependencies: successfulDependencies([]) });
+    assert.equal(first.certified, true);
+    assert.deepEqual(first.installation.changed, ["/usr/lib/opshaven"]);
+    assert.equal(repeat.certified, true);
+    assert.deepEqual(repeat.installation.changed, []);
+    assert.equal(JSON.parse(await fs.readFile(`${setup.policyConfigPath}.setup-receipt.json`, "utf8")).certified, true);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("interrupted post-install setup automatically rolls back and never emits a certified receipt", async () => {
+  const { root, setup } = await setupRoot();
+  const presenter = new RecordingPresenter();
+  const dependencies = successfulDependencies();
+  let rolledBack = false;
+  dependencies.trust = async () => { throw new Error("stale trust fixture"); };
+  dependencies.rollback = async () => { rolledBack = true; return { ok: true, action: "rollback", completedAt: "2026-07-31T00:02:00.000Z", restored: ["/usr/lib/opshaven"], removed: [], preserved: [] }; };
+  try {
+    await assert.rejects(executeRemoteSetup(setup, buildRemoteSetupPlan(setup), { nonInteractive: true, tui: false, approved: true, json: true, presenter, dependencies }), /stale trust fixture/);
+    assert.equal(rolledBack, true);
+    assert.equal(presenter.events.some((item) => item.id === "rollback" && item.state === "rolled-back"), true);
+    await assert.rejects(fs.readFile(`${setup.policyConfigPath}.setup-receipt.json`), /ENOENT/);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("rollback and uninstall require explicit destructive approval", async () => {
+  const { root, setup } = await setupRoot();
+  try {
+    const rollback = new CleanupTransport("rollback");
+    await assert.rejects(rollbackRemoteSetup(setup, false, rollback), /explicit approval/);
+    assert.equal(rollback.calls, 0);
+    assert.equal((await rollbackRemoteSetup(setup, true, rollback)).action, "rollback");
+    const uninstall = new CleanupTransport("uninstall");
+    await assert.rejects(uninstallRemoteSetup(setup, false, uninstall), /explicit approval/);
+    assert.equal(uninstall.calls, 0);
+    const receipt = await uninstallRemoteSetup(setup, true, uninstall);
+    assert.equal(receipt.action, "uninstall");
+    assert.deepEqual(receipt.preserved, ["unrelated-authorized-key"]);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("endpoint handoff remains blocked before exact boundary certification", async () => {
+  const { root, setup, endpointPath } = await setupRoot();
+  const runtime: EndpointHandoffRuntime = { certification: async () => ({ certified: false, boundarySha256: null, sourceSha: setup.expectedSourceSha }), verify: async () => ({ status: 401, body: "unauthorized", headers: { "www-authenticate": "Bearer" } }) };
+  try {
+    await assert.rejects(exposeEndpoint(setup, endpointPath, "https://mcp.example.test/mcp", true, runtime), /blocked until exact remote boundary certification/);
+    await assert.rejects(fs.readFile(`${setup.policyConfigPath}.remote.json`), /ENOENT/);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("certified endpoint handoff refuses public bind and verifies anonymous OIDC denial", async () => {
+  const { root, setup, endpointPath } = await setupRoot();
+  const runtime: EndpointHandoffRuntime = { certification: async () => ({ certified: true, boundarySha256: "1".repeat(64), sourceSha: setup.expectedSourceSha }), verify: async () => ({ status: 401, body: "authentication required", headers: { "www-authenticate": "Bearer realm=opshaven", "access-control-allow-origin": "" } }) };
+  try {
+    const receipt = await exposeEndpoint(setup, endpointPath, "https://mcp.example.test/mcp", true, runtime);
+    assert.equal(receipt.status, "verified");
+    assert.equal(receipt.authentication, "oidc-bearer");
+    const publicConfig = remoteConfig() as any;
+    publicConfig.bindHost = "0.0.0.0";
+    await fs.writeFile(endpointPath, `${JSON.stringify(publicConfig)}\n`, { mode: 0o600 });
+    await assert.rejects(exposeEndpoint(setup, endpointPath, "https://mcp.example.test/mcp", false, runtime), /non-loopback/);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
