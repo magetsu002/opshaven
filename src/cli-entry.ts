@@ -93,8 +93,14 @@ async function main(): Promise<void> {
   if (requested === "boundary" && process.argv[3] !== "verify") {
     throw startupBlocked("Unknown boundary command.", "Run:\nopshaven boundary verify --config <path>");
   }
-  if (!COMMANDS_WITHOUT_LOCAL_CONFIG.has(requested) && !configPath()) {
+  const path = configPath();
+  if (!COMMANDS_WITHOUT_LOCAL_CONFIG.has(requested) && !path) {
     throw startupBlocked(`Configuration required for "${requested}".`, "Run:\nopshaven doctor --config <path>");
+  }
+  if (requested === "doctor" || requested === "diagnostics") {
+    const { runDoctor } = await import("./operator-doctor.js");
+    await runDoctor(path, process.argv.slice(3));
+    return;
   }
   if (requested === "authorization-report") process.argv[2] = "trust-report";
   await import("./cli.js");
