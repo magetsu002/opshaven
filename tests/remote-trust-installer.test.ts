@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-test("remote trust installer grants only required dispatcher read access and preserves rollback metadata", () => {
-  const source = readFileSync(path.join(process.cwd(), "packaging", "remote-trust-installer.py"), "utf8");
+test("remote trust installer grants only required dispatcher read access and preserves rollback metadata", async () => {
+  const source = await fs.readFile(path.join(process.cwd(), "packaging", "remote-trust-installer.py"), "utf8");
   assert.match(source, /"capability\.json": \(pathlib\.Path\(f"\{CONFIG\}\.capability\.json"\), 0o644\)/);
   assert.match(source, /"binding\.json": \(pathlib\.Path\(f"\{CONFIG\}\.declaration-binding\.json"\), 0o644\)/);
   assert.match(source, /runtime_gid = pwd\.getpwnam\("opshaven"\)\.pw_gid/);
