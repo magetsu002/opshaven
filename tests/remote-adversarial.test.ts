@@ -54,46 +54,58 @@ test("unauthenticated and malformed authorization never reach remote operations"
   const remote = new CountingTransport();
   const server = new StreamableHttpServer({ mcp: new McpServer(new OperationService(config, remote)), verifier });
   const started = await server.start();
-  const response = await fetch(started.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json", "mcp-protocol-version": CURRENT_MCP_PROTOCOL, "mcp-method": "tools/list" }, body: JSON.stringify(modern("tools/list")) });
-  assert.equal(response.status, 401);
-  assert.equal(remote.calls, 0);
-  await server.close();
+  try {
+    const response = await fetch(started.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json", "mcp-protocol-version": CURRENT_MCP_PROTOCOL, "mcp-method": "tools/list" }, body: JSON.stringify(modern("tools/list")) });
+    assert.equal(response.status, 401);
+    assert.equal(remote.calls, 0);
+  } finally {
+    await server.close();
+  }
 });
 
 test("origin, body, JSON, and MCP metadata failures occur before remote operations", async () => {
   const { remote, server, url } = await fixture(512, 8);
-  assert.equal((await request(url, modern("tools/list"), { origin: "https://evil.example.test" })).status, 403);
-  assert.equal((await request(url, modern("tools/list"), {}, "x".repeat(513))).status, 413);
-  const deep = modern("tools/call", { name: "get_host_summary", arguments: { resourceId: "host.main", nested: { a: { b: { c: { d: { e: 1 } } } } } } });
-  assert.equal((await request(url, deep)).status, 413);
-  const mismatch = await request(url, modern("tools/list"), { "mcp-method": "tools/call" });
-  assert.equal(mismatch.status, 400);
-  assert.equal(remote.calls, 0);
-  await server.close();
+  try {
+    assert.equal((await request(url, modern("tools/list"), { origin: "https://evil.example.test" })).status, 403);
+    assert.equal((await request(url, modern("tools/list"), {}, "x".repeat(513))).status, 413);
+    const deep = modern("tools/call", { name: "get_host_summary", arguments: { resourceId: "host.main", nested: { a: { b: { c: { d: { e: 1 } } } } } } });
+    assert.equal((await request(url, deep)).status, 413);
+    const mismatch = await request(url, modern("tools/list"), { "mcp-method": "tools/call" });
+    assert.equal(mismatch.status, 400);
+    assert.equal(remote.calls, 0);
+  } finally {
+    await server.close();
+  }
 });
 
 test("unknown tools, resources, mutations, and runtime override attempts never reach remote operations", async () => {
   const { remote, server, url } = await fixture();
-  const unknown = await request(url, modern("tools/call", { name: "run_shell", arguments: { resourceId: "host.main", command: "id" } }));
-  assert.equal((await unknown.json() as any).error.code, -32602);
-  const wrongResource = await request(url, modern("tools/call", { name: "get_host_summary", arguments: { resourceId: "host.other" } }));
-  assert.equal((await wrongResource.json() as any).error.code, -32602);
-  const mutation = await request(url, modern("tools/call", { name: "restart_service", arguments: { resourceId: "svc.web", dryRun: true } }));
-  assert.equal((await mutation.json() as any).error.code, -32602);
-  const overrides = await request(url, modern("tools/call", { name: "get_host_summary", arguments: { resourceId: "host.main", configPath: "/tmp/evil", executable: "/bin/sh", env: { PATH: "/tmp" }, shell: "id" } }));
-  assert.equal((await overrides.json() as any).result.structuredContent.ok, false);
-  assert.equal(remote.calls, 0);
-  await server.close();
+  try {
+    const unknown = await request(url, modern("tools/call", { name: "run_shell", arguments: { resourceId: "host.main", command: "id" } }));
+    assert.equal((await unknown.json() as any).error.code, -32602);
+    const wrongResource = await request(url, modern("tools/call", { name: "get_host_summary", arguments: { resourceId: "host.other" } }));
+    assert.equal((await wrongResource.json() as any).error.code, -32602);
+    const mutation = await request(url, modern("tools/call", { name: "restart_service", arguments: { resourceId: "svc.web", dryRun: true } }));
+    assert.equal((await mutation.json() as any).error.code, -32602);
+    const overrides = await request(url, modern("tools/call", { name: "get_host_summary", arguments: { resourceId: "host.main", configPath: "/tmp/evil", executable: "/bin/sh", env: { PATH: "/tmp" }, shell: "id" } }));
+    assert.equal((await overrides.json() as any).result.structuredContent.ok, false);
+    assert.equal(remote.calls, 0);
+  } finally {
+    await server.close();
+  }
 });
 
 test("authenticated read-only calls reach the shared operation service and remain redacted", async () => {
   const { remote, server, url } = await fixture();
-  const response = await request(url, modern("tools/call", { name: "get_host_summary", arguments: { resourceId: "host.main" } }));
-  assert.equal(response.status, 200);
-  const text = await response.text();
-  assert.equal(remote.calls, 1);
-  assert.equal(text.includes("planted-secret-value"), false);
-  assert.equal(text.includes("[REDACTED]"), true);
-  await server.close();
+  try {
+    const response = await request(url, modern("tools/call", { name: "get_host_summary", arguments: { resourceId: "host.main" } }));
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    assert.equal(remote.calls, 1);
+    assert.equal(text.includes("planted-secret-value"), false);
+    assert.equal(text.includes("[REDACTED]"), true);
+  } finally {
+    await server.close();
+  }
   await assert.rejects(fetch(url));
 });
