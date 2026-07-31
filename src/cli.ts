@@ -7,7 +7,8 @@ import { loadConfig } from "./config.js";
 import { OperationService } from "./operations.js";
 import { runRemoteServe } from "./remote-mcp/command.js";
 import { loadRemoteTrust, remoteMcpUrl } from "./remote-mcp/report.js";
-import { runRemoteSetupCommand } from "./setup/remote.js";
+import { certifyRemoteBoundary } from "./setup/certify.js";
+import { loadRemoteSetupConfig, runRemoteSetupCommand } from "./setup/remote.js";
 import { buildTrustReport, formatTrustReport } from "./trust-report.js";
 
 function flag(name: string): string | undefined {
@@ -47,9 +48,10 @@ async function regularFile(path: string, ownerOnly: boolean): Promise<{ exists: 
 }
 
 async function main(): Promise<void> {
-  const selected = command();
+  const requested = command();
+  const selected = requested === "boundary" && process.argv[3] === "verify" ? "verify-boundary" : requested === "doctor" ? "diagnostics" : requested;
   if (selected === "help") {
-    process.stdout.write("OpsHaven commands: setup remote, serve, validate-config, diagnostics, verify-audit, verify-boundary, compare-capabilities, trust-report, approve-restart, approve-deploy, approve-rollback, print-mcp-config, print-remote-mcp-url\n");
+    process.stdout.write("OpsHaven commands: setup remote, doctor, boundary verify, serve, validate-config, verify-audit, compare-capabilities, trust-report, approve-restart, approve-deploy, approve-rollback, print-mcp-config, print-remote-mcp-url\n");
     return;
   }
   if (selected === "setup") {
@@ -94,6 +96,12 @@ async function main(): Promise<void> {
     return;
   }
   if (selected === "verify-boundary") {
+    const setupPath = flag("--setup-config");
+    if (setupPath) {
+      const receipt = await certifyRemoteBoundary(await loadRemoteSetupConfig(setupPath));
+      process.stdout.write(process.argv.includes("--json") ? `${JSON.stringify(receipt)}\n` : `${receipt.assertions.map((item) => `${item.passed ? "PASS" : "FAIL"}  ${item.name}: ${item.detail}`).join("\n")}\nBoundary certification passed.\n`);
+      return;
+    }
     const base = await verifyBoundary(config, path, selectedMode());
     const remote = await loadRemoteTrust(path, config);
     const report = { ...base, assertions: [...base.assertions, ...remote.assertions], ok: base.ok && remote.assertions.every((item) => item.passed) };
