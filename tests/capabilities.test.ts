@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import {
+  buildCapabilityPayload,
   parseSignedCapabilityManifest,
   signCapabilityManifest,
   verifyCapabilityManifest,
@@ -79,6 +80,22 @@ test("operator capability verifies exact policy, resources, limits, and artifact
   );
   assert.equal(verified.payload.allowedResources.get_service_status?.[0], "svc.web");
   assert.match(verified.hash, /^[a-f0-9]{64}$/);
+});
+
+test("capability generation omits operations without compatible configured resources", () => {
+  const generated = buildCapabilityPayload(
+    config,
+    "read-only",
+    "a".repeat(64),
+    "2026-07-30T20:30:00.000Z",
+    "2026-07-30T19:55:00.000Z",
+  );
+  assert.deepEqual(generated.allowedResources.get_host_summary, ["host.main"]);
+  assert.deepEqual(generated.allowedResources.get_service_status, ["svc.web"]);
+  assert.equal(generated.allowedOperations.includes("get_backup_status"), false);
+  assert.equal(generated.allowedResources.get_backup_status, undefined);
+  assert.equal(generated.allowedOperations.includes("get_deployed_commit"), false);
+  assert.equal(generated.allowedResources.get_deployed_commit, undefined);
 });
 
 test("capability rejects unsigned, altered, and expired manifests", () => {

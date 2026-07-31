@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import { verifyBoundary, type BoundaryReport } from "./boundary.js";
 import { loadConfig } from "./config.js";
+import { inspectOperatorState } from "./operator-state.js";
 import { loadRemoteTrust } from "./remote-mcp/report.js";
 
 export interface DoctorCheck {
@@ -20,9 +21,20 @@ export interface DoctorReport {
   endpoint: "READY" | "BLOCKED";
 }
 
+export type OperatorWorkflowState = "NOT_INITIALIZED" | "LOCAL_INITIALIZED" | "REMOTE_CONFIGURED" | "READY" | "BLOCKED";
+
+export interface OperatorWorkflowReport {
+  ok: boolean;
+  state: OperatorWorkflowState;
+  completed: string[];
+  blocked: string[];
+  nextAction: string | null;
+  details?: DoctorReport;
+}
+
 function selectedMode(args: string[]): "controlled" | "read-only" {
   const index = args.indexOf("--mode");
-  const mode = index >= 0 ? args[index + 1] : "controlled";
+  const mode = index >= 0 ? args[index + 1] : "read-only";
   if (mode !== "controlled" && mode !== "read-only") throw new Error("Mode must be controlled or read-only.");
   return mode;
 }
@@ -66,7 +78,19 @@ export function formatDoctorReport(report: DoctorReport): string {
   return `${lines.join("\n")}\n`;
 }
 
-export async function runDoctor(configPath: string, args: string[]): Promise<void> {
+export function formatWorkflowReport(report: OperatorWorkflowReport): string {
+  const lines = ["Current state:", report.state, "", "Completed:"];
+  if (report.completed.length === 0) lines.push("None");
+  else for (const item of report.completed) lines.push(`✓ ${item}`);
+  lines.push("", "Blocked:");
+  if (report.blocked.length === 0) lines.push("None");
+  else for (const item of report.blocked) lines.push(`✗ ${item}`);
+  lines.push("", "Next action:", report.nextAction ?? "No action required.");
+  if (report.details) lines.push("", "Debug details:", "", formatDoctorReport(report.details).trimEnd());
+  return `${lines.join("\n")}\n`;
+}
+
+async function buildDoctorReport(configPath: string, args: string[]): Promise<DoctorReport> {
   const mode = selectedMode(args);
   const config = await loadConfig(configPath);
   const hosts = [...config.resources.values()].filter((item) => item.kind === "host");
@@ -92,7 +116,7 @@ export async function runDoctor(configPath: string, args: string[]): Promise<voi
   let endpointError = "";
   try {
     const remote = await loadRemoteTrust(configPath, config);
-    endpointConfigurationValid = remote.assertions.every((item) => item.passed);
+    endpointConfigurationValid = remote.assertions.every((item: { passed: boolean }) => item.passed);
     endpointReadOnly = remote.summary.readOnly;
     endpointEnabled = remote.summary.enabled;
   } catch (error) {
@@ -114,7 +138,7 @@ export async function runDoctor(configPath: string, args: string[]): Promise<voi
   const authenticatedInspection = assertionPassed(boundary, "artifact and capability hashes valid");
   const auditValid = assertionPassed(boundary, "audit chain valid");
   const boundaryValid = boundary?.ok === true;
-  const report: DoctorReport = {
+  return {
     ok: localOk && authenticatedInspection && endpointConfigurationValid && boundaryValid,
     mode,
     localOperatorEnvironment: localChecks,
@@ -136,8 +160,101 @@ export async function runDoctor(configPath: string, args: string[]): Promise<voi
     ],
     endpoint: localOk && authenticatedInspection && endpointConfigurationValid && boundaryValid ? "READY" : "BLOCKED",
   };
+}
 
+function initialReport(initialized: boolean, keysReady: boolean, localReady: boolean): OperatorWorkflowReport {
+  if (!initialized) {
+    return {
+      ok: false,
+      state: "NOT_INITIALIZED",
+      completed: [],
+      blocked: ["Local operator setup has not been initialized"],
+      nextAction: "opshaven init",
+    };
+  }
+  const completed = [
+    ...(keysReady ? ["Operator keys"] : []),
+    ...(localReady ? ["Local configuration"] : []),
+  ];
+  return {
+    ok: false,
+    state: keysReady && localReady ? "LOCAL_INITIALIZED" : "BLOCKED",
+    completed,
+    blocked: keysReady && localReady ? ["Remote deployment not configured"] : ["Local operator setup needs repair"],
+    nextAction: keysReady && localReady ? "opshaven setup remote" : "opshaven init",
+  };
+}
+
+export async function runDoctor(configPath: string, args: string[]): Promise<void> {
+  const debug = args.includes("--debug");
+  let snapshot;
+  try {
+    snapshot = await inspectOperatorState(args);
+  } catch {
+    snapshot = {
+      initialized: false,
+      keysReady: false,
+      localConfigurationReady: false,
+      remoteConfigured: false,
+      setupReady: false,
+      configPath: null,
+      setupPath: null,
+    };
+  }
+  if (!configPath) {
+    const report = initialReport(snapshot.initialized, snapshot.keysReady, snapshot.localConfigurationReady);
+    if (args.includes("--json")) process.stdout.write(`${JSON.stringify(report)}\n`);
+    else process.stdout.write(formatWorkflowReport(report));
+    process.exitCode = 1;
+    return;
+  }
+
+  let details: DoctorReport;
+  try {
+    details = await buildDoctorReport(configPath, args);
+  } catch (error) {
+    const report: OperatorWorkflowReport = {
+      ok: false,
+      state: "BLOCKED",
+      completed: [
+        ...(snapshot.keysReady ? ["Operator keys"] : []),
+        "Local configuration",
+      ],
+      blocked: ["Operator readiness checks could not complete"],
+      nextAction: snapshot.initialized ? "opshaven init" : "opshaven doctor --debug --config <path>",
+      ...(debug ? { details: {
+        ok: false,
+        mode: selectedMode(args),
+        localOperatorEnvironment: [check("Diagnostic execution", false, safeDetail(error))],
+        remoteDeploymentState: [],
+        authorizationArtifacts: [],
+        endpointReadiness: [],
+        securityBoundaryStatus: [],
+        endpoint: "BLOCKED",
+      } } : {}),
+    };
+    if (args.includes("--json")) process.stdout.write(`${JSON.stringify(report)}\n`);
+    else process.stdout.write(formatWorkflowReport(report));
+    process.exitCode = 1;
+    return;
+  }
+
+  const ready = details.ok;
+  const managedState = snapshot.initialized;
+  const report: OperatorWorkflowReport = {
+    ok: ready,
+    state: ready ? "READY" : managedState ? "REMOTE_CONFIGURED" : "BLOCKED",
+    completed: [
+      ...(snapshot.keysReady ? ["Operator keys"] : []),
+      "Local configuration",
+      ...(snapshot.setupReady ? ["Remote setup state"] : []),
+      ...(ready ? ["Remote deployment", "Boundary verification"] : []),
+    ],
+    blocked: ready ? [] : ["Remote deployment is not ready"],
+    nextAction: ready ? null : managedState ? "opshaven setup remote" : "opshaven doctor --debug --config <path>",
+    ...(debug ? { details } : {}),
+  };
   if (args.includes("--json")) process.stdout.write(`${JSON.stringify(report)}\n`);
-  else process.stdout.write(formatDoctorReport(report));
+  else process.stdout.write(formatWorkflowReport(report));
   process.exitCode = report.ok ? 0 : 1;
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatDoctorReport, type DoctorReport } from "../src/operator-doctor.js";
+import { formatDoctorReport, formatWorkflowReport, type DoctorReport, type OperatorWorkflowReport } from "../src/operator-doctor.js";
 
 function report(ok: boolean): DoctorReport {
   const passed = ok;
@@ -49,4 +49,20 @@ test("doctor output marks failed readiness without exposing paths or secret mate
   assert.match(text, /✗ Remote host reachable — verification did not complete/);
   assert.match(text, /Endpoint:\nBLOCKED/);
   assert.doesNotMatch(text, /PRIVATE KEY|BEGIN [A-Z ]+ KEY|\/home\//);
+});
+
+test("guided doctor output answers state, completion, blocker, and next action", () => {
+  const workflow: OperatorWorkflowReport = {
+    ok: false,
+    state: "LOCAL_INITIALIZED",
+    completed: ["Operator keys", "Local configuration"],
+    blocked: ["Remote deployment not configured"],
+    nextAction: "opshaven setup remote",
+  };
+  const text = formatWorkflowReport(workflow);
+  assert.match(text, /Current state:\nLOCAL_INITIALIZED/);
+  assert.match(text, /Completed:\n✓ Operator keys\n✓ Local configuration/);
+  assert.match(text, /Blocked:\n✗ Remote deployment not configured/);
+  assert.match(text, /Next action:\nopshaven setup remote/);
+  assert.doesNotMatch(text, /capability manifest|declaration binding|dispatcher hash/i);
 });

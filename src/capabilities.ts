@@ -340,14 +340,18 @@ export function buildCapabilityPayload(
   expiresAt: string,
   issuedAt = new Date().toISOString(),
 ): CapabilityPayload {
-  const operations = [...(mode === "read-only" ? READ_ONLY_OPERATIONS : CONTROLLED_OPERATIONS)].sort() as CapabilityOperation[];
+  const candidates = [...(mode === "read-only" ? READ_ONLY_OPERATIONS : CONTROLLED_OPERATIONS)].sort() as CapabilityOperation[];
+  const operations: CapabilityOperation[] = [];
   const resources: Record<string, string[]> = {};
-  for (const operation of operations) {
+  for (const operation of candidates) {
     const kinds = RESOURCE_KINDS[operation];
-    resources[operation] = [...config.resources.values()]
+    const compatible = [...config.resources.values()]
       .filter((resource) => kinds.includes(resource.kind) && !(mode === "read-only" && resource.kind === "container"))
       .map((resource) => resource.id)
       .sort();
+    if (compatible.length === 0) continue;
+    operations.push(operation);
+    resources[operation] = compatible;
   }
   return {
     version: 1,
