@@ -47,7 +47,7 @@ export class PlainSetupPresenter implements SetupPresenter {
 }
 
 export class TuiSetupPresenter extends PlainSetupPresenter {
-  private readonly interactive = process.stdout.isTTY === true;
+  private readonly interactive = (process.stdout as any).isTTY === true;
 
   override plan(value: RemoteSetupPlan): void {
     if (this.interactive) process.stdout.write("\u001b[2J\u001b[H\u001b[1mOpsHaven secure remote setup\u001b[0m\n\n");
