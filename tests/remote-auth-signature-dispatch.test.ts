@@ -125,7 +125,7 @@ test("OIDC algorithm selection cannot bypass mandatory signature verification", 
   const valid = bearer("EdDSA");
   const parts = valid.split(".");
   assert.equal(parts.length, 3);
-  const tampered = `${parts[0]}.${parts[1]}.${Buffer.alloc(64).toString("base64url")}`;
+  const tampered = `${parts[0]}.${parts[1]}.${Buffer.from(new Uint8Array(64)).toString("base64url")}`;
   await assert.rejects(
     verifier.verify(identity(tampered)),
     /Remote authentication failed\./,
