@@ -34,3 +34,12 @@ jobs:
           node-version: 22
           cache: npm
       - run: integration/disposable-vps/run.sh
+  remote-mcp-podman:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - run: podman version
+      - run: bash integration/remote-mcp-podman/run.sh

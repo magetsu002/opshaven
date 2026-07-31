@@ -18,8 +18,11 @@ export interface ResultEnvelope {
   error?: { code: string; message: string; retryable: boolean; details?: Record<string, unknown> };
   meta: { startedAt: string; finishedAt: string; dryRun: boolean; mutation: boolean; truncated: boolean; redactions: number; auditRecorded: boolean };
 }
-export interface RemoteTransport { execute(host: HostResource, request: RemoteRequest): Promise<RemoteResponse> }
+export interface RemoteTransport { execute(host: HostResource, request: RemoteRequest, signal?: AbortSignal): Promise<RemoteResponse> }
 
+function cancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new OpsHavenError("TIMEOUT", "Operation was cancelled before remote execution.", true);
+}
 function sanitizeValue(value: unknown, config: OpsHavenConfig): { value: unknown; redactions: number; truncated: boolean } {
   if (typeof value === "string") {
     const result = sanitizeOutput(value, config.limits, config.secretFingerprints);
@@ -60,32 +63,36 @@ export class OperationService {
     return { version: 1, requestId: randomBytes(12).toString("hex"), operation: operation.operation, resourceId: operation.resourceId, args: operation.args, limits: operation.limits, ...(authorization ? { authorization } : {}) };
   }
 
-  async planMutation(operationName: string, args: unknown): Promise<ResolvedOperation> {
+  async planMutation(operationName: string, args: unknown, signal?: AbortSignal): Promise<ResolvedOperation> {
+    cancelled(signal);
     const initial = this.policy.resolve(operationName, args);
     if (!initial.mutation || initial.dryRun) throw new OpsHavenError("APPROVAL_INVALID", "Only non-dry-run mutations require a plan.");
     const stateRequest: RemoteRequest = { version: 1, requestId: randomBytes(12).toString("hex"), operation: "get_state_fingerprint", resourceId: initial.resourceId, args: Object.freeze({ resourceId: initial.resourceId }), limits: initial.limits };
-    const state = await this.transport.execute(this.host(initial.hostId), stateRequest);
+    const state = await this.transport.execute(this.host(initial.hostId), stateRequest, signal);
     if (!state.ok) throw new OpsHavenError("REMOTE_OPERATION_FAILED", state.error.message, state.error.retryable);
     return this.policy.resolve(operationName, args, sha256(state.data));
   }
 
-  async execute(operationName: string, args: unknown, approvalToken?: string, actor = "mcp-client"): Promise<ResultEnvelope> {
+  async execute(operationName: string, args: unknown, approvalToken?: string, actor = "mcp-client", signal?: AbortSignal): Promise<ResultEnvelope> {
     const startedAt = new Date().toISOString();
     let resolved: ResolvedOperation | undefined;
     let approvalDigest: string | undefined;
     let authorization: RemoteAuthorization | undefined;
     let auditRecorded = false;
     try {
+      cancelled(signal);
       resolved = this.policy.resolve(operationName, args);
       if (resolved.mutation && !resolved.dryRun) {
         if (!approvalToken) throw new OpsHavenError("APPROVAL_REQUIRED", "A human approval token is required.");
-        resolved = await this.planMutation(operationName, args);
+        resolved = await this.planMutation(operationName, args, signal);
+        cancelled(signal);
         const consumed = await this.approvals.consume(approvalToken, resolved);
         approvalDigest = consumed.digest;
         authorization = consumed.authorization;
       }
+      cancelled(signal);
       const remoteRequest = this.request(resolved, authorization);
-      const response = await this.transport.execute(this.host(resolved.hostId), remoteRequest);
+      const response = await this.transport.execute(this.host(resolved.hostId), remoteRequest, signal);
       if (!response.ok) throw new OpsHavenError("REMOTE_OPERATION_FAILED", response.error.message, response.error.retryable, { remoteCode: response.error.code });
       const safe = sanitizeValue(response.data, this.config);
       const data = safe.value as Record<string, unknown>;

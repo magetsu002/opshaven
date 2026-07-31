@@ -5,6 +5,8 @@ import { formatBoundaryReport, verifyBoundary } from "./boundary.js";
 import { compareCapabilityDeclarations, formatCapabilityComparison, loadCapabilityDeclaration } from "./capability-declaration.js";
 import { loadConfig } from "./config.js";
 import { OperationService } from "./operations.js";
+import { runRemoteServe } from "./remote-mcp/command.js";
+import { loadRemoteTrust, remoteMcpUrl } from "./remote-mcp/report.js";
 import { buildTrustReport, formatTrustReport } from "./trust-report.js";
 
 function flag(name: string): string | undefined {
@@ -28,6 +30,13 @@ function dispatcherPath(mode: "controlled" | "read-only"): string {
     ?? (mode === "controlled" ? process.env.OPSHAVEN_DISPATCHER : process.env.OPSHAVEN_READONLY_DISPATCHER)
     ?? (mode === "controlled" ? "/usr/local/bin/opshaven-dispatcher" : "/usr/local/bin/opshaven-readonly-dispatcher");
 }
+function optionalPort(): number | undefined {
+  const raw = flag("--port");
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > 65535) throw new Error("Port must be an integer from 1 to 65535.");
+  return value;
+}
 
 async function regularFile(path: string, ownerOnly: boolean): Promise<{ exists: boolean; safe: boolean }> {
   try {
@@ -39,7 +48,7 @@ async function regularFile(path: string, ownerOnly: boolean): Promise<{ exists: 
 async function main(): Promise<void> {
   const selected = command();
   if (selected === "help") {
-    process.stdout.write("OpsHaven commands: validate-config, diagnostics, verify-audit, verify-boundary, compare-capabilities, trust-report, approve-restart, approve-deploy, approve-rollback, print-mcp-config\n");
+    process.stdout.write("OpsHaven commands: serve, validate-config, diagnostics, verify-audit, verify-boundary, compare-capabilities, trust-report, approve-restart, approve-deploy, approve-rollback, print-mcp-config, print-remote-mcp-url\n");
     return;
   }
   if (selected === "compare-capabilities") {
@@ -53,8 +62,23 @@ async function main(): Promise<void> {
   const path = configPath();
   if (!path) throw new Error("A configuration path is required.");
   const config = await loadConfig(path);
+  if (selected === "serve") {
+    const bindHost = flag("--bind");
+    const port = optionalPort();
+    const endpoint = flag("--path");
+    await runRemoteServe(config, path, {
+      transport: required("--transport"),
+      ...(bindHost !== undefined ? { bindHost } : {}),
+      ...(port !== undefined ? { port } : {}),
+      ...(endpoint !== undefined ? { path: endpoint } : {}),
+      unsafeAllowNonLoopback: process.argv.includes("--unsafe-allow-non-loopback"),
+    });
+    return;
+  }
   if (selected === "validate-config") {
-    process.stdout.write(`${JSON.stringify({ ok: true, version: config.version, policyVersion: config.policyVersion, resources: config.resources.size })}\n`);
+    const remote = await loadRemoteTrust(path, config);
+    process.stdout.write(`${JSON.stringify({ ok: remote.assertions.every((item) => item.passed), version: config.version, policyVersion: config.policyVersion, resources: config.resources.size, remoteMcp: remote.summary })}\n`);
+    process.exitCode = remote.assertions.every((item) => item.passed) ? 0 : 1;
     return;
   }
   if (selected === "verify-audit") {
@@ -64,7 +88,9 @@ async function main(): Promise<void> {
     return;
   }
   if (selected === "verify-boundary") {
-    const report = await verifyBoundary(config, path, selectedMode());
+    const base = await verifyBoundary(config, path, selectedMode());
+    const remote = await loadRemoteTrust(path, config);
+    const report = { ...base, assertions: [...base.assertions, ...remote.assertions], ok: base.ok && remote.assertions.every((item) => item.passed) };
     process.stdout.write(process.argv.includes("--json") ? `${JSON.stringify(report)}\n` : formatBoundaryReport(report));
     process.exitCode = report.ok ? 0 : 1;
     return;
@@ -80,13 +106,19 @@ async function main(): Promise<void> {
     const hosts = [...config.resources.values()].filter((item) => item.kind === "host");
     const hostFiles = await Promise.all(hosts.map(async (host) => ({ resourceId: host.id, knownHosts: await regularFile(host.knownHostsFile, false), identity: await regularFile(host.identityFile, true) })));
     const approvals = { secret: await regularFile(config.approvals.secretFile, true), privateKey: await regularFile(config.approvals.signingPrivateKeyFile, true), publicKey: await regularFile(config.approvals.verificationPublicKeyFile, false) };
-    const ok = hostFiles.every((item) => item.knownHosts.safe && item.identity.safe) && approvals.secret.safe && approvals.privateKey.safe && approvals.publicKey.safe;
-    process.stdout.write(`${JSON.stringify({ ok, policyVersion: config.policyVersion, hosts: hostFiles, approvals })}\n`);
+    const remote = await loadRemoteTrust(path, config);
+    const ok = hostFiles.every((item) => item.knownHosts.safe && item.identity.safe) && approvals.secret.safe && approvals.privateKey.safe && approvals.publicKey.safe && remote.assertions.every((item) => item.passed);
+    process.stdout.write(`${JSON.stringify({ ok, policyVersion: config.policyVersion, hosts: hostFiles, approvals, remoteMcp: remote.summary })}\n`);
     process.exitCode = ok ? 0 : 1;
     return;
   }
   if (selected === "print-mcp-config") {
     process.stdout.write(`${JSON.stringify({ mcpServers: { opshaven: { command: "opshaven-mcp", args: ["--config", path] } } }, null, 2)}\n`);
+    return;
+  }
+  if (selected === "print-remote-mcp-url") {
+    const remote = await loadRemoteTrust(path, config);
+    process.stdout.write(`${JSON.stringify({ ok: true, url: remoteMcpUrl(remote.config), authentication: "oidc-bearer", credentialsIncluded: false })}\n`);
     return;
   }
   const service = new OperationService(config, undefined, path);

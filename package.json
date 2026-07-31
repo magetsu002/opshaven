@@ -28,6 +28,7 @@
     "workflow:check": "node scripts/verify-workflow-pins.mjs",
     "release:check": "npm run format:check && npm run check && npm run package:check && npm run docs:check && npm run lockfile:check && npm run workflow:check",
     "reproducible:check": "scripts/check-reproducible-build.sh",
+    "remote:integration": "bash integration/remote-mcp-podman/run.sh",
     "security": "node scripts/security-scan.mjs",
     "certify": "scripts/certify-release.sh"
   },
