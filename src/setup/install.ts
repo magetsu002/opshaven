@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { loadConfig } from "../config.js";
 import { OpsHavenError } from "../errors.js";
+import { readRegularFile, readRegularTextFile } from "../safe-fs.js";
 import type { RemoteSetupPreflightReport } from "./preflight.js";
 import type { RemoteSetupConfig } from "./remote.js";
 import { PinnedSshAdminTransport, type RemoteAdminTransport } from "./transport.js";
@@ -66,6 +67,10 @@ function canonicalManifestFiles(files: readonly RuntimeManifestEntry[]): string 
   return JSON.stringify(files.map((item) => ({ executable: item.executable, path: item.path, sha256: item.sha256 })));
 }
 
+async function readRuntimeFile(filePath: string): Promise<Uint8Array> {
+  return await readRegularFile(filePath, "Read-only runtime file", { maxBytes: 33554432, code: "POLICY_DENIED" });
+}
+
 export async function buildRuntimeManifest(runtimeRoot: string): Promise<RuntimeManifest> {
   const rootStat = await fs.lstat(runtimeRoot);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new OpsHavenError("POLICY_DENIED", "Read-only runtime root must be a real directory.");
@@ -73,12 +78,10 @@ export async function buildRuntimeManifest(runtimeRoot: string): Promise<Runtime
   const entries: RuntimeManifestEntry[] = [];
   let totalBytes = 0;
   for (const fullPath of fullPaths) {
-    const stat = await fs.lstat(fullPath);
-    if (!stat.isFile() || stat.isSymbolicLink()) throw new OpsHavenError("POLICY_DENIED", "Read-only runtime contains an unsafe file.");
-    totalBytes += stat.size;
+    const bytes = await readRuntimeFile(fullPath);
+    totalBytes += bytes.length;
     if (totalBytes > 33554432) throw new OpsHavenError("OUTPUT_LIMIT", "Read-only runtime exceeds the reviewed size limit.");
     const relative = relativePath(runtimeRoot, fullPath);
-    const bytes = await fs.readFile(fullPath);
     entries.push(Object.freeze({ path: relative, sha256: createHash("sha256").update(bytes).digest("hex"), executable: relative === "src/remote/read-only-dispatcher.js" }));
   }
   const available = new Set(entries.map((item) => item.path));
@@ -113,7 +116,7 @@ async function copyRuntime(runtimeRoot: string, stageRuntime: string, manifest: 
     const source = path.join(runtimeRoot, ...item.path.split("/"));
     const destination = path.join(stageRuntime, ...item.path.split("/"));
     await fs.mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
-    const bytes = await fs.readFile(source);
+    const bytes = await readRuntimeFile(source);
     if (createHash("sha256").update(bytes).digest("hex") !== item.sha256) throw new OpsHavenError("POLICY_DENIED", "Runtime changed while it was being staged.");
     await fs.writeFile(destination, bytes, { mode: item.executable ? 0o700 : 0o600 });
   }
@@ -151,9 +154,10 @@ export async function installRestrictedRuntime(
     const stageRuntime = path.join(stageRoot, "runtime");
     await fs.mkdir(stageRuntime, { recursive: true, mode: 0o700 });
     await copyRuntime(config.local.runtimeRoot, stageRuntime, manifest);
-    const wrapperTemplate = await fs.readFile(config.local.wrapperTemplatePath, "utf8");
+    const wrapperTemplate = await readRegularTextFile(config.local.wrapperTemplatePath, "Read-only wrapper template", { maxBytes: 65536, code: "POLICY_DENIED" });
     const wrapper = renderReadonlyWrapper(wrapperTemplate, preflight.nodePath, config.remote.runtimeRoot);
-    const authorizedKey = buildRestrictedAuthorizedKey(await fs.readFile(config.local.restrictedAuthorizedKeyFile, "utf8"), config.remote.wrapperPath, config.remote.configPath);
+    const restrictedKey = await readRegularTextFile(config.local.restrictedAuthorizedKeyFile, "Restricted SSH public key", { maxBytes: 16384, code: "POLICY_DENIED" });
+    const authorizedKey = buildRestrictedAuthorizedKey(restrictedKey, config.remote.wrapperPath, config.remote.configPath);
     const installerSource = path.join(process.cwd(), "packaging", "remote-setup-installer.py");
     const plan = {
       version: 1,
