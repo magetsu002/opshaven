@@ -36,6 +36,7 @@ for (const command of [["help"], ["--help"], ["-h"]]) {
     const result = await runCli(command);
     assert.equal(result.code, 0);
     assert.match(result.stdout, /OpsHaven human CLI/);
+    assert.match(result.stdout, /opshaven init/);
     assert.match(result.stdout, /opshaven-mcp/);
     assert.equal(result.stderr, "");
   });
@@ -57,9 +58,10 @@ test("invalid CLI commands fail clearly before configuration loading", async () 
   assert.doesNotMatch(result.stderr, /configuration path is required/i);
 });
 
-test("operational CLI commands still require configuration", async () => {
+test("operational CLI commands still require initialized operator state", async () => {
   const result = await runCli(["validate-config"]);
   assert.equal(result.code, 1);
-  assert.match(result.stderr, /Configuration required for "validate-config"\./);
-  assert.match(result.stderr, /opshaven doctor --config <path>/);
+  assert.match(result.stderr, /Operator setup is not initialized\./);
+  assert.match(result.stderr, /opshaven init/);
+  assert.doesNotMatch(result.stderr, /RemoteSetupConfig|schema/i);
 });
