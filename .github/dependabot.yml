@@ -5,15 +5,30 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+
+    # Keep dependency PR volume controlled
     open-pull-requests-limit: 5
+
+    # Repository automation metadata
     labels:
       - "dependencies"
       - "security"
+
+    # Conventional commit format
     commit-message:
       prefix: "chore"
       include: "scope"
+
+    # Keep related updates together
     groups:
       production-dependencies:
         dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+
       development-dependencies:
         dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
