@@ -75,10 +75,13 @@ export async function certifyRemoteBoundary(setup: RemoteSetupConfig, injected?:
     "certification output contains no apparent secrets",
   ];
   const incomplete = required.filter((name) => !assertions.some((item) => item.name === name && item.passed));
-  const failed = assertions.filter((item) => !item.passed).map((item) => item.name);
+  const failed = assertions.filter((item) => !item.passed);
   if (!report.ok || incomplete.length > 0 || failed.length > 0) {
-    const names = [...new Set([...incomplete, ...failed])].sort();
-    throw new OpsHavenError("POLICY_DENIED", `Remote boundary certification failed (${names.join(", ") || "unknown assertion"}); endpoint setup remains blocked.`);
+    const details = new Map<string, string>();
+    for (const name of incomplete) details.set(name, "required assertion did not pass");
+    for (const item of failed) details.set(item.name, item.detail);
+    const summary = [...details.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([name, detail]) => `${name}: ${detail}`).join("; ");
+    throw new OpsHavenError("POLICY_DENIED", `Remote boundary certification failed (${summary || "unknown assertion"}); endpoint setup remains blocked.`);
   }
   const certifiedAt = new Date().toISOString();
   const canonical = JSON.stringify(assertions.map((item) => ({ detail: item.detail, name: item.name, passed: item.passed })).sort((a, b) => a.name.localeCompare(b.name)));
