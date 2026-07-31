@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { detectKnownHostFingerprint } from "../src/operator-state.js";
 
 interface Result { code: number | null; stdout: string; stderr: string }
 
@@ -42,6 +43,16 @@ async function generateSshKey(filePath: string): Promise<void> {
   assert.equal(result.code, 0, result.stderr);
 }
 
+async function writeKnownHost(keyPath: string, knownHosts: string, host: string, port: number): Promise<string> {
+  const publicKey = (await fs.readFile(`${keyPath}.pub`, "utf8")).trim();
+  const target = port === 22 ? host : `[${host}]:${port}`;
+  await fs.writeFile(knownHosts, `${target} ${publicKey}\n`, { mode: 0o644 });
+  const fingerprint = await detectKnownHostFingerprint(host, port, knownHosts);
+  if (!fingerprint) throw new Error("Expected a derived host fingerprint.");
+  assert.match(fingerprint, /^SHA256:[A-Za-z0-9+/]{20,60}$/);
+  return fingerprint;
+}
+
 test("empty environment initializes local state and reports the next action", async () => {
   const home = await fs.mkdtemp(path.join(tmpdir(), "opshaven-onboarding-local-"));
   try {
@@ -76,13 +87,42 @@ test("empty environment initializes local state and reports the next action", as
   }
 });
 
-test("guided initialization creates internal setup state without manual configuration", async () => {
+test("empty host identity is rejected without persisting initialization state", async () => {
+  const home = await fs.mkdtemp(path.join(tmpdir(), "opshaven-onboarding-empty-host-"));
+  try {
+    const adminIdentity = path.join(home, "admin_id");
+    const knownHosts = path.join(home, "known_hosts");
+    await generateSshKey(adminIdentity);
+    const publicKey = (await fs.readFile(`${adminIdentity}.pub`, "utf8")).trim();
+    await fs.writeFile(knownHosts, `unrelated.example ${publicKey}\n`, { mode: 0o644 });
+    const initialized = await runCli([
+      "init",
+      "--non-interactive",
+      "--host", "127.0.0.1",
+      "--port", "2222",
+      "--admin-user", "root",
+      "--admin-identity", adminIdentity,
+      "--known-hosts", knownHosts,
+      "--host-key-sha256", "",
+      "--source-sha", "a".repeat(40),
+    ], home);
+    assert.equal(initialized.code, 1);
+    assert.match(initialized.stderr, /Host identity unavailable\./);
+    const root = path.join(home, ".config", "opshaven");
+    await assert.rejects(() => fs.readFile(path.join(root, "state.json"), "utf8"));
+    await assert.rejects(() => fs.readFile(path.join(root, "setup.json"), "utf8"));
+  } finally {
+    await fs.rm(home, { recursive: true, force: true });
+  }
+});
+
+test("guided initialization accepts a valid pinned host identity", async () => {
   const home = await fs.mkdtemp(path.join(tmpdir(), "opshaven-onboarding-remote-"));
   try {
     const adminIdentity = path.join(home, "admin_id");
     const knownHosts = path.join(home, "known_hosts");
     await generateSshKey(adminIdentity);
-    await fs.writeFile(knownHosts, "fixture known host material\n", { mode: 0o644 });
+    const fingerprint = await writeKnownHost(adminIdentity, knownHosts, "127.0.0.1", 2222);
     const sourceSha = "a".repeat(40);
     const initialized = await runCli([
       "init",
@@ -92,7 +132,7 @@ test("guided initialization creates internal setup state without manual configur
       "--admin-user", "root",
       "--admin-identity", adminIdentity,
       "--known-hosts", knownHosts,
-      "--host-key-sha256", "SHA256:AAAAAAAAAAAAAAAAAAAA",
+      "--host-key-sha256", fingerprint,
       "--source-sha", sourceSha,
     ], home);
     assert.equal(initialized.code, 0, initialized.stderr);
@@ -105,7 +145,8 @@ test("guided initialization creates internal setup state without manual configur
       fs.readFile(setupPath, "utf8"),
       fs.readFile(configPath, "utf8"),
     ]);
-    assert.doesNotThrow(() => JSON.parse(originalSetup));
+    const parsedSetup = JSON.parse(originalSetup) as { target: { expectedHostKeySha256: string } };
+    assert.equal(parsedSetup.target.expectedHostKeySha256, fingerprint);
     assert.doesNotThrow(() => JSON.parse(originalConfig));
 
     const dryRun = await runCli(["setup", "remote", "--dry-run"], home);

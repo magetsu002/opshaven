@@ -36,6 +36,6 @@
     "security": "node scripts/security-scan.mjs",
     "certify": "scripts/certify-release.sh"
   },
-  "devDependencies": { "typescript": "5.8.3" },
+  "devDependencies": { "typescript": "7.0.2" },
   "license": "MIT"
 }
