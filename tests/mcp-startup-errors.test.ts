@@ -48,7 +48,7 @@ test("MCP startup reports the failed validation without exposing a full home pat
   const result = await runMcp(["--config", config], { HOME: home });
   assert.equal(result.code, 1);
   assert.equal(result.stdout, "");
-  assert.match(result.stderr, /Reason:\nlocal configuration must be a safe regular non-symlink file\./i);
+  assert.match(result.stderr, /Reason:\nConfiguration must be a safe regular non-symlink file\./i);
   assert.match(result.stderr, /Checked:\n~\/\.config\/opshaven\/config\.json/);
   assert.match(result.stderr, /opshaven doctor --config ~\/\.config\/opshaven\/config\.json/);
   assert.doesNotMatch(result.stderr, /\/home\/operator/);
