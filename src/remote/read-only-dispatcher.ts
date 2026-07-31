@@ -47,6 +47,11 @@ function failure(requestId: string, startedAt: string, error: unknown): ReadOnly
   return { version: 1, requestId, ok: false, error: { code: safe.code, message: safe.message, retryable: safe.retryable }, evidence: { startedAt, finishedAt: new Date().toISOString(), truncated: false, redactions: 0 } };
 }
 
+function parseJsonInput(raw: string): unknown {
+  try { return JSON.parse(raw) as unknown; }
+  catch { throw new OpsHavenError("REMOTE_PROTOCOL_INVALID", "Read-only remote request is not valid JSON."); }
+}
+
 export async function dispatchReadOnlyEnvelope(
   config: OpsHavenConfig,
   raw: string,
@@ -59,7 +64,7 @@ export async function dispatchReadOnlyEnvelope(
   try {
     if (originalCommand.trim().length > 0) throw new OpsHavenError("POLICY_DENIED", "Original SSH commands are forbidden.");
     if (raw.split(/\r?\n/).filter(Boolean).length !== 1) throw new OpsHavenError("REMOTE_PROTOCOL_INVALID", "Exactly one read-only request envelope is required.");
-    const request = validateReadOnlyRemoteRequest(config, parseReadOnlyRemoteRequest(JSON.parse(raw) as unknown));
+    const request = validateReadOnlyRemoteRequest(config, parseReadOnlyRemoteRequest(parseJsonInput(raw)));
     if (capability) assertCapabilityAllows(capability, request.operation, request.resourceId, request.limits);
     requestId = request.requestId;
     const data = await handleReadOnlyInspection({ config, runner }, request);
@@ -88,7 +93,7 @@ export async function dispatchReadOnly(
     const responsePrivateKey = await readRegularFile(responsePrivateKeyPath(trustedConfigPath), "Response signing key", { maxBytes: 65536, code: "POLICY_DENIED" });
     const raw = await readBoundedInput();
     if (raw.split(/\r?\n/).filter(Boolean).length !== 1) throw new OpsHavenError("REMOTE_PROTOCOL_INVALID", "Exactly one authenticated read-only request envelope is required.");
-    const verified = await verifyAuthenticatedRequest(JSON.parse(raw) as unknown, capability, requestPublicKey, requestReplayDirectory(config));
+    const verified = await verifyAuthenticatedRequest(parseJsonInput(raw), capability, requestPublicKey, requestReplayDirectory(config));
     requestId = verified.request.requestId;
     let response: ReadOnlyRemoteResponse;
     try {
