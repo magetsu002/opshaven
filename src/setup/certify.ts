@@ -33,11 +33,12 @@ function actualRuntime(setup: RemoteSetupConfig): BoundaryCertificationRuntime {
   };
 }
 
-function structuredInvalid(result: SetupCommandResult): boolean {
+function structuredInvalid(result: SetupCommandResult): { passed: boolean; detail: string } {
   try {
     const parsed = JSON.parse(result.stdout) as Record<string, any>;
-    return parsed.ok === false && parsed.error?.code === "REMOTE_PROTOCOL_INVALID";
-  } catch { return false; }
+    const code = typeof parsed.error?.code === "string" && /^[A-Z_]{3,64}$/.test(parsed.error.code) ? parsed.error.code : "MISSING_CODE";
+    return { passed: parsed.ok === false && code === "REMOTE_PROTOCOL_INVALID", detail: `structured ${code} (ssh=${result.code})` };
+  } catch { return { passed: false, detail: `invalid JSON response (ssh=${result.code})` }; }
 }
 
 function secretFree(value: string): boolean {
@@ -58,7 +59,8 @@ export async function certifyRemoteBoundary(setup: RemoteSetupConfig, injected?:
   const requiredOptions = ["ClearAllForwardings=yes", "ForwardAgent=no", "ForwardX11=no", "PermitLocalCommand=no", "RequestTTY=no"];
   assertions.push({ name: "client forwarding and PTY disabled", passed: requiredOptions.every((item) => sshArgs.includes(item)), detail: "fixed SSH client arguments" });
   const malformed = await runtime.runRestricted(host(config), "{\n");
-  assertions.push({ name: "malformed input returns structured denial", passed: structuredInvalid(malformed), detail: "REMOTE_PROTOCOL_INVALID" });
+  const malformedResult = structuredInvalid(malformed);
+  assertions.push({ name: "malformed input returns structured denial", passed: malformedResult.passed, detail: malformedResult.detail });
   assertions.push({ name: "certification output contains no apparent secrets", passed: secretFree(`${malformed.stdout}\n${malformed.stderr}`), detail: "bounded secret-pattern scan" });
   const required = [
     "interactive shell denied",
