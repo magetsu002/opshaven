@@ -1,8 +1,6 @@
 # Setup
 
-This guide connects a local OpsHaven MCP server to a restricted Linux VPS.
-
-Start with a disposable server that contains no production secrets or customer data. The safest first installation uses the isolated read-only dispatcher.
+This guide connects OpsHaven to a restricted Linux VPS. Start with a disposable server that contains no production secrets or customer data. The safest first installation uses the isolated read-only dispatcher.
 
 ## Requirements
 
@@ -73,7 +71,7 @@ Install `packaging/opshaven-readonly-force-command` as the forced command and us
 
 ### Controlled mode
 
-Controlled mode supports narrowly approved restart, deployment, and rollback operations. Enable it only after reviewing the required filesystem writes, health-probe networking, rootless container access, and exact sudo rules.
+Controlled mode supports narrowly approved restart, deployment, and rollback operations for local stdio clients. Enable it only after reviewing the required filesystem writes, health-probe networking, rootless container access, and exact sudo rules.
 
 Do not permit wildcards, shells, editors, package managers, arbitrary environment assignment, unrestricted `systemctl`, or membership in a root-equivalent Docker group.
 
@@ -89,7 +87,7 @@ Use `scripts/bootstrap-remote.sh` for the controlled reference installation. For
 
 Test that an attempted custom SSH command returns a policy denial instead of a shell.
 
-## Validate and connect
+## Validate the boundary
 
 Run the local configuration checks:
 
@@ -119,14 +117,43 @@ opshaven trust-report \
 
 Use JSON output when integrating the report into another verification process.
 
-Finally, generate the MCP client configuration:
+## Connect a local stdio client
+
+Generate the stdio MCP client configuration:
 
 ```bash
 opshaven print-mcp-config \
   --config "$HOME/.config/opshaven/config.json"
 ```
 
-Add the generated entry to the MCP client configuration. OpsHaven must remain a local stdio process; do not expose it through HTTP or a public socket.
+Add the generated entry to the local MCP client configuration. The default `opshaven-mcp` command starts no network listener.
+
+## Connect a hosted client
+
+Remote MCP is separate, opt-in, localhost-bound, OIDC-authenticated, and read-only. It uses the companion file `config.json.remote.json`; the client cannot select a profile or override the listener, SSH identity, dispatcher, key paths, resources, executables, or commands.
+
+Follow [Secure remote MCP](remote-mcp.md) to configure the external identity provider, exact origins and hosts, trusted proxy or HTTPS tunnel, session and request limits, read-only profiles, token lifecycle, and hosted-client endpoint.
+
+Validate the remote boundary before starting it:
+
+```bash
+opshaven verify-boundary \
+  --mode read-only \
+  --config "$HOME/.config/opshaven/config.json"
+
+opshaven print-remote-mcp-url \
+  --config "$HOME/.config/opshaven/config.json"
+```
+
+Start it explicitly:
+
+```bash
+opshaven serve \
+  --transport streamable-http \
+  --config "$HOME/.config/opshaven/config.json"
+```
+
+Never bind the listener publicly or expose it without a reviewed HTTPS tunnel or reverse proxy.
 
 ## Test safe operation
 
@@ -139,7 +166,7 @@ Begin with one or two read-only resources. Confirm that:
 - arbitrary SSH commands do not run;
 - responses authenticate against the expected request, capability, and dispatcher identity.
 
-In controlled mode, test a mutation in dry-run mode and verify it reports `changed: false`.
+In controlled local mode, test a mutation in dry-run mode and verify it reports `changed: false`.
 
 A human should create an approval only after reviewing the exact target, expected state, operation digest, and expiry. Failed, expired, replayed, state-drifted, or modified approvals require a new review.
 
@@ -152,4 +179,4 @@ opshaven verify-audit \
   --config "$HOME/.config/opshaven/config.json"
 ```
 
-Treat a failed boundary check, trust-file check, authenticated response, or audit-chain verification as a security incident. Preserve the surrounding evidence rather than rewriting it.
+Treat a failed boundary check, trust-file check, authenticated response, remote identity check, or audit-chain verification as a security incident. Preserve the surrounding evidence rather than rewriting it.
