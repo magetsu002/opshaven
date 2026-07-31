@@ -12,6 +12,10 @@ export function formatOperatorError(error: unknown, args: readonly string[] = pr
   const raw = error instanceof Error ? error.message : "The operation failed safely.";
   if (debugEnabled(args)) return raw;
 
+  if (/Host identity unavailable|Host identity was not accepted|SSH host-key fingerprint|Detected host identity/i.test(raw)) {
+    return raw;
+  }
+
   if (/Setup is not initialized|Remote deployment details are not configured/i.test(raw)) {
     return startup("Setup is not initialized.", "opshaven init");
   }
