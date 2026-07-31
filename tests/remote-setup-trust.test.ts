@@ -98,7 +98,7 @@ test("trust provisioning signs read-only authority locally and uploads no privat
     const payload = JSON.parse(Buffer.from(capability.payload, "base64url").toString("utf8")) as { mode: string; dispatcherSha256: string };
     assert.equal(payload.mode, "read-only");
     assert.equal(payload.dispatcherSha256, receipt.dispatcherSha256);
-    assert.equal(await fs.readFile(`${policyPath}.response-public.pem`, "utf8").then((value) => value.includes("PRIVATE KEY")), false);
+    assert.equal(await fs.readFile(`${policyPath}.response-public.pem`, "utf8").then((value: string) => value.includes("PRIVATE KEY")), false);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
