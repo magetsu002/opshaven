@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import type { McpPrincipal, McpServer } from "../mcp.js";
+import { RemoteBoundaryError, validateHttpBoundary, type HttpBoundaryPolicy } from "./boundary.js";
 
 export const CURRENT_MCP_PROTOCOL = "2026-07-28";
 const SUPPORTED_PROTOCOLS = new Set([CURRENT_MCP_PROTOCOL, "2025-11-25", "2025-06-18", "2025-03-26"]);
@@ -17,6 +18,7 @@ export interface PrincipalVerifier {
 export interface StreamableHttpOptions {
   readonly mcp: McpServer;
   readonly verifier: PrincipalVerifier;
+  readonly boundary?: HttpBoundaryPolicy;
   readonly bindHost?: string;
   readonly port?: number;
   readonly path?: string;
@@ -48,11 +50,11 @@ function headerValue(value: string | string[] | undefined): string | undefined {
 }
 function sendJson(response: any, status: number, value: unknown, extraHeaders: Record<string, string> = {}): void {
   const body = `${JSON.stringify(value)}\n`;
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-length": String(Buffer.byteLength(body, "utf8")), "cache-control": "no-store", ...extraHeaders });
+  response.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-length": String(Buffer.byteLength(body, "utf8")), "cache-control": "no-store", "x-content-type-options": "nosniff", ...extraHeaders });
   response.end(body);
 }
 function sendEmpty(response: any, status: number, extraHeaders: Record<string, string> = {}): void {
-  response.writeHead(status, { "cache-control": "no-store", ...extraHeaders });
+  response.writeHead(status, { "cache-control": "no-store", "x-content-type-options": "nosniff", ...extraHeaders });
   response.end();
 }
 function plain(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value); }
@@ -132,8 +134,10 @@ export class StreamableHttpServer {
     const maximum = this.options.maxBodyBytes ?? 1048576;
     this.server = createServer(async (request: any, response: any) => {
       try {
-        const principal = await this.options.verifier.verify({ authorization: headerValue(request.headers.authorization), remoteAddress: request.socket?.remoteAddress ?? "", requestTarget: request.url ?? "/", headers: request.headers });
-        const target = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+        const identity = { authorization: headerValue(request.headers.authorization), remoteAddress: request.socket?.remoteAddress ?? "", requestTarget: request.url ?? "/", headers: request.headers };
+        const principal = await this.options.verifier.verify(identity);
+        if (this.options.boundary) validateHttpBoundary(this.options.boundary, identity.remoteAddress, request.headers);
+        const target = new URL(identity.requestTarget, `http://${request.headers.host ?? "localhost"}`);
         if (target.pathname !== endpoint || target.search || target.hash) { sendJson(response, 404, jsonRpcError(-32601, "Not found")); return; }
         if (request.method === "GET") { response.setHeader("allow", "POST"); sendJson(response, 405, jsonRpcError(-32601, "Method not allowed")); return; }
         if (request.method !== "POST") { response.setHeader("allow", "POST"); sendJson(response, 405, jsonRpcError(-32601, "Method not allowed")); return; }
@@ -162,6 +166,7 @@ export class StreamableHttpServer {
         sendJson(response, 200, protocol === CURRENT_MCP_PROTOCOL ? decorateCurrentResponse(result) : result ?? jsonRpcError(-32603, "Internal error", requestId(message)));
       } catch (error) {
         if (error instanceof RemoteAuthenticationError) { sendJson(response, error.status, jsonRpcError(-32600, error.message), { "www-authenticate": "Bearer" }); return; }
+        if (error instanceof RemoteBoundaryError) { sendJson(response, error.status, jsonRpcError(-32600, error.message)); return; }
         sendJson(response, 500, jsonRpcError(-32603, "Internal error"));
       }
     });
