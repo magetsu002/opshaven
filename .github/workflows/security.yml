@@ -54,4 +54,4 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: bash integration/remote-setup-ubuntu/run.sh
+      - run: bash integration/remote-setup-ubuntu/run-ci.sh
