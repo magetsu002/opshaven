@@ -10,14 +10,14 @@ function startup(message: string, action: string): string {
 
 export function formatOperatorError(error: unknown, args: readonly string[] = process.argv.slice(2)): string {
   const raw = error instanceof Error ? error.message : "The operation failed safely.";
-  if (debugEnabled(args)) return `INIT_DIAGNOSTIC:${Buffer.from(raw, "utf8").toString("base64")}`;
+  if (debugEnabled(args)) return raw;
 
   if (/Setup is not initialized|Remote deployment details are not configured/i.test(raw)) {
     return startup("Setup is not initialized.", "opshaven init");
   }
 
   if (/Remote setup configuration|setup configuration version|setup .* schema|setup .* malformed/i.test(raw)) {
-    return startup("Setup state is missing or outdated.", "opshaven init");
+    return startup(`Setup state is missing or outdated.\nDiagnostic: ${Buffer.from(raw, "utf8").toString("base64")}`, "opshaven init");
   }
 
   if (/capability|declaration binding|operator signing|authorization artifact|approval signing key/i.test(raw)) {
