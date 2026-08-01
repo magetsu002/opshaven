@@ -4,6 +4,7 @@ import { OpsHavenError } from "../errors.js";
 import { buildSshArgs } from "../transport/ssh.js";
 import { verifyBoundary, type BoundaryAssertion, type BoundaryReport } from "../boundary.js";
 import type { RemoteSetupConfig } from "./remote.js";
+import { SETUP_DISPATCHER_MODE } from "./state.js";
 import { PinnedSshAdminTransport, runSetupProcess, type RemoteAdminTransport, type SetupCommandResult } from "./transport.js";
 
 export interface RemoteBoundaryReceipt {
@@ -27,7 +28,7 @@ function host(config: Awaited<ReturnType<typeof loadConfig>>): HostResource {
 
 function actualRuntime(setup: RemoteSetupConfig): BoundaryCertificationRuntime {
   return {
-    verify: async (configPath) => await verifyBoundary(await loadConfig(configPath), configPath, "read-only"),
+    verify: async (configPath) => await verifyBoundary(await loadConfig(configPath), configPath, SETUP_DISPATCHER_MODE),
     runRestricted: async (resource, stdin) => await runSetupProcess("/usr/bin/ssh", buildSshArgs(resource), { stdin, timeoutMs: 30000, maximumBytes: 1048576 }),
     admin: new PinnedSshAdminTransport(setup),
   };
@@ -47,7 +48,7 @@ function secretFree(value: string): boolean {
 
 function receiptScript(setup: RemoteSetupConfig, boundarySha256: string, certifiedAt: string): string {
   const input = JSON.stringify({ receipt: setup.remote.receiptPath, sourceSha: setup.expectedSourceSha, boundarySha256, certifiedAt });
-  return `import json, os, pathlib, stat, tempfile\nrequest=json.loads(${JSON.stringify(input)})\npath=pathlib.Path(request['receipt'])\ninfo=os.lstat(path)\nif not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_size > 1048576: raise RuntimeError('unsafe setup receipt')\nwith open(path,'r',encoding='utf-8') as handle: receipt=json.load(handle)\nif receipt.get('version') != 1 or receipt.get('sourceSha') != request['sourceSha'] or not isinstance(receipt.get('runtimeTreeSha256'),str): raise RuntimeError('setup receipt does not match installed source')\nreceipt['certified']=True\nreceipt['certifiedAt']=request['certifiedAt']\nreceipt['boundarySha256']=request['boundarySha256']\nreceipt['certificationVersion']=1\ndescriptor, temporary=tempfile.mkstemp(prefix='.setup-receipt-',dir=path.parent)\ntry:\n    with os.fdopen(descriptor,'w',encoding='utf-8',newline='\\n') as output:\n        output.write(json.dumps(receipt,sort_keys=True,separators=(',',':'))+'\\n'); output.flush(); os.fsync(output.fileno())\n    os.chmod(temporary,0o600); os.chown(temporary,0,0); os.replace(temporary,path)\nfinally:\n    if os.path.exists(temporary): os.unlink(temporary)\nprint(json.dumps({'ok':True,'certifiedAt':request['certifiedAt'],'boundarySha256':request['boundarySha256']},sort_keys=True))\n`;
+  return `import json, os, pathlib, stat, tempfile\nrequest=json.loads(${JSON.stringify(input)})\npath=pathlib.Path(request['receipt'])\ninfo=os.lstat(path)\nif not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_size > 1048576: raise RuntimeError('unsafe setup receipt')\nwith open(path,'r',encoding='utf-8') as handle: receipt=json.load(handle)\nif receipt.get('version') != 1 or receipt.get('sourceSha') != request['sourceSha'] or not isinstance(receipt.get('runtimeTreeSha256'),str): raise RuntimeError('setup receipt does not match installed source')\nreceipt['certified']=True\nreceipt['certifiedAt']=request['certifiedAt']\nreceipt['boundarySha256']=request['boundarySha256']\nreceipt['certificationVersion']=2\ndescriptor, temporary=tempfile.mkstemp(prefix='.setup-receipt-',dir=path.parent)\ntry:\n    with os.fdopen(descriptor,'w',encoding='utf-8',newline='\\n') as output:\n        output.write(json.dumps(receipt,sort_keys=True,separators=(',',':'))+'\\n'); output.flush(); os.fsync(output.fileno())\n    os.chmod(temporary,0o600); os.chown(temporary,0,0); os.replace(temporary,path)\nfinally:\n    if os.path.exists(temporary): os.unlink(temporary)\nprint(json.dumps({'ok':True,'certifiedAt':request['certifiedAt'],'boundarySha256':request['boundarySha256']},sort_keys=True))\n`;
 }
 
 export async function certifyRemoteBoundary(setup: RemoteSetupConfig, injected?: BoundaryCertificationRuntime): Promise<RemoteBoundaryReceipt> {
@@ -62,11 +63,12 @@ export async function certifyRemoteBoundary(setup: RemoteSetupConfig, injected?:
   const malformedResult = structuredInvalid(malformed);
   assertions.push({ name: "malformed input returns structured denial", passed: malformedResult.passed, detail: malformedResult.detail });
   assertions.push({ name: "certification output contains no apparent secrets", passed: secretFree(`${malformed.stdout}\n${malformed.stderr}`), detail: "bounded secret-pattern scan" });
+  const deploymentConfigured = [...config.resources.values()].some((resource) => resource.kind === "deployment");
   const required = [
+    "dispatcher mode matches expected",
     "interactive shell denied",
     "arbitrary SSH commands denied",
     "artifact and capability hashes valid",
-    "read-only mutations unavailable",
     "request replay denied",
     "request mutation denied",
     "response mutation denied",
@@ -75,6 +77,13 @@ export async function certifyRemoteBoundary(setup: RemoteSetupConfig, injected?:
     "client forwarding and PTY disabled",
     "malformed input returns structured denial",
     "certification output contains no apparent secrets",
+    ...(deploymentConfigured ? [
+      "deployment capability digest matches",
+      "registered application resources authorized",
+      "unregistered services and paths denied",
+      "deployment mutations require exact approved plans",
+      "arbitrary write operations unavailable",
+    ] : ["deployment mutations require exact approved plans"]),
   ];
   const incomplete = required.filter((name) => !assertions.some((item) => item.name === name && item.passed));
   const failed = assertions.filter((item) => !item.passed);
@@ -83,7 +92,7 @@ export async function certifyRemoteBoundary(setup: RemoteSetupConfig, injected?:
     for (const name of incomplete) details.set(name, "required assertion did not pass");
     for (const item of failed) details.set(item.name, item.detail);
     const summary = [...details.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([name, detail]) => `${name}: ${detail}`).join("; ");
-    throw new OpsHavenError("POLICY_DENIED", `Remote boundary certification failed (${summary || "unknown assertion"}); endpoint setup remains blocked.`);
+    throw new OpsHavenError("POLICY_DENIED", `Remote boundary certification failed (${summary || "unknown assertion"}); deployment setup remains blocked.`);
   }
   const certifiedAt = new Date().toISOString();
   const canonical = JSON.stringify(assertions.map((item) => ({ detail: item.detail, name: item.name, passed: item.passed })).sort((a, b) => a.name.localeCompare(b.name)));

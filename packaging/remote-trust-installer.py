@@ -12,6 +12,7 @@ import tempfile
 
 CONFIG = pathlib.Path("/etc/opshaven/config.json")
 DESTINATIONS = {
+    "remote-config.json": (CONFIG, 0o644),
     "operator-public.pem": (pathlib.Path("/etc/opshaven/approval-public.pem"), 0o644),
     "capability.json": (pathlib.Path(f"{CONFIG}.capability.json"), 0o644),
     "declaration.json": (pathlib.Path(f"{CONFIG}.declaration.json"), 0o644),
@@ -226,6 +227,7 @@ def main():
         atomic_json(receipt, RECEIPT)
         evidence = {}
         for key, destination in {
+            "config": DESTINATIONS["remote-config.json"][0],
             "publicKey": DESTINATIONS["operator-public.pem"][0],
             "capability": DESTINATIONS["capability.json"][0],
             "declaration": DESTINATIONS["declaration.json"][0],
