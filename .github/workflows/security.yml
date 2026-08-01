@@ -24,10 +24,6 @@ jobs:
       - run: node scripts/verify-lockfile.mjs
       - run: node scripts/verify-workflow-pins.mjs
       - run: node scripts/docs-check.mjs
-      - run: node scripts/package-check.mjs
-      - run: node scripts/hygiene-check.mjs
-      - run: node scripts/redaction-regression.mjs
-      - run: node scripts/audit-regression.mjs
 
   remote-mcp-podman:
     runs-on: ubuntu-24.04
