@@ -6,7 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { OpsHavenError } from "../src/errors.js";
 import { formatOperatorError } from "../src/operator-errors.js";
-import { inspectRemoteSetupRepair } from "../src/setup/repair.js";
+import { inspectRemoteSetupRepair } from "../src/setup/reliability-repair.js";
 import type { RemoteSetupConfig } from "../src/setup/remote.js";
 import type { RemoteAdminTransport, SetupCommandResult } from "../src/setup/transport.js";
 
@@ -74,7 +74,19 @@ class PartialBaselineTransport implements RemoteAdminTransport {
   async upload(): Promise<SetupCommandResult> { throw new Error("unexpected upload"); }
   async download(): Promise<SetupCommandResult> { throw new Error("unexpected download"); }
   async runPython(script: string): Promise<SetupCommandResult> {
-    if (script.includes("synchronization-transaction.json") && script.includes("integrityValid")) {
+    if (script.includes("receiptPresent") && script.includes("canonical-pair")) {
+      return response({
+        version: 1,
+        kind: "partial",
+        present: ["/var/lib/opshaven/remote-state.json"],
+        missing: ["/var/lib/opshaven/setup-receipt.json"],
+        receiptPresent: false,
+        statePresent: true,
+        transactionPresent: false,
+        detail: "canonical generation identity is partial",
+      });
+    }
+    if (script.includes("integrityValid") && script.includes("lastCompletedPhase")) {
       return response({ status: "absent" });
     }
     return response({
@@ -108,7 +120,8 @@ test("repair inspects a partial installed baseline even without a transaction ma
   try {
     const plan = await inspectRemoteSetupRepair(value.config, new PartialBaselineTransport());
     assert.notEqual(plan.action, "none");
-    assert.match(plan.changes.join("; "), /partial|incomplete|evidence-preserving/i);
+    assert.equal(plan.action, "clean-reinstall-required");
+    assert.match(plan.changes.join("; "), /partial|incomplete|evidence|canonical receipts/i);
   } finally {
     await fs.rm(value.root, { recursive: true, force: true });
   }
