@@ -109,8 +109,16 @@ PLAN_ID="$(node -e 'const x=require(process.argv[1]); if(!x.ok || !x.planId) pro
 
 stage "apply exact deployment plan"
 printf 'y\n' | script -qefc "opshaven deploy apply '$PLAN_ID' --json" "$WORK/apply.typescript" > "$WORK/apply.console"
-tr -d '\r' < "$WORK/apply.console" | tail -n 1 > "$WORK/apply.json"
-node -e 'const x=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")); if(!x.ok || x.result?.outcome!=="DEPLOYMENT_SUCCEEDED" || x.result?.activeRevision!==process.argv[2]) process.exit(1)' "$WORK/apply.json" "$TARGET_REVISION"
+node -e '
+  const fs=require("node:fs");
+  const transcript=fs.readFileSync(process.argv[1],"utf8").replace(/\r/g,"");
+  const marker=transcript.lastIndexOf("{\"ok\":");
+  if(marker<0) process.exit(1);
+  const candidate=transcript.slice(marker).split("\n",1)[0].trim();
+  const parsed=JSON.parse(candidate);
+  fs.writeFileSync(process.argv[2],JSON.stringify(parsed)+"\n",{mode:0o600});
+' "$WORK/apply.console" "$WORK/apply.json"
+node -e 'const x=require(process.argv[1]); if(!x.ok || x.result?.outcome!=="DEPLOYMENT_SUCCEEDED" || x.result?.activeRevision!==process.argv[2]) process.exit(1)' "$WORK/apply.json" "$TARGET_REVISION"
 
 stage "verify post-deployment health"
 opshaven doctor --json > "$WORK/post-apply-doctor.json"
