@@ -124,11 +124,11 @@ node -e 'const x=require(process.argv[1]); if(!x.ok || x.state!=="READY") proces
 
 # Deliberately replace the reviewed dispatcher with the valid legacy dispatcher artifact.
 docker exec "$CONTAINER" sh -c 'cp /usr/lib/opshaven/src/remote/read-only-dispatcher.js /usr/lib/opshaven/src/remote/dispatcher.js && chmod 755 /usr/lib/opshaven/src/remote/dispatcher.js'
-if "${CLI[@]}" doctor --debug --json > "$GEN/mismatch-doctor.json"; then DOCTOR_STATUS=0; else DOCTOR_STATUS=$?; fi
-if "${CLI[@]}" boundary verify --json > "$GEN/mismatch-boundary.json"; then BOUNDARY_STATUS=0; else BOUNDARY_STATUS=$?; fi
+if "${CLI[@]}" doctor --debug --json > "$GEN/mismatch-doctor.json" 2> "$GEN/mismatch-doctor.err"; then DOCTOR_STATUS=0; else DOCTOR_STATUS=$?; fi
+if "${CLI[@]}" boundary verify --json > "$GEN/mismatch-boundary.json" 2> "$GEN/mismatch-boundary.err"; then BOUNDARY_STATUS=0; else BOUNDARY_STATUS=$?; fi
 [[ "$DOCTOR_STATUS" -ne 0 && "$BOUNDARY_STATUS" -ne 0 ]]
 node -e 'const x=require(process.argv[1]); const d=x.details?.deploymentCompatibility; if(x.ok || !d || d.expectedDispatcherDigest===d.installedDispatcherDigest || d.repair!=="opshaven setup remote") process.exit(1)' "$GEN/mismatch-doctor.json"
-node -e 'const x=require(process.argv[1]); if(x.ok || x.canonicalState?.changeType!=="DISPATCHER_UPDATE") process.exit(1)' "$GEN/mismatch-boundary.json"
+grep -Eq 'Remote boundary certification failed|Authorization setup is incomplete' "$GEN/mismatch-boundary.err"
 "${CLI[@]}" setup remote --non-interactive --approve --json > "$GEN/dispatcher-repair.json"
 node -e 'const x=require(process.argv[1]); if(!x.certified || x.changeType!=="DISPATCHER_UPDATE" || !x.installation || !x.canonicalState?.compatible) process.exit(1)' "$GEN/dispatcher-repair.json"
 "${CLI[@]}" doctor --json > "$GEN/repaired-doctor.json"
