@@ -6,27 +6,9 @@ import { colorEnabled, heading, paint, section } from "./operator-ui.js";
 const HELP_COMMANDS = new Set(["help", "--help", "-h"]);
 const VERSION_COMMANDS = new Set(["version", "--version", "-V"]);
 const KNOWN_COMMANDS = new Set([
-  "init",
-  "setup",
-  "uninstall",
-  "endpoint",
-  "doctor",
-  "diagnostics",
-  "boundary",
-  "verify-boundary",
-  "app",
-  "deploy",
-  "serve",
-  "validate-config",
-  "verify-audit",
-  "compare-capabilities",
-  "authorization-report",
-  "trust-report",
-  "approve-restart",
-  "approve-deploy",
-  "approve-rollback",
-  "print-mcp-config",
-  "print-remote-mcp-url",
+  "init", "setup", "uninstall", "endpoint", "doctor", "diagnostics", "boundary", "verify-boundary",
+  "app", "deploy", "serve", "validate-config", "verify-audit", "compare-capabilities", "authorization-report",
+  "trust-report", "approve-restart", "approve-deploy", "approve-rollback", "print-mcp-config", "print-remote-mcp-url",
 ]);
 const COMMANDS_WITHOUT_LOCAL_CONFIG = new Set(["init", "setup", "uninstall", "endpoint", "doctor", "diagnostics", "compare-capabilities"]);
 
@@ -34,10 +16,7 @@ function flag(name: string): string | undefined {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
-
-function explicitConfigPath(): string {
-  return flag("--config") ?? process.env.OPSHAVEN_CONFIG ?? "";
-}
+function explicitConfigPath(): string { return flag("--config") ?? process.env.OPSHAVEN_CONFIG ?? ""; }
 
 function help(): string {
   const color = colorEnabled();
@@ -49,12 +28,12 @@ ${section("Usage", color)}
 
 ${section("Start here", color)}
   init                     Configure this operator machine
-  setup remote             Install and verify the remote runtime
-  doctor                   Diagnose local and remote readiness
-  boundary verify          Verify the installed security boundary
+  app add                  Register a supported application locally
+  setup remote             Install or synchronize the remote target
+  doctor                   Diagnose canonical local and remote readiness
+  boundary verify          Verify the installed deployment boundary
 
 ${section("Deploy", color)}
-  app add                  Register one supported application
   deploy plan <app>        Choose and plan an immutable revision
   deploy apply <plan-id>   Apply only the stored approved plan
 
@@ -78,16 +57,17 @@ ${section("Global options", color)}
   --help, -h               Show this help
   --version, -V            Show the CLI version
   --json                   Produce machine-readable output where supported
-  --debug                  Show lower-level diagnostic details
+  --debug                  Show sanitized comparison and timing details
 
-${paint("Normal operator workflow", "info", color)}
+${paint("Recommended deployment onboarding", "info", color)}
   opshaven init
-  opshaven setup remote
   opshaven app add
-  opshaven deploy plan sample-api
-  opshaven deploy apply <plan-id>
+  opshaven setup remote
   opshaven doctor
+  opshaven deploy plan sample-api
   opshaven boundary verify
+
+Later setup runs compare verified content identities. Unchanged state is verified without mutation, and authorization-only changes reuse the installed runtime.
 
 Non-interactive planning must supply:
   opshaven deploy plan sample-api --revision <full-commit-sha>
@@ -96,31 +76,19 @@ The opshaven command is for people. MCP clients launch opshaven-mcp.
 `;
 }
 
-function usageError(message: string): Error {
-  return new Error(message);
-}
+function usageError(message: string): Error { return new Error(message); }
 
 async function main(): Promise<void> {
   const requested = process.argv[2] ?? "help";
-  if (HELP_COMMANDS.has(requested)) {
-    process.stdout.write(help());
-    return;
-  }
-  if (VERSION_COMMANDS.has(requested)) {
-    process.stdout.write(`OpsHaven ${process.env.npm_package_version ?? "1.0.0"}\n`);
-    return;
-  }
-  if (!KNOWN_COMMANDS.has(requested)) {
-    throw usageError(`Unknown command "${requested}".`);
-  }
-  if (requested === "boundary" && process.argv[3] !== "verify") {
-    throw usageError("Unknown boundary command.");
-  }
+  if (HELP_COMMANDS.has(requested)) { process.stdout.write(help()); return; }
+  if (VERSION_COMMANDS.has(requested)) { process.stdout.write(`OpsHaven ${process.env.npm_package_version ?? "1.0.0"}\n`); return; }
+  if (!KNOWN_COMMANDS.has(requested)) throw usageError(`Unknown command "${requested}".`);
+  if (requested === "boundary" && process.argv[3] !== "verify") throw usageError("Unknown boundary command.");
 
   const commandArgs = process.argv.slice(3);
   if (requested === "init") {
-    const { runFirstRunWizard } = await import("./operator-init.js");
-    await runFirstRunWizard(commandArgs);
+    const { runOnePassFirstRunWizard } = await import("./operator-init-one-pass.js");
+    await runOnePassFirstRunWizard(commandArgs);
     return;
   }
 
@@ -129,17 +97,20 @@ async function main(): Promise<void> {
   const path = explicit || await resolveLocalConfigPath(commandArgs) || "";
 
   if (requested === "doctor" || requested === "diagnostics") {
+    const deployment = await import("./deployment.js");
+    const setupPath = await resolveSetupConfigPath(commandArgs);
+    if (!commandArgs.includes("--json") && path && setupPath && !(await deployment.hasRegisteredApplications(path))) {
+      await deployment.runDeploymentDoctor(path, commandArgs);
+      return;
+    }
     const { runDoctor } = await import("./operator-doctor.js");
     await runDoctor(path, commandArgs);
-    const { runDeploymentDoctor } = await import("./deployment.js");
-    await runDeploymentDoctor(path, commandArgs);
+    await deployment.runDeploymentDoctor(path, commandArgs);
     return;
   }
 
   const requiresLocalConfig = !COMMANDS_WITHOUT_LOCAL_CONFIG.has(requested);
-  if (requiresLocalConfig && !path) {
-    throw usageError("Setup is not initialized. Operator setup is not initialized.");
-  }
+  if (requiresLocalConfig && !path) throw usageError("Setup is not initialized. Operator setup is not initialized.");
   if (requiresLocalConfig && path && !explicit) process.argv.push("--config", path);
 
   if (requested === "app") {
@@ -157,7 +128,6 @@ async function main(): Promise<void> {
     const setupPath = await resolveSetupConfigPath(commandArgs);
     if (setupPath) process.argv.push("--setup-config", setupPath);
   }
-
   if (requested === "authorization-report") process.argv[2] = "trust-report";
   await import("./cli.js");
 }

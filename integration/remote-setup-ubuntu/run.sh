@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
+on_error() {
+  local status=$?
+  trap - ERR
+  printf 'remote-setup-ubuntu failed at line %s\n' "$1" >&2
+  exit "$status"
+}
+trap 'on_error "$LINENO"' ERR
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIR="$ROOT/integration/remote-setup-ubuntu"
 GEN="$DIR/generated"
@@ -73,11 +80,11 @@ node -e 'const x=require(process.argv[1]); if(!x.ok || x.action!=="rollback" || 
 "${CLI[@]}" setup remote --non-interactive --approve --json > "$GEN/reinstalled.json"
 node -e 'const x=require(process.argv[1]); if(!x.certified || !x.installation.changed.length) process.exit(1)' "$GEN/reinstalled.json"
 "${CLI[@]}" setup remote --non-interactive --approve --json > "$GEN/repeat.json"
-node -e 'const x=require(process.argv[1]); if(!x.certified || x.installation.changed.length) process.exit(1)' "$GEN/repeat.json"
+node -e 'const x=require(process.argv[1]); if(!x.certified || x.changeType!=="NO_CHANGE" || x.installation || x.trust) process.exit(1)' "$GEN/repeat.json"
 
 "${CLI[@]}" uninstall remote --approve --json > "$GEN/uninstall.json"
 node -e 'const x=require(process.argv[1]); if(!x.ok || x.action!=="uninstall" || !x.removed.includes("/usr/lib/opshaven")) process.exit(1)' "$GEN/uninstall.json"
 docker exec "$CONTAINER" test ! -e /usr/lib/opshaven
 docker exec "$CONTAINER" test -d /home/admin
 
-printf 'remote-setup-ubuntu: empty state, init, config-free setup, doctor, boundary verification, shell denial, rollback, reinstall, idempotent repeat, and uninstall passed\n'
+printf 'remote-setup-ubuntu: empty state, init, config-free setup, doctor, boundary verification, shell denial, rollback, reinstall, no-change verification, and uninstall passed\n'

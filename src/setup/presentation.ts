@@ -50,6 +50,13 @@ function friendlyDetail(id: string, state: SetupStepState, detail: string): stri
   return undefined;
 }
 
+function applicationId(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length === 0 || typeof value[0] !== "string") return null;
+  const selected = value[0];
+  if (selected.startsWith("app.")) return selected.slice(4);
+  return /^[a-z][a-z0-9-]{0,63}$/.test(selected) ? selected : null;
+}
+
 export class PlainSetupPresenter implements SetupPresenter {
   private readonly color = colorEnabled();
   private readonly debug = process.argv.includes("--debug");
@@ -133,9 +140,19 @@ export class PlainSetupPresenter implements SetupPresenter {
       return;
     }
     const record = value as Record<string, any>;
+    const app = applicationId(record.canonicalState?.desired?.applicationScope);
     process.stdout.write(`\n${statusLine("passed", "Remote setup complete", undefined, this.color)}\n`);
     if (record.changeType === "NO_CHANGE") process.stdout.write("No remote changes were required.\n");
-    process.stdout.write(`\n${section("Next", this.color)}\n${command("opshaven doctor", this.color)}\n`);
+    process.stdout.write(`\n${section("Next", this.color)}\n`);
+    if (!app) {
+      process.stdout.write("Register a deployment application:\n\n");
+      process.stdout.write(`${command("opshaven app add", this.color)}\n`);
+      return;
+    }
+    process.stdout.write("Check readiness:\n\n");
+    process.stdout.write(`${command("opshaven doctor", this.color)}\n\n`);
+    process.stdout.write("Create a deployment plan:\n\n");
+    process.stdout.write(`${command(`opshaven deploy plan ${app}`, this.color)}\n`);
   }
 }
 
