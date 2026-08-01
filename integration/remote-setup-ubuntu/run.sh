@@ -76,14 +76,14 @@ node -e 'const x=require(process.argv[1]); if(!x.ok || x.application?.id!=="samp
 FULL_STARTED="$(milliseconds)"
 "${CLI[@]}" setup remote --non-interactive --approve --json > "$GEN/first.json"
 FULL_MS="$(elapsed "$FULL_STARTED")"
-node -e 'const x=require(process.argv[1]); if(!x.certified || x.outcome!=="SETUP_SUCCEEDED" || x.changeType!=="FULL_INSTALL" || !x.installation?.changed?.length || !x.boundary.assertions.every(v=>v.passed) || !x.canonicalState?.compatible) process.exit(1)' "$GEN/first.json"
+node -e 'const x=require(process.argv[1]); if(!x.certified || x.outcome!=="SETUP_SUCCEEDED" || x.changeType!=="FULL_INSTALL" || !x.installation?.changed?.length || !x.boundary.assertions.every(v=>v.passed) || !x.canonicalState?.compatible || !["COMMIT","CLEANUP"].includes(x.transaction?.phase)) process.exit(1)' "$GEN/first.json"
 FULL_GENERATION="$(node -e 'process.stdout.write(String(require(process.argv[1]).canonicalState.installed.generation))' "$GEN/first.json")"
 [[ "$FULL_MS" -lt 180000 ]]
 
 "${CLI[@]}" doctor --json > "$GEN/doctor.json"
 node -e 'const x=require(process.argv[1]); if(!x.ok || x.state!=="READY" || x.blocked.length) process.exit(1)' "$GEN/doctor.json"
 "${CLI[@]}" boundary verify --json > "$GEN/boundary.json"
-node -e 'const x=require(process.argv[1]); if(!x.ok || !x.assertions.every(v=>v.passed) || !x.canonicalState || x.canonicalState.result!=="compatible") process.exit(1)' "$GEN/boundary.json"
+node -e 'const x=require(process.argv[1]); if(!x.ok || !x.assertions.every(v=>v.passed) || !x.canonicalState || x.canonicalState.result!=="compatible" || x.synchronizationTransaction?.status!=="resolved") process.exit(1)' "$GEN/boundary.json"
 "${CLI[@]}" deploy plan sample-api --revision "$API_REVISION" --json > "$GEN/plan.json"
 node -e 'const x=require(process.argv[1]); if(!x.ok || !x.planId?.startsWith("sha256:") || x.plan?.targetRevision!==process.argv[2]) process.exit(1)' "$GEN/plan.json" "$API_REVISION"
 
@@ -124,29 +124,39 @@ NO_CHANGE_STARTED="$(milliseconds)"
 NO_CHANGE_MS="$(elapsed "$NO_CHANGE_STARTED")"
 node -e 'const x=require(process.argv[1]); if(!x.certified || x.outcome!=="SETUP_NO_CHANGE" || x.changeType!=="NO_CHANGE" || x.installation || x.trust || !x.canonicalState?.compatible) process.exit(1)' "$GEN/no-change.json"
 NO_CHANGE_GENERATION="$(node -e 'process.stdout.write(String(require(process.argv[1]).canonicalState.installed.generation))' "$GEN/no-change.json")"
+RUNTIME_CORE_BEFORE="$(node -e 'process.stdout.write(require(process.argv[1]).canonicalState.installed.runtimeSha256)' "$GEN/no-change.json")"
 [[ "$NO_CHANGE_GENERATION" -eq "$REAPPLIED_GENERATION" ]]
 [[ "$NO_CHANGE_MS" -lt 10000 ]]
 
 "${CLI[@]}" doctor --json > "$GEN/doctor-after-sync.json"
 node -e 'const x=require(process.argv[1]); if(!x.ok || x.state!=="READY") process.exit(1)' "$GEN/doctor-after-sync.json"
 
-# Deliberately replace the reviewed dispatcher with the valid legacy dispatcher artifact.
+# Deliberately replace the active reviewed dispatcher with the valid legacy artifact.
 docker exec "$CONTAINER" sh -c 'cp /usr/lib/opshaven/src/remote/read-only-dispatcher.js /usr/lib/opshaven/src/remote/dispatcher.js && chmod 755 /usr/lib/opshaven/src/remote/dispatcher.js'
 if "${CLI[@]}" doctor --debug --json > "$GEN/mismatch-doctor.json" 2> "$GEN/mismatch-doctor.err"; then DOCTOR_STATUS=0; else DOCTOR_STATUS=$?; fi
 if "${CLI[@]}" boundary verify --json > "$GEN/mismatch-boundary.json" 2> "$GEN/mismatch-boundary.err"; then BOUNDARY_STATUS=0; else BOUNDARY_STATUS=$?; fi
 [[ "$DOCTOR_STATUS" -ne 0 && "$BOUNDARY_STATUS" -ne 0 ]]
 node -e 'const x=require(process.argv[1]); const d=x.details?.deploymentCompatibility; if(x.ok || !d || d.expectedDispatcherDigest===d.installedDispatcherDigest || d.repair!=="opshaven setup remote") process.exit(1)' "$GEN/mismatch-doctor.json"
-grep -Eq 'Remote boundary certification failed|Authorization setup is incomplete' "$GEN/mismatch-boundary.err"
+grep -Eq 'Remote boundary certification failed|Authorization setup is incomplete|Security boundary' "$GEN/mismatch-boundary.err"
+
+DISPATCHER_STARTED="$(milliseconds)"
 "${CLI[@]}" setup remote --non-interactive --approve --json > "$GEN/dispatcher-repair.json"
-node -e 'const x=require(process.argv[1]); if(!x.certified || x.changeType!=="DISPATCHER_UPDATE" || !x.installation || !x.canonicalState?.compatible) process.exit(1)' "$GEN/dispatcher-repair.json"
+DISPATCHER_MS="$(elapsed "$DISPATCHER_STARTED")"
+node -e 'const x=require(process.argv[1]); if(!x.certified || x.changeType!=="DISPATCHER_AND_AUTHORIZATION" || x.installation || x.dispatcherInstallation?.dependencyInstall!==false || x.trust?.synchronizationKind!=="authorization-sync" || x.timings?.runtimeInstallation!==undefined || !x.canonicalState?.compatible || !["COMMIT","CLEANUP"].includes(x.transaction?.phase)) process.exit(1)' "$GEN/dispatcher-repair.json"
+RUNTIME_CORE_AFTER="$(node -e 'process.stdout.write(require(process.argv[1]).canonicalState.installed.runtimeSha256)' "$GEN/dispatcher-repair.json")"
+[[ "$RUNTIME_CORE_AFTER" == "$RUNTIME_CORE_BEFORE" ]]
+[[ "$DISPATCHER_MS" -lt 20000 ]]
+
 "${CLI[@]}" doctor --json > "$GEN/repaired-doctor.json"
 "${CLI[@]}" boundary verify --json > "$GEN/repaired-boundary.json"
-node -e 'if(!require(process.argv[1]).ok || !require(process.argv[2]).ok) process.exit(1)' "$GEN/repaired-doctor.json" "$GEN/repaired-boundary.json"
+node -e 'const d=require(process.argv[1]); const b=require(process.argv[2]); if(!d.ok || d.state!=="READY" || !b.ok || !b.assertions.every(v=>v.passed) || b.synchronizationTransaction?.status!=="resolved") process.exit(1)' "$GEN/repaired-doctor.json" "$GEN/repaired-boundary.json"
+"${CLI[@]}" deploy plan sample-api --revision "$API_REVISION" --json > "$GEN/repaired-plan.json"
+node -e 'const x=require(process.argv[1]); if(!x.ok || x.plan?.targetRevision!==process.argv[2]) process.exit(1)' "$GEN/repaired-plan.json" "$API_REVISION"
 
 "${CLI[@]}" uninstall remote --approve --json > "$GEN/uninstall.json"
 node -e 'const x=require(process.argv[1]); if(!x.ok || x.action!=="uninstall" || !x.removed.includes("/usr/lib/opshaven")) process.exit(1)' "$GEN/uninstall.json"
 docker exec "$CONTAINER" test ! -e /usr/lib/opshaven
 docker exec "$CONTAINER" test -d /home/admin
 
-printf 'remote-setup-ubuntu timings_ms full=%s authorization=%s no_change=%s\n' "$FULL_MS" "$AUTH_MS" "$NO_CHANGE_MS"
-printf 'remote-setup-ubuntu: one-pass setup, deployment plan, authorization rollback/resync, no-change verification, mismatch repair, and uninstall passed\n'
+printf 'remote-setup-ubuntu timings_ms full=%s authorization=%s no_change=%s dispatcher=%s\n' "$FULL_MS" "$AUTH_MS" "$NO_CHANGE_MS" "$DISPATCHER_MS"
+printf 'remote-setup-ubuntu: one-pass setup, deployment plan, authorization rollback/resync, no-change verification, dispatcher-only repair without dependency installation, and uninstall passed\n'
