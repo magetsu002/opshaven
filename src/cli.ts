@@ -9,9 +9,10 @@ import { formatOperatorError } from "./operator-errors.js";
 import { runRemoteServe } from "./remote-mcp/command.js";
 import { loadRemoteTrust, remoteMcpUrl } from "./remote-mcp/report.js";
 import { certifyRemoteBoundary } from "./setup/certify.js";
-import { runEndpointHandoff, runRemoteSetup, runRemoteUninstall } from "./setup/command.js";
+import { runEndpointHandoff, runRemoteRepair, runRemoteSetup, runRemoteUninstall } from "./setup/command.js";
 import { loadRemoteSetupConfig } from "./setup/remote.js";
 import { compatibilityDetails, prepareRemoteState } from "./setup/state.js";
+import { inspectRemoteSynchronizationTransaction } from "./setup/transaction-inspection.js";
 import { buildTrustReport, formatTrustReport } from "./trust-report.js";
 
 function flag(name: string): string | undefined {
@@ -54,12 +55,14 @@ async function main(): Promise<void> {
   const requested = command();
   const selected = requested === "boundary" && process.argv[3] === "verify" ? "verify-boundary" : requested === "doctor" ? "diagnostics" : requested;
   if (selected === "help") {
-    process.stdout.write("OpsHaven commands: setup remote, uninstall remote, doctor, boundary verify, endpoint expose, endpoint status, serve, validate-config, verify-audit, compare-capabilities, trust-report, approve-restart, approve-deploy, approve-rollback, print-mcp-config, print-remote-mcp-url\n");
+    process.stdout.write("OpsHaven commands: setup remote, setup repair, uninstall remote, doctor, boundary verify, endpoint expose, endpoint status, serve, validate-config, verify-audit, compare-capabilities, trust-report, approve-restart, approve-deploy, approve-rollback, print-mcp-config, print-remote-mcp-url\n");
     return;
   }
   if (selected === "setup") {
-    if (process.argv[3] !== "remote") throw new Error("Setup target must be remote.");
-    await runRemoteSetup(process.argv.slice(4));
+    const operation = process.argv[3];
+    if (operation === "remote") await runRemoteSetup(process.argv.slice(4));
+    else if (operation === "repair") await runRemoteRepair(process.argv.slice(4));
+    else throw new Error("Setup target must be remote or repair.");
     return;
   }
   if (selected === "uninstall") {
@@ -111,15 +114,26 @@ async function main(): Promise<void> {
     const setupPath = flag("--setup-config");
     if (setupPath) {
       const setup = await loadRemoteSetupConfig(setupPath);
-      const receipt = await certifyRemoteBoundary(setup);
-      const canonical = await prepareRemoteState(setup);
+      const [receipt, canonical, transaction] = await Promise.all([
+        certifyRemoteBoundary(setup),
+        prepareRemoteState(setup),
+        inspectRemoteSynchronizationTransaction(setup),
+      ]);
       const desired = canonical.desired;
       const installed = canonical.installed;
+      const transactionResolved = transaction.activeGenerationCertain && transaction.integrityValid && transaction.hostBindingValid;
       const canonicalAssertions = [
         {
+          name: "synchronization transaction is resolved",
+          passed: transactionResolved,
+          detail: transactionResolved
+            ? transaction.status === "absent" ? "no synchronization transaction is active" : `transaction ${transaction.transaction?.transactionId ?? "unknown"} ended at ${transaction.lastCompletedPhase ?? "terminal state"}`
+            : `transaction state is ${transaction.status}; last completed phase ${transaction.lastCompletedPhase ?? "unknown"}; repair with opshaven setup repair`,
+        },
+        {
           name: "canonical runtime identity matches",
-          passed: installed.sourceSha === desired.sourceSha && installed.runtimeSha256 === desired.runtimeSha256,
-          detail: installed.sourceSha === desired.sourceSha && installed.runtimeSha256 === desired.runtimeSha256 ? "runtime version and artifact digest match" : canonical.reasons.join("; "),
+          passed: installed.runtimeSha256 === desired.runtimeSha256,
+          detail: installed.runtimeSha256 === desired.runtimeSha256 ? "runtime-core artifact digest matches" : canonical.reasons.join("; "),
         },
         {
           name: "canonical dispatcher identity matches",
@@ -151,8 +165,8 @@ async function main(): Promise<void> {
         },
         {
           name: "canonical deployment readiness matches doctor",
-          passed: canonical.compatible,
-          detail: canonical.compatible ? "doctor and boundary verification consume the same installed-state model" : canonical.reasons.join("; "),
+          passed: canonical.compatible && transactionResolved,
+          detail: canonical.compatible && transactionResolved ? "doctor and boundary verification consume the same installed-state and transaction model" : canonical.reasons.join("; ") || "synchronization transaction is unresolved",
         },
       ];
       const report = {
@@ -161,7 +175,7 @@ async function main(): Promise<void> {
         assertions: [...receipt.assertions, ...canonicalAssertions],
       };
       process.stdout.write(process.argv.includes("--json")
-        ? `${JSON.stringify({ ...report, canonicalState: compatibilityDetails(canonical) })}\n`
+        ? `${JSON.stringify({ ...report, canonicalState: compatibilityDetails(canonical), synchronizationTransaction: transaction })}\n`
         : formatBoundaryReport(report));
       process.exitCode = report.ok ? 0 : 1;
       return;

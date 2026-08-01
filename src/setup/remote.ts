@@ -11,7 +11,7 @@ export interface SetupCheck { readonly id: string; readonly state: SetupStepStat
 export interface SetupRollbackState { readonly required: boolean; readonly attempted: boolean; readonly completed: boolean; readonly restored: readonly string[] }
 export interface SetupReceipt { readonly version: 1; readonly receiptId: string; readonly sourceSha: string; readonly target: string; readonly dryRun: boolean; readonly startedAt: string; readonly finishedAt: string; readonly certified: boolean; readonly mutations: readonly SetupMutation[]; readonly checks: readonly SetupCheck[]; readonly rollback: SetupRollbackState }
 export interface RemoteSetupConfig { readonly version: 1; readonly policyConfigPath: string; readonly expectedSourceSha: string; readonly target: { readonly host: string; readonly port: number; readonly adminUser: string; readonly knownHostsFile: string; readonly identityFile: string; readonly expectedHostKeySha256: string; readonly privilege: "root" | "sudo-noninteractive" }; readonly local: { readonly runtimeRoot: string; readonly dispatcherPath: string; readonly wrapperTemplatePath: string; readonly capabilityDeclarationPath: string; readonly operatorPrivateKeyFile: string; readonly operatorPublicKeyFile: string; readonly restrictedAuthorizedKeyFile: string }; readonly remote: { readonly account: "opshaven"; readonly runtimeRoot: "/usr/lib/opshaven"; readonly configPath: "/etc/opshaven/config.json"; readonly wrapperPath: "/usr/local/bin/opshaven-readonly-force-command"; readonly stateDirectory: "/var/lib/opshaven"; readonly receiptPath: "/var/lib/opshaven/setup-receipt.json"; readonly nodeCandidates: readonly string[] }; readonly trust: { readonly expiresInSeconds: number }; readonly migration?: "legacy-read-only-profile" }
-export interface RemoteSetupPlan { readonly version: 1; readonly sourceSha: string; readonly target: string; readonly changeType: RemoteSetupChangeType; readonly changes: readonly string[]; readonly estimatedDuration: string; readonly mutations: readonly SetupMutation[] }
+export interface RemoteSetupPlan { readonly version: 1; readonly sourceSha: string; readonly target: string; readonly changeType: RemoteSetupChangeType; readonly changes: readonly string[]; readonly estimatedDuration: string; readonly mutations: readonly SetupMutation[]; readonly installedDispatcherSha256?: string }
 export interface RemoteSetupRunOptions { readonly dryRun: boolean; readonly nonInteractive: boolean; readonly tui: boolean }
 
 const SHA = /^[a-f0-9]{40}$/;
@@ -70,14 +70,29 @@ function mutation(id: string, scope: SetupScope, action: SetupMutationAction, fi
 }
 
 function changeDescription(changeType: RemoteSetupChangeType): { changes: string[]; duration: string } {
-  if (changeType === "NO_CHANGE") return { changes: ["Verify existing runtime and authorization", "Recheck the security boundary"], duration: "Usually under 10 seconds" };
-  if (changeType === "AUTHORIZATION_ONLY") return { changes: ["Update signed authorization and application scope", "Reuse the verified runtime and dispatcher", "Recheck the security boundary"], duration: "Usually less than 20 seconds" };
-  if (changeType === "APPLICATION_DECLARATION_ONLY") return { changes: ["Update reviewed application declaration state", "Reuse the verified runtime and dispatcher", "Recheck the security boundary"], duration: "Usually less than 20 seconds" };
-  if (changeType === "AUTHORIZATION_AND_DECLARATION") return { changes: ["Update signed authorization and reviewed declarations", "Reuse the verified runtime and dispatcher", "Recheck the security boundary"], duration: "Usually less than 20 seconds" };
-  if (changeType === "RUNTIME_UPDATE") return { changes: ["Upload changed reviewed runtime artifacts", "Preserve the previous runtime generation", "Verify authorization and boundary"], duration: "Usually 1–3 minutes" };
-  if (changeType === "DISPATCHER_UPDATE") return { changes: ["Replace the incompatible dispatcher and runtime generation", "Install matching signed authorization", "Verify the deployment boundary"], duration: "Usually 1–3 minutes" };
-  if (changeType === "REPAIR_REQUIRED") return { changes: ["Stop before mutation", "Require a reviewed repair or full reinstall"], duration: "No mutation will run automatically" };
+  if (changeType === "NO_CHANGE") return { changes: ["Runtime\n  unchanged", "Dispatcher\n  unchanged", "Authorization\n  unchanged", "Verify the existing canonical state and security boundary"], duration: "Usually under 10 seconds" };
+  if (changeType === "AUTHORIZATION_ONLY") return { changes: ["Runtime\n  unchanged", "Dispatcher\n  unchanged", "Authorization\n  update required", "Verify the security boundary"], duration: "Usually less than 20 seconds" };
+  if (changeType === "APPLICATION_DECLARATION_ONLY") return { changes: ["Runtime\n  unchanged", "Dispatcher\n  unchanged", "Application declaration\n  update required", "Verify the security boundary"], duration: "Usually less than 20 seconds" };
+  if (changeType === "AUTHORIZATION_AND_DECLARATION") return { changes: ["Runtime\n  unchanged", "Dispatcher\n  unchanged", "Authorization and declaration\n  update required", "Verify the security boundary"], duration: "Usually less than 20 seconds" };
+  if (changeType === "DISPATCHER_ONLY" || changeType === "DISPATCHER_UPDATE") return { changes: ["Runtime\n  unchanged", "Dispatcher\n  replacement required", "Authorization\n  unchanged", "Verify dispatcher compatibility and the security boundary"], duration: "Normally faster than a full runtime installation" };
+  if (changeType === "DISPATCHER_AND_AUTHORIZATION") return { changes: ["Runtime\n  unchanged", "Dispatcher\n  replacement required", "Authorization\n  update required", "Verify dispatcher compatibility and the security boundary"], duration: "Normally faster than a full runtime installation" };
+  if (changeType === "RUNTIME_ONLY" || changeType === "RUNTIME_UPDATE") return { changes: ["Runtime\n  replacement required", "Dispatcher\n  unchanged", "Preserve the previous verified generation", "Verify authorization and the security boundary"], duration: "Usually 1–3 minutes" };
+  if (changeType === "RUNTIME_AND_DISPATCHER") return { changes: ["Runtime\n  replacement required", "Dispatcher\n  replacement required", "Authorization\n  update required", "Preserve and verify the previous generation"], duration: "Usually 1–3 minutes" };
+  if (changeType === "REPAIR_REQUIRED") return { changes: ["Stop before mutation", "Inspect immutable transaction and generation evidence", "Require the reviewed repair flow"], duration: "No mutation will run automatically" };
   return { changes: ["Install reviewed runtime", "Install deployment-compatible dispatcher", "Install signed authorization", "Verify security boundary"], duration: "Usually 1–3 minutes on the first installation" };
+}
+
+function isFullRuntimeChange(changeType: RemoteSetupChangeType): boolean {
+  return ["FULL_INSTALL", "RUNTIME_UPDATE", "RUNTIME_ONLY", "RUNTIME_AND_DISPATCHER"].includes(changeType);
+}
+function isDispatcherChange(changeType: RemoteSetupChangeType): boolean {
+  return ["DISPATCHER_UPDATE", "DISPATCHER_ONLY", "DISPATCHER_AND_AUTHORIZATION", "RUNTIME_AND_DISPATCHER", "FULL_INSTALL"].includes(changeType);
+}
+function isAuthorizationChange(changeType: RemoteSetupChangeType): boolean {
+  return isFullRuntimeChange(changeType) || ["DISPATCHER_AND_AUTHORIZATION", "AUTHORIZATION_ONLY", "AUTHORIZATION_AND_DECLARATION"].includes(changeType);
+}
+function isDeclarationChange(changeType: RemoteSetupChangeType): boolean {
+  return isFullRuntimeChange(changeType) || ["DISPATCHER_AND_AUTHORIZATION", "APPLICATION_DECLARATION_ONLY", "AUTHORIZATION_AND_DECLARATION"].includes(changeType);
 }
 
 export function buildRemoteSetupPlan(config: RemoteSetupConfig, comparison?: RemoteStateComparison): RemoteSetupPlan {
@@ -85,16 +100,23 @@ export function buildRemoteSetupPlan(config: RemoteSetupConfig, comparison?: Rem
   const changeType = comparison?.changeType ?? "FULL_INSTALL";
   const summary = changeDescription(changeType);
   const mutations: SetupMutation[] = [];
-  const runtimeChange = ["FULL_INSTALL", "RUNTIME_UPDATE", "DISPATCHER_UPDATE"].includes(changeType);
-  const authorizationChange = runtimeChange || changeType === "AUTHORIZATION_ONLY" || changeType === "AUTHORIZATION_AND_DECLARATION";
-  const declarationChange = runtimeChange || changeType === "APPLICATION_DECLARATION_ONLY" || changeType === "AUTHORIZATION_AND_DECLARATION";
+  const runtimeChange = isFullRuntimeChange(changeType);
+  const dispatcherChange = isDispatcherChange(changeType);
+  const authorizationChange = isAuthorizationChange(changeType);
+  const declarationChange = isDeclarationChange(changeType);
   if (runtimeChange) {
     mutations.push(
       mutation("account", "remote", "create", remote.account, "Create or verify the locked restricted service account.", { owner: "root" }),
       mutation("state", "remote", "create", remote.stateDirectory, "Create private replay and setup state.", { mode: "0700", owner: "opshaven:opshaven" }),
-      mutation("runtime", "remote", "replace", remote.runtimeRoot, "Atomically install the reviewed controlled runtime tree.", { mode: "0755", owner: "root:root", destructive: true }),
+      mutation("runtime", "remote", "replace", remote.runtimeRoot, "Atomically install the reviewed runtime tree because its core digest changed.", { mode: "0755", owner: "root:root", destructive: true }),
       mutation("wrapper", "remote", "replace", remote.wrapperPath, "Install the fixed controlled forced-command wrapper.", { mode: "0755", owner: "root:root", destructive: true }),
       mutation("authorized-key", "remote", "replace", `/home/${remote.account}/.ssh/authorized_keys`, "Install one forced-command-only restricted SSH key.", { mode: "0600", owner: "opshaven:opshaven", destructive: true }),
+    );
+  } else if (dispatcherChange) {
+    mutations.push(
+      mutation("dispatcher", "remote", "replace", `${remote.runtimeRoot}/src/remote/dispatcher.js`, "Replace only the verified dispatcher artifact; reuse the unchanged runtime core.", { mode: "0755", owner: "root:root", destructive: true }),
+      mutation("runtime-manifest", "remote", "replace", `${remote.stateDirectory}/runtime-manifest.json`, "Record the dispatcher artifact identity without rebuilding dependencies.", { mode: "0600", owner: "root:root", destructive: true }),
+      mutation("generation-receipt", "remote", "replace", remote.receiptPath, "Bind the dispatcher activation to the synchronization transaction and previous generation.", { mode: "0600", owner: "root:root", destructive: true }),
     );
   }
   if (authorizationChange) {
@@ -118,7 +140,16 @@ export function buildRemoteSetupPlan(config: RemoteSetupConfig, comparison?: Rem
     );
   }
   mutations.push(mutation("boundary", "local", "verify", config.policyConfigPath, "Verify canonical deployment readiness before reporting success."));
-  return Object.freeze({ version: 1, sourceSha: config.expectedSourceSha, target: `${config.target.adminUser}@${config.target.host}:${config.target.port}`, changeType, changes: Object.freeze(summary.changes), estimatedDuration: summary.duration, mutations: Object.freeze(mutations) });
+  return Object.freeze({
+    version: 1,
+    sourceSha: config.expectedSourceSha,
+    target: `${config.target.adminUser}@${config.target.host}:${config.target.port}`,
+    changeType,
+    changes: Object.freeze(summary.changes),
+    estimatedDuration: summary.duration,
+    mutations: Object.freeze(mutations),
+    ...(comparison?.installed.dispatcherSha256 ? { installedDispatcherSha256: comparison.installed.dispatcherSha256 } : {}),
+  });
 }
 
 export function formatRemoteSetupPlan(plan: RemoteSetupPlan): string {
@@ -127,12 +158,17 @@ export function formatRemoteSetupPlan(plan: RemoteSetupPlan): string {
     AUTHORIZATION_ONLY: "Authorization update",
     APPLICATION_DECLARATION_ONLY: "Application declaration update",
     AUTHORIZATION_AND_DECLARATION: "Authorization and declaration update",
+    DISPATCHER_ONLY: "Dispatcher-only update",
+    DISPATCHER_AND_AUTHORIZATION: "Dispatcher and authorization update",
+    RUNTIME_ONLY: "Runtime-only update",
+    RUNTIME_AND_DISPATCHER: "Runtime and dispatcher update",
     RUNTIME_UPDATE: "Runtime update",
     DISPATCHER_UPDATE: "Dispatcher compatibility update",
     FULL_INSTALL: "Full installation",
     REPAIR_REQUIRED: "Reviewed repair required",
   };
-  const lines = ["Remote setup plan", "", "Target", `  ${plan.target}`, "", "Change type", `  ${labels[plan.changeType]}`, "", "Changes", ...plan.changes.map((item) => `  ${item}`), "", "Estimated duration", `  ${plan.estimatedDuration}`];
+  const changeLines = plan.changes.flatMap((item) => item.split("\n").map((line, index) => `${index === 0 ? "  " : "    "}${line}`));
+  const lines = ["Remote setup plan", "", "Target", `  ${plan.target}`, "", "Change type", `  ${labels[plan.changeType]}`, "", "Changes", ...changeLines, "", "Estimated duration", `  ${plan.estimatedDuration}`];
   if (plan.changeType === "REPAIR_REQUIRED") lines.push("", "No changes were made.");
   return `${lines.join("\n")}\n`;
 }

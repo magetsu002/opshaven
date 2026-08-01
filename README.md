@@ -111,8 +111,8 @@ The canonical installed-state model covers:
 ```text
 setup schema version
 installation generation
-runtime source version and artifact digest
-dispatcher mode and digest
+runtime-core artifact digest
+dispatcher mode and artifact digest
 policy version and digest
 signed capability identity
 reviewed declaration digest
@@ -120,12 +120,14 @@ registered application scope
 operator verification identity
 remote platform and architecture
 Node.js compatibility
+recorded generation integrity
 ```
 
 The same model is consumed by:
 
 ```text
 setup remote
+setup repair
 doctor
 doctor --debug
 boundary verify
@@ -133,7 +135,27 @@ deploy plan
 deploy apply
 ```
 
-A command cannot report deployment readiness by consulting a different dispatcher, capability, or policy artifact.
+A command cannot report deployment readiness by consulting a different dispatcher, capability, receipt, policy, or transaction record.
+
+## Canonical generation receipt
+
+Receipt integrity is based on stable security-relevant identity rather than a temporary upload or extraction path. Each verified generation binds:
+
+```text
+receipt schema version
+installation generation
+runtime-core artifact digest
+dispatcher artifact digest
+policy digest
+authorization digest
+application declaration digest
+platform and architecture
+source build identity
+creation metadata
+previous generation identity
+```
+
+Temporary staging locations and installation destinations are operational locations, not artifact identities. The same reviewed artifact remains valid when uploaded, staged, activated, stored, or restored through different fixed temporary paths. Modified artifacts, modified receipts, wrong generation numbers, wrong dispatcher or policy identities, and broken previous-generation bindings fail closed.
 
 ## Incremental setup classifications
 
@@ -144,11 +166,15 @@ NO_CHANGE
 AUTHORIZATION_ONLY
 APPLICATION_DECLARATION_ONLY
 AUTHORIZATION_AND_DECLARATION
-RUNTIME_UPDATE
-DISPATCHER_UPDATE
+DISPATCHER_ONLY
+DISPATCHER_AND_AUTHORIZATION
+RUNTIME_ONLY
+RUNTIME_AND_DISPATCHER
 FULL_INSTALL
 REPAIR_REQUIRED
 ```
+
+Legacy machine-readable labels `DISPATCHER_UPDATE` and `RUNTIME_UPDATE` remain accepted only for compatibility with earlier receipts and tests.
 
 ### No change
 
@@ -158,15 +184,59 @@ When every canonical identity matches, OpsHaven re-runs boundary and readiness v
 
 When only signed policy, capability, application scope, or reviewed declaration state changes, OpsHaven reuses the installed runtime and compatible dispatcher. Only changed signed-state files and the next canonical generation are activated.
 
-### Runtime or dispatcher update
+### Dispatcher-only synchronization
 
-Only changed reviewed artifacts are uploaded and activated. The previous verified generation remains recoverable until boundary and doctor-equivalent readiness checks pass.
+The runtime-core digest excludes the dispatcher artifact. When only the dispatcher changes, OpsHaven:
+
+```text
+reuses the existing verified runtime core
+uploads one reviewed dispatcher artifact
+performs no dependency installation
+updates matching signed authorization only when required
+verifies dispatcher compatibility, canonical readiness, and the boundary
+```
+
+The setup plan shows runtime, dispatcher, and authorization independently.
+
+### Runtime synchronization
+
+The runtime is replaced only when exact runtime-core digest comparison proves it changed. A runtime-plus-dispatcher transition remains distinct from a dispatcher-only transition.
 
 ### Repair required
 
-Missing, unsafe, partial, or unsupported installed identity fails closed. OpsHaven does not infer validity from filenames, timestamps, or the presence of one artifact.
+Missing, unsafe, partial, unsupported, or transaction-uncertain installed identity fails closed. OpsHaven does not infer validity from filenames, timestamps, or the presence of one artifact.
 
-## Completion, rollback, and cancellation
+## Transaction phases
+
+Every mutating synchronization records an immutable transaction before activation:
+
+```text
+INSPECT
+PLAN
+STAGE
+VERIFY_STAGED
+RECORD_PREVIOUS
+ACTIVATE
+VERIFY_ACTIVE
+COMMIT
+CLEANUP
+```
+
+Rollback uses its own explicit phases:
+
+```text
+ROLLBACK_START
+RESTORE_PREVIOUS
+VERIFY_RESTORED
+ROLLBACK_COMMIT
+ROLLBACK_CLEANUP
+```
+
+Before activation, OpsHaven verifies that the previous generation and receipt are valid, previous artifacts remain available, staged content matches the desired identities, and rollback material is complete. It does not activate when the previous verified generation cannot be recorded safely.
+
+After activation, previous-generation evidence remains available until runtime, dispatcher, authorization, application scope, authenticated protocol, boundary, doctor-equivalent readiness, and audit checks pass. Only then is the new generation committed.
+
+## Completion, rollback, cancellation, and repair
 
 Setup does not report success until all required postconditions pass, including pinned host identity, runtime and dispatcher identities, signed authorization, application scope, authenticated request and response verification, unknown-operation and unknown-resource denial, audit verification, boundary certification, and canonical doctor readiness.
 
@@ -182,19 +252,60 @@ SETUP_CANCELLED_NO_MUTATION
 SETUP_CANCELLED_ROLLED_BACK
 ```
 
-If mutation has begun and setup fails or is cancelled, OpsHaven restores the recorded previous runtime, dispatcher, policy, authorization, declarations, and canonical state. A rollback failure remains visible and requires operator attention; it is never reported as success.
+If mutation has begun and setup fails or is cancelled, OpsHaven restores the exact recorded previous generation rather than rebuilding it from the current desired state. Successful rollback is not accepted until the restored boundary passes.
 
-## Progress and performance evidence
+Rollback can fail. When it does, normal output reports the failed phase, mutation and rollback status, generation certainty, blocked operations, and reviewed next commands without printing Python or Node stack traces. Lower-level sanitized diagnostics remain behind `--debug`.
 
-Full installation explains that the first run normally takes one to three minutes. Quiet operations emit bounded elapsed-time updates. Authorization-only and no-change runs state that the installed runtime is being reused.
+Inspect recovery state:
 
-Integration receipts record phase timings for:
+```bash
+opshaven doctor --debug
+opshaven setup repair
+```
+
+Approve restoration of the last fully verified generation:
+
+```bash
+opshaven setup repair --approve
+```
+
+When no prior verified generation can be restored, review and approve a clean reinstall:
+
+```bash
+opshaven setup repair --clean-reinstall --approve
+```
+
+The clean-reinstall path copies every fixed OpsHaven-managed active artifact and failed transaction into `/var/lib/opshaven/recovery-evidence/<evidence-id>`, verifies an evidence manifest, preserves audit history and transaction snapshots, removes only reviewed active paths, and then performs one normal full installation. It never selects a generation by timestamp or deletes state before preserving evidence.
+
+## Progress behavior
+
+Visible progress stages are built from the selected classification. Internal planning and bookkeeping do not consume visible numbers, and skipped stages do not create gaps.
+
+TTY output:
+
+```text
+starts at [1/N]
+repaints approximately every 5 seconds
+moves to line start and clears the entire active line
+writes one complete Unicode-safe, width-bounded line
+repaints immediately when the transaction phase changes
+ends the active line exactly once
+```
+
+Non-TTY output emits complete independent lines approximately every 15 seconds and never uses carriage-return rewriting. JSON output emits no animation or ANSI codes.
+
+Dispatcher-only progress reports dispatcher upload, verification, activation, authorization synchronization, and boundary verification. It never claims to install dependencies when the runtime is unchanged.
+
+## Performance evidence
+
+Integration receipts record timings for:
 
 ```text
 local validation
 remote inspection
 artifact preparation
-runtime installation
+previous-generation recording
+runtime or dispatcher installation
 authorization synchronization
 boundary verification
 readiness verification
@@ -205,6 +316,7 @@ Disposable CI targets are:
 ```text
 fresh full installation under 3 minutes
 authorization-only synchronization under 20 seconds
+dispatcher-only synchronization under 20 seconds
 no-change verification under 10 seconds
 ```
 
@@ -226,9 +338,9 @@ Normal doctor output reports operator-facing readiness and the exact next comman
 opshaven doctor --debug
 ```
 
-Debug output includes runtime, dispatcher, policy, capability, declaration, application scope, platform, architecture, Node.js version, generation, diagnosis, and repair command. It never prints private keys, tokens, raw signed payloads, or unredacted environment values.
+Debug output includes transaction status, last completed phase, desired, active, previous, and staged generations, runtime, dispatcher, policy, capability, declaration, application scope, platform, architecture, Node.js version, receipt integrity, rollback availability, diagnosis, and repair command. It never prints private keys, tokens, raw signed payloads, or unredacted environment values.
 
-Boundary certification includes the existing shell, command, forwarding, sudo, write, Docker socket, replay, request mutation, response mutation, host-key, malformed-input, output-bound, and audit checks. With registered applications it also requires canonical dispatcher, capability, declaration, and resource-scope compatibility. Boundary verification fails whenever canonical doctor readiness would fail.
+Boundary certification includes the existing shell, command, forwarding, sudo, write, Docker socket, replay, request mutation, response mutation, host-key, malformed-input, output-bound, and audit checks. With registered applications it also requires canonical dispatcher, capability, declaration, resource-scope, receipt-chain, and transaction compatibility. Boundary verification fails whenever canonical doctor readiness would fail or the active generation is uncertain.
 
 ## Exact deployment planning
 
@@ -256,7 +368,7 @@ sha256:<digest>
 
 The digest covers the application, pinned target identity, observed state, exact current and target revisions, typed operations, authorization scope, privileges, health checks, rollback strategy, policy and operation-definition identities, expiration, and nonce.
 
-Apply accepts only that stored plan ID. It revalidates canonical remote readiness and all plan-bound state immediately before mutation. Persistent markers prevent replay, and application locks prevent conflicting execution.
+Apply accepts only that stored plan ID. It revalidates canonical remote readiness, transaction certainty, and all plan-bound state immediately before mutation. Persistent markers prevent replay, and application locks prevent conflicting execution.
 
 ## Deployment activation and recovery
 

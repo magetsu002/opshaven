@@ -14,9 +14,99 @@ function preflightCause(raw: string): string {
   return "One or more remote installation checks failed.";
 }
 
+function detail(error: OpsHavenError, key: string): unknown {
+  return error.safeDetails?.[key];
+}
+
+function safeScalar(value: unknown, fallback = "unknown"): string {
+  if (typeof value === "string" && value.length > 0) return value.replace(/[\r\n\u001b\u009b]/g, " ").slice(0, 240);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return fallback;
+}
+
+function synchronizationFailure(error: OpsHavenError, debug: boolean): string | null {
+  const outcome = detail(error, "setupOutcome");
+  if (outcome !== "SETUP_FAILED_ROLLED_BACK" && outcome !== "SETUP_CANCELLED_ROLLED_BACK" && outcome !== "SETUP_FAILED_ROLLBACK_FAILED") return null;
+  const failedStage = safeScalar(detail(error, "failedVerificationStage"), "active-generation verification");
+  const active = safeScalar(detail(error, "activeGeneration"), outcome === "SETUP_FAILED_ROLLBACK_FAILED" ? "uncertain" : "previous verified generation");
+  const previous = safeScalar(detail(error, "previousGeneration"), "unavailable");
+  const mutation = detail(error, "mutationStarted") === true;
+  const rollbackStarted = detail(error, "rollbackStarted") === true;
+  const rollbackCompleted = detail(error, "rollbackCompleted") === true;
+
+  if (outcome !== "SETUP_FAILED_ROLLBACK_FAILED") {
+    const title = outcome === "SETUP_CANCELLED_ROLLED_BACK" ? "Remote synchronization cancelled" : "Remote synchronization failed";
+    return [
+      `✗ ${title}`,
+      "",
+      "Failed stage",
+      `  ${failedStage}`,
+      "",
+      "Recovery",
+      "  ✓ Previous verified generation restored",
+      "  ✓ Dispatcher verified",
+      "  ✓ Authorization verified",
+      "  ✓ Security boundary verified",
+      "",
+      "Current state",
+      `  ${active} remains active.`,
+      "",
+      "Mutation",
+      `  ${mutation ? "Remote mutation began and was rolled back." : "No remote mutation occurred."}`,
+      "",
+      "Next",
+      "  opshaven doctor",
+    ].join("\n");
+  }
+
+  const debugValue = safeScalar(detail(error, "rollbackDebug"), "no lower-level diagnostic was recorded");
+  const lines = [
+    "✗ Remote synchronization failed",
+    "",
+    "Failed stage",
+    `  ${failedStage}`,
+    "",
+    "Recovery",
+    `  ${rollbackStarted ? "✗ Previous generation could not be restored" : "✗ Rollback could not be started"}`,
+    "",
+    "Cause",
+    "  The saved rollback evidence did not verify as the exact recorded previous generation.",
+    "",
+    "Current state",
+    `  Active generation: ${active}`,
+    `  Previous verified generation: ${previous}`,
+    `  Remote mutation occurred: ${mutation ? "yes" : "no"}`,
+    `  Rollback completed: ${rollbackCompleted ? "yes" : "no"}`,
+    "  Deployment planning and apply are blocked.",
+    "  Read-only verification is permitted only when boundary checks pass.",
+    "",
+    "Next",
+    "  Inspect the recovery state:",
+    "",
+    "  opshaven doctor --debug",
+    "",
+    "  Then run the reviewed recovery flow:",
+    "",
+    "  opshaven setup repair",
+  ];
+  if (debug) lines.push("", "Debug", `  ${debugValue}`);
+  return lines.join("\n");
+}
+
 export function formatOperatorError(error: unknown, args: readonly string[] = process.argv.slice(2)): string {
   const raw = error instanceof Error ? error.message : "The operation failed safely.";
-  if (debugEnabled(args)) return raw;
+  const debug = debugEnabled(args);
+  if (error instanceof OpsHavenError) {
+    const synchronization = synchronizationFailure(error, debug);
+    if (synchronization) return synchronization;
+  }
+  if (debug) {
+    if (error instanceof OpsHavenError) {
+      const lower = detail(error, "rollbackDebug") ?? detail(error, "dispatcherDebug") ?? detail(error, "uninstallDebug");
+      if (typeof lower === "string" && lower.length > 0) return `${sanitizeOperatorText(raw)}\n\nDebug\n  ${lower.replace(/[\r\n\u001b\u009b]/g, " ").slice(0, 500)}`;
+    }
+    return sanitizeOperatorText(raw);
+  }
 
   if (/Unknown command/i.test(raw)) {
     return formatOperatorFailure({

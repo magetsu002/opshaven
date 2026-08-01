@@ -113,8 +113,10 @@ NO_CHANGE
 AUTHORIZATION_ONLY
 APPLICATION_DECLARATION_ONLY
 AUTHORIZATION_AND_DECLARATION
-RUNTIME_UPDATE
-DISPATCHER_UPDATE
+DISPATCHER_ONLY
+DISPATCHER_AND_AUTHORIZATION
+RUNTIME_ONLY
+RUNTIME_AND_DISPATCHER
 FULL_INSTALL
 REPAIR_REQUIRED
 ```
@@ -131,33 +133,33 @@ Reviewed automation:
 opshaven setup remote --non-interactive --approve
 ```
 
-The first full installation normally takes one to three minutes. Later synchronization runs are normally faster. Do not close the terminal while a step is active.
+The first full installation may take a few minutes. Dispatcher-only and authorization-only synchronization should normally be faster. Do not close the terminal while a step is active.
 
 The setup engine:
 
-1. validates the reviewed source and protected local files;
-2. verifies the pinned host identity, SSH access, platform, architecture, Node.js compatibility, disk, and privilege;
-3. inspects the complete installed identity;
+1. inspects the complete installed state and any prior synchronization transaction;
+2. validates the reviewed source and protected local files;
+3. verifies pinned host identity, SSH access, platform, architecture, Node.js, disk, and privilege;
 4. selects the smallest safe state transition;
-5. stages changed artifacts into a new recorded generation;
-6. activates the runtime, dispatcher, authorization, and declaration set atomically;
-7. verifies authenticated requests and responses, replay denial, unknown-operation denial, unknown-resource denial, audit integrity, and the security boundary;
-8. evaluates the same canonical readiness model used by doctor, boundary verification, and deployment;
-9. reports success only when the exact installed state is deployment-ready.
+5. stages changed artifacts and verifies their exact identities;
+6. records an immutable previous-generation snapshot and receipt chain;
+7. refuses activation when rollback material is incomplete;
+8. activates only the classified runtime, dispatcher, authorization, and declaration changes;
+9. verifies authenticated requests and responses, replay denial, unknown-operation denial, unknown-resource denial, audit integrity, and the security boundary;
+10. evaluates the same canonical readiness model used by doctor, boundary verification, and deployment;
+11. commits the new generation only after every verification passes.
 
 OpsHaven uses one capability-scoped controlled dispatcher. Host-only authorization remains read-only because its signed operation and resource scope excludes deployment mutation.
 
-## Canonical installed state
+## Canonical installed and receipt identity
 
 The canonical comparison covers:
 
 ```text
 setup schema version
 installation generation
-runtime source version
-runtime artifact digest
-dispatcher mode
-dispatcher digest
+runtime-core artifact digest
+dispatcher mode and artifact digest
 policy version and digest
 signed capability identity
 reviewed declaration digest
@@ -165,9 +167,54 @@ registered application scope
 operator verification identity
 remote platform and architecture
 Node.js version compatibility
+recorded generation integrity
 ```
 
-The model is derived from complete verified artifacts. A receipt, filename, timestamp, or one existing file is never sufficient proof.
+The canonical generation receipt binds:
+
+```text
+receipt schema version
+installation generation
+runtime-core digest
+dispatcher digest
+policy digest
+authorization digest
+declaration digest
+platform and architecture
+source build identity
+creation metadata
+previous generation identity
+```
+
+Artifact identity is distinct from the temporary staging path, upload location, installation destination, and historical snapshot location. A valid artifact can move through fixed temporary paths without changing identity. Modified content, modified receipt fields, wrong generation, wrong dispatcher or policy, wrong host binding, and wrong previous-generation binding are rejected.
+
+## Synchronization transaction
+
+Mutating setup uses these phases:
+
+```text
+INSPECT
+PLAN
+STAGE
+VERIFY_STAGED
+RECORD_PREVIOUS
+ACTIVATE
+VERIFY_ACTIVE
+COMMIT
+CLEANUP
+```
+
+Rollback uses:
+
+```text
+ROLLBACK_START
+RESTORE_PREVIOUS
+VERIFY_RESTORED
+ROLLBACK_COMMIT
+ROLLBACK_CLEANUP
+```
+
+The previous verified generation remains available until the new generation passes runtime, dispatcher, authorization, declaration, application scope, authenticated protocol, boundary, doctor readiness, and audit checks.
 
 ## Fast paths
 
@@ -187,43 +234,34 @@ No remote changes were required.
 
 No runtime upload, dependency installation, dispatcher replacement, signed-state rewrite, unrelated restart, or generation change occurs. Verification still runs.
 
-### Authorization only
+### Authorization or declaration only
 
-When signed policy, capability, operator identity, or application scope changes:
+The installed runtime and dispatcher are reused. Only the changed signed authorization, reviewed declaration, or application scope is synchronized and verified.
 
-```text
-Updating remote authorization
+### Dispatcher only
 
-✓ Existing runtime verified
-✓ Existing dispatcher compatible
-✓ Signed authorization updated
-✓ Capability digest confirmed
-✓ Security boundary verified
-```
-
-The runtime is not reinstalled.
-
-### Declaration only
-
-When only reviewed declaration state changes:
+When runtime-core identity matches but the active dispatcher differs:
 
 ```text
-Updating deployment application scope
+Runtime
+  unchanged
 
-✓ Existing runtime verified
-✓ Existing dispatcher compatible
-✓ Application declaration updated
-✓ Authorized resources confirmed
-✓ Security boundary verified
+Dispatcher
+  replacement required
+
+Authorization
+  update required when dispatcher binding changes
 ```
 
-### Runtime or dispatcher update
+OpsHaven uploads one reviewed dispatcher artifact, performs no dependency installation, updates the runtime manifest and generation receipt, synchronizes matching authorization when required, then verifies compatibility, canonical readiness, and the boundary.
 
-Only changed verified artifacts are uploaded. The previous generation is retained until post-update certification succeeds.
+### Runtime change
+
+The runtime is replaced only when exact runtime-core digest comparison proves it changed. Runtime-only and runtime-plus-dispatcher transitions remain distinct.
 
 ### Repair required
 
-Partial, unsafe, unsupported, or unclassifiable identity returns `REPAIR_REQUIRED`. No automatic mutation occurs.
+Partial, unsafe, unsupported, unclassifiable, or transaction-uncertain state returns `REPAIR_REQUIRED`. No automatic synchronization occurs.
 
 ## Setup outcomes
 
@@ -239,13 +277,60 @@ SETUP_CANCELLED_NO_MUTATION
 SETUP_CANCELLED_ROLLED_BACK
 ```
 
-A failed update followed by a successful rollback remains a failed update. A rollback failure is never hidden.
+A failed update followed by a successful rollback remains a failed update. Rollback success requires the restored generation to pass the same canonical and boundary verification. A rollback failure is never hidden or converted to success.
 
 ## Safe cancellation
 
 Cancellation is checked before mutation, after staging, before activation, after activation, during verification, and before success.
 
-When cancellation arrives after mutation begins, OpsHaven restores the previous recorded runtime, dispatcher, policy, authorization, declarations, and canonical state, verifies the restored checkpoint, records the outcome, and reports whether rerun is safe.
+When cancellation arrives after mutation begins, OpsHaven restores the exact recorded previous runtime, dispatcher, policy, authorization, declarations, and canonical state, verifies the restored checkpoint, records the outcome, and reports whether rerun is safe.
+
+## Recovery after synchronization failure
+
+Inspect sanitized recovery state:
+
+```bash
+opshaven doctor --debug
+opshaven setup repair
+```
+
+The repair preview shows the transaction, last completed phase, desired and previous generation identities, rollback availability, and exact bounded changes.
+
+Restore the last fully verified generation:
+
+```bash
+opshaven setup repair --approve
+```
+
+If no verified previous generation can be restored, preserve failed-state evidence and perform a reviewed clean reinstall:
+
+```bash
+opshaven setup repair --clean-reinstall --approve
+```
+
+The clean-reinstall path:
+
+```text
+copies every fixed managed active artifact into recovery evidence
+copies the failed transaction and available transaction history
+writes and verifies an evidence manifest
+preserves audit history and forensic evidence
+removes only fixed active OpsHaven paths
+runs one normal full installation
+verifies canonical readiness and the security boundary
+```
+
+It does not choose a generation by timestamp, trust a mutable receipt without verification, erase all state before inspection, or execute arbitrary shell repair.
+
+## Progress output
+
+Visible stages are built from the selected classification and begin at `[1/N]`. Hidden bookkeeping does not consume visible numbers and skipped stages do not create gaps.
+
+TTY output clears and rewrites one complete line approximately every five seconds. It repaints immediately when the meaningful phase changes, respects terminal width, truncates by complete Unicode characters, and terminates the final line once.
+
+Non-TTY output emits complete independent lines approximately every fifteen seconds and never uses carriage-return rewriting. JSON emits no progress animation or ANSI codes.
+
+Dispatcher-only synchronization reports dispatcher upload, verification, activation, authorization synchronization, and boundary certification. It does not display dependency installation when dependencies are unchanged.
 
 ## Diagnose
 
@@ -255,13 +340,28 @@ opshaven doctor
 
 Normal mode reports operator-facing readiness and one next action.
 
-For sanitized expected-versus-installed evidence:
+For sanitized expected-versus-installed and transaction evidence:
 
 ```bash
 opshaven doctor --debug
 ```
 
-Debug comparison includes runtime, dispatcher, policy, capability, declaration, application scope, platform, architecture, Node.js version, generation, diagnosis, and repair. It excludes private keys, approval tokens, raw signed payloads, secrets, and unredacted environment values.
+Debug comparison includes:
+
+```text
+synchronization transaction status
+last completed phase
+desired, active, previous, and staged generation
+runtime, dispatcher, policy, capability, and declaration digests
+application scope
+platform, architecture, and Node.js version
+receipt integrity and host binding
+rollback availability
+canonical readiness
+exact repair command
+```
+
+It excludes private keys, approval tokens, raw signed payloads, secrets, and unredacted environment values.
 
 JSON remains stable and contains no ANSI escape sequences:
 
@@ -275,9 +375,9 @@ opshaven doctor --debug --json
 opshaven boundary verify
 ```
 
-Boundary verification uses the same canonical readiness evaluator as doctor. It fails when runtime, dispatcher, authorization, declaration, or registered application scope is incompatible.
+Boundary verification uses the same canonical readiness and transaction evaluator as doctor. It fails when the active generation is uncertain, the receipt chain is invalid, or runtime, dispatcher, authorization, declaration, or application scope is incompatible.
 
-It also verifies shell denial, arbitrary-command denial, sudo denial, unauthorized-write denial, Docker socket denial, PTY and forwarding restrictions, unknown operation and resource denial, replay and mutation resistance, response authentication, host-key pinning, malformed-input structure, bounded output, secret scanning, and audit integrity.
+It still verifies shell denial, arbitrary-command denial, sudo denial, unauthorized-write denial, Docker socket denial, PTY and forwarding restrictions, unknown operation and resource denial, replay and mutation resistance, response authentication, host-key pinning, malformed-input structure, bounded output, secret scanning, and audit integrity.
 
 ## Plan a deployment
 
@@ -295,11 +395,17 @@ opshaven deploy plan sample-api \
   --non-interactive
 ```
 
-Deployment planning and apply are blocked unless canonical remote readiness is compatible.
+Deployment planning and apply are blocked unless canonical remote readiness is compatible and the active synchronization generation is certain.
 
-## Roll back or uninstall setup
+## Manual rollback or uninstall
 
-Restore the previous recorded generation:
+The transaction-aware recovery command is preferred after synchronization failure:
+
+```bash
+opshaven setup repair
+```
+
+The legacy explicit setup rollback remains available for a complete recorded setup receipt:
 
 ```bash
 opshaven setup remote --rollback --approve
@@ -311,7 +417,7 @@ Remove only fixed OpsHaven paths and the exact restricted SSH entry:
 opshaven uninstall remote --approve
 ```
 
-Unrelated SSH keys, users, services, files, and SSH configuration are preserved.
+Unrelated SSH keys, users, services, files, SSH configuration, audit evidence, and preserved recovery evidence are not silently removed.
 
 ## Color and automation
 

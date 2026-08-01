@@ -373,9 +373,17 @@ function applicationBase(input: ApplicationRegistrationInput, host: HostResource
   };
 }
 
-function bindingDigest(config: OpsHavenConfig, app: Omit<DeploymentApplication, "resourceBindingDigest" | "createdAt">): string {
+function bindingInputs(config: OpsHavenConfig, app: Omit<DeploymentApplication, "resourceBindingDigest" | "createdAt">): { resources: unknown[]; application: Omit<DeploymentApplication, "resourceBindingDigest" | "createdAt">; operationDefinitionsVersion: string } {
   const ids = [app.hostResourceId, app.applicationResourceId, app.deploymentResourceId, app.serviceResourceId, app.probeResourceId];
-  return sha256({ policyVersion: config.policyVersion, resources: ids.map((id) => config.resources.get(id) ?? null), application: app, operationDefinitionsVersion: DEPLOYMENT_OPERATION_VERSION });
+  return { resources: ids.map((id) => config.resources.get(id) ?? null), application: app, operationDefinitionsVersion: DEPLOYMENT_OPERATION_VERSION };
+}
+
+function bindingDigest(config: OpsHavenConfig, app: Omit<DeploymentApplication, "resourceBindingDigest" | "createdAt">): string {
+  return sha256(bindingInputs(config, app));
+}
+
+function legacyBindingDigest(config: OpsHavenConfig, app: Omit<DeploymentApplication, "resourceBindingDigest" | "createdAt">): string {
+  return sha256({ policyVersion: config.policyVersion, ...bindingInputs(config, app) });
 }
 
 export function applicationFromConfig(config: OpsHavenConfig, input: ApplicationRegistrationInput, host: HostResource, createdAt: string): DeploymentApplication {
@@ -415,7 +423,8 @@ export function applicationBinding(config: OpsHavenConfig, app: DeploymentApplic
     rollbackBehavior: app.rollbackBehavior,
   };
   const binding = applicationBindingUnchecked(config, base);
-  if (bindingDigest(config, base) !== app.resourceBindingDigest || !buildProfileSupported(binding.deployment)
+  const digestMatches = bindingDigest(config, base) === app.resourceBindingDigest || legacyBindingDigest(config, base) === app.resourceBindingDigest;
+  if (!digestMatches || !buildProfileSupported(binding.deployment)
     || binding.deployment.repositoryPath !== app.repositoryLocation || binding.deployment.releasesPath !== app.releaseLocation || binding.deployment.currentSymlink !== app.currentReleaseLocation
     || canonicalize(binding.deployment.serviceIds) !== canonicalize([binding.service.id]) || canonicalize(binding.deployment.probeIds) !== canonicalize([binding.probe.id])
     || binding.service.unit !== app.serviceIdentifier || binding.probe.url !== app.healthCheckUrl || canonicalize(binding.probe.expectedStatus) !== canonicalize([app.expectedStatus])) {

@@ -1,25 +1,89 @@
 import { createInterface } from "node:readline/promises";
 import { colorEnabled, command, heading, numberedStatus, paint, sanitizeOperatorText, section, statusLine } from "../operator-ui.js";
 import { formatRemoteSetupPlan, type RemoteSetupPlan, type SetupMutation, type SetupStepState } from "./remote.js";
+import type { RemoteSetupChangeType } from "./state.js";
 
 export interface SetupPresenter {
   plan(value: RemoteSetupPlan): void;
   step(id: string, scope: "local" | "vps", state: SetupStepState, detail: string): void;
   progress?(id: string, detail: string, elapsedMs: number): void;
+  heartbeatMs?(): number;
   cancellation?(mutationStarted: boolean, restored: boolean): void;
   fingerprint(label: string, value: string): void;
   approve(message: string): Promise<boolean>;
   receipt(value: unknown): void;
 }
 
-const STAGES: Readonly<Record<string, readonly [number, string]>> = Object.freeze({
-  inspection: [1, "Inspect installed state"],
-  preflight: [2, "Check installation prerequisites"],
-  "runtime-install": [3, "Install the restricted runtime"],
-  trust: [4, "Synchronize authorization"],
-  boundary: [5, "Verify the security boundary"],
-  readiness: [6, "Verify deployment readiness"],
+export interface SetupOutputStream {
+  readonly isTTY?: boolean;
+  readonly columns?: number;
+  write(value: string): unknown;
+}
+
+export interface VisibleSetupStage {
+  readonly id: string;
+  readonly label: string;
+}
+
+const LABELS = Object.freeze({
+  preflight: "Check prerequisites",
+  runtimeUpload: "Upload runtime",
+  runtimeInstall: "Install runtime",
+  dispatcher: "Update dispatcher",
+  trust: "Synchronize authorization",
+  boundary: "Verify security boundary",
+  readiness: "Certify canonical readiness",
 });
+
+export function visibleSetupStages(changeType: RemoteSetupChangeType): readonly VisibleSetupStage[] {
+  switch (changeType as string) {
+    case "FULL_INSTALL":
+      return Object.freeze([
+        { id: "preflight", label: LABELS.preflight },
+        { id: "runtime-upload", label: LABELS.runtimeUpload },
+        { id: "runtime-install", label: LABELS.runtimeInstall },
+        { id: "trust", label: "Configure authorization" },
+        { id: "boundary", label: "Verify dispatcher compatibility" },
+        { id: "readiness", label: LABELS.boundary },
+      ]);
+    case "RUNTIME_UPDATE":
+    case "RUNTIME_ONLY":
+    case "RUNTIME_AND_DISPATCHER":
+      return Object.freeze([
+        { id: "preflight", label: LABELS.preflight },
+        { id: "runtime-upload", label: LABELS.runtimeUpload },
+        { id: "runtime-install", label: LABELS.runtimeInstall },
+        { id: "trust", label: LABELS.trust },
+        { id: "boundary", label: "Verify dispatcher compatibility" },
+        { id: "readiness", label: LABELS.boundary },
+      ]);
+    case "DISPATCHER_UPDATE":
+    case "DISPATCHER_ONLY":
+    case "DISPATCHER_AND_AUTHORIZATION":
+      return Object.freeze([
+        { id: "preflight", label: LABELS.preflight },
+        { id: "dispatcher", label: LABELS.dispatcher },
+        { id: "trust", label: LABELS.trust },
+        { id: "boundary", label: LABELS.boundary },
+        { id: "readiness", label: LABELS.readiness },
+      ]);
+    case "AUTHORIZATION_ONLY":
+    case "APPLICATION_DECLARATION_ONLY":
+    case "AUTHORIZATION_AND_DECLARATION":
+      return Object.freeze([
+        { id: "trust", label: LABELS.trust },
+        { id: "boundary", label: LABELS.boundary },
+        { id: "readiness", label: LABELS.readiness },
+      ]);
+    case "NO_CHANGE":
+      return Object.freeze([
+        { id: "boundary", label: LABELS.boundary },
+        { id: "readiness", label: LABELS.readiness },
+      ]);
+    default:
+      return Object.freeze([]);
+  }
+}
 
 function confirmationAccepted(answer: string): boolean {
   const normalized = answer.trim().toLowerCase();
@@ -38,15 +102,16 @@ function scopeLabel(scope: "local" | "vps"): string {
 
 function friendlyDetail(id: string, state: SetupStepState, detail: string): string | undefined {
   if (state === "pending") {
-    if (id === "inspection") return "comparing verified content identities";
     if (id === "preflight") return "checking local tools, SSH access, platform, and permissions";
-    if (id === "runtime-install") return "uploading and activating reviewed artifacts";
+    if (id === "runtime-upload") return "uploading and verifying the reviewed runtime archive";
+    if (id === "runtime-install") return "activating the reviewed runtime generation";
+    if (id === "dispatcher") return "uploading and verifying the dispatcher artifact";
     if (id === "trust") return "applying only changed signed authorization";
-    if (id === "boundary") return "running remote security verification";
+    if (id === "boundary") return "running authenticated remote security verification";
     if (id === "readiness") return "confirming runtime, dispatcher, authorization, and scope";
   }
   if (state === "passed" || state === "skipped" || state === "failed") return sanitizeOperatorText(detail);
-  if (state === "rolled-back") return "the previous verified remote state was restored";
+  if (state === "rolled-back") return "the previous verified generation was restored";
   return undefined;
 }
 
@@ -61,19 +126,102 @@ function applicationLabel(id: string): string {
   return id.split("-").filter(Boolean).map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`).join(" ");
 }
 
+function stripEmbeddedCounter(value: string): string {
+  return value.replace(/\[\d+\/\d+\]/g, "").replace(/\s{2,}/g, " ").trim();
+}
+
+function truncateComplete(value: string, width: number): string {
+  if (!Number.isSafeInteger(width) || width < 8) return "";
+  const characters = Array.from(value);
+  if (characters.length <= width) return value;
+  return `${characters.slice(0, Math.max(1, width - 1)).join("")}…`;
+}
+
+export class ProgressLineRenderer {
+  private active = false;
+  private finalized = false;
+
+  constructor(private readonly stream: SetupOutputStream) {}
+
+  isTTY(): boolean { return this.stream.isTTY === true; }
+  heartbeatMs(): number { return this.isTTY() ? 5000 : 15000; }
+  hasActiveLine(): boolean { return this.active; }
+
+  private bounded(value: string): string {
+    const sanitized = value.replace(/[\r\n\u001b\u009b]/g, " ");
+    if (!this.isTTY()) return sanitized;
+    const width = typeof this.stream.columns === "number" ? Math.max(8, this.stream.columns) : 120;
+    return truncateComplete(sanitized, width);
+  }
+
+  update(value: string): void {
+    if (this.finalized) return;
+    const line = this.bounded(value);
+    if (this.isTTY()) {
+      this.stream.write(`\r\u001b[2K${line}`);
+      this.active = true;
+    } else {
+      this.stream.write(`${line}\n`);
+    }
+  }
+
+  complete(value: string): void {
+    if (this.finalized) return;
+    const line = this.bounded(value);
+    if (this.isTTY() && this.active) this.stream.write(`\r\u001b[2K${line}\n`);
+    else this.stream.write(`${line}\n`);
+    this.active = false;
+  }
+
+  finish(): void {
+    if (this.finalized) return;
+    if (this.isTTY() && this.active) this.stream.write("\r\u001b[2K\n");
+    this.active = false;
+    this.finalized = true;
+  }
+}
+
 export class PlainSetupPresenter implements SetupPresenter {
   private readonly color = colorEnabled();
   private readonly debug = process.argv.includes("--debug");
-  private progressOpen = false;
+  private readonly renderer: ProgressLineRenderer;
+  private stages: readonly VisibleSetupStage[] = Object.freeze([]);
+  private readonly stageIndex = new Map<string, number>();
+  private runtimeUploadActive = false;
 
-  constructor(private readonly options: { nonInteractive: boolean; preapproved: boolean; json: boolean }) {}
+  constructor(
+    private readonly options: { nonInteractive: boolean; preapproved: boolean; json: boolean },
+    stream: SetupOutputStream = process.stdout as SetupOutputStream,
+  ) {
+    this.renderer = new ProgressLineRenderer(stream);
+  }
+
+  heartbeatMs(): number { return this.renderer.heartbeatMs(); }
+
+  private numbered(id: string, state: SetupStepState, detail: string): string | null {
+    const index = this.stageIndex.get(id);
+    if (index === undefined) return null;
+    const label = this.stages[index - 1]?.label ?? id;
+    return numberedStatus(index, this.stages.length, state, label, friendlyDetail(id, state, detail), this.color);
+  }
+
+  private writeCompleted(line: string): void {
+    if (this.renderer.hasActiveLine()) this.renderer.complete(line);
+    else process.stdout.write(`${line}\n`);
+  }
 
   plan(value: RemoteSetupPlan): void {
+    this.stages = visibleSetupStages(value.changeType);
+    this.stageIndex.clear();
+    this.runtimeUploadActive = false;
+    this.stages.forEach((stage, index) => this.stageIndex.set(stage.id, index + 1));
     if (this.options.json) return;
     process.stdout.write(`${heading("OpsHaven Remote Setup", this.color)}\n\n`);
     process.stdout.write(formatRemoteSetupPlan(value));
-    if (["FULL_INSTALL", "RUNTIME_UPDATE", "DISPATCHER_UPDATE"].includes(value.changeType)) {
-      process.stdout.write("\nThe first remote installation usually takes 1–3 minutes.\nLater synchronization runs are normally much faster.\nDo not close this terminal while a step is active.\n");
+    if (["FULL_INSTALL", "RUNTIME_UPDATE", "RUNTIME_ONLY", "RUNTIME_AND_DISPATCHER"].includes(value.changeType as string)) {
+      process.stdout.write("\nFirst installation may take up to a few minutes.\nDispatcher-only and authorization-only updates should normally be faster.\nDo not close this terminal while a step is active.\n");
+    } else if (["DISPATCHER_UPDATE", "DISPATCHER_ONLY", "DISPATCHER_AND_AUTHORIZATION"].includes(value.changeType as string)) {
+      process.stdout.write("\nThe verified runtime will be reused. Only the dispatcher and matching authorization will be synchronized.\n");
     } else if (value.changeType === "NO_CHANGE") {
       process.stdout.write("\nThis target is already installed.\nOpsHaven will verify the existing state without reinstalling it.\n");
     } else if (value.changeType === "AUTHORIZATION_ONLY") {
@@ -92,45 +240,59 @@ export class PlainSetupPresenter implements SetupPresenter {
 
   step(id: string, scope: "local" | "vps", state: SetupStepState, detail: string): void {
     if (this.options.json) return;
-    if (this.progressOpen && (process.stdout as any).isTTY) {
-      process.stdout.write("\n");
-      this.progressOpen = false;
+    if (id === "runtime-install" && this.stageIndex.has("runtime-upload")) {
+      if (state === "pending") {
+        const upload = this.numbered("runtime-upload", "pending", "uploading and verifying the reviewed runtime archive");
+        if (upload) this.writeCompleted(upload);
+        this.runtimeUploadActive = true;
+        return;
+      }
+      if (this.runtimeUploadActive) {
+        const uploadState: SetupStepState = state === "passed" ? "passed" : state === "failed" ? "failed" : state;
+        const uploadDetail = state === "passed" ? "reviewed runtime archive uploaded and verified" : detail;
+        const upload = this.numbered("runtime-upload", uploadState, uploadDetail);
+        if (upload) this.writeCompleted(upload);
+        this.runtimeUploadActive = false;
+        if (state !== "passed") return;
+      }
     }
-    const stage = STAGES[id];
-    if (stage) {
-      const [index, label] = stage;
-      process.stdout.write(`${numberedStatus(index, 6, state, label, friendlyDetail(id, state, detail), this.color)}\n`);
+
+    const numbered = this.numbered(id, state, detail);
+    if (numbered) {
+      this.writeCompleted(numbered);
       return;
     }
+    if (state === "skipped") return;
     const label = id === "rollback" ? "Restore the previous remote state" : id;
-    process.stdout.write(`${statusLine(state, label, `${scopeLabel(scope)} · ${friendlyDetail(id, state, detail) ?? sanitizeOperatorText(detail)}`, this.color)}\n`);
+    const line = statusLine(state, label, `${scopeLabel(scope)} · ${friendlyDetail(id, state, detail) ?? sanitizeOperatorText(detail)}`, this.color);
+    this.writeCompleted(line);
   }
 
   progress(id: string, detail: string, elapsedMs: number): void {
     if (this.options.json) return;
-    const stage = STAGES[id];
-    const label = stage?.[1] ?? id;
-    const elapsed = Math.floor(elapsedMs / 1000);
-    const line = `${stage ? `[${stage[0]}/6] ` : ""}⏳ ${label} — ${sanitizeOperatorText(detail)}, ${elapsed}s elapsed`;
-    if ((process.stdout as any).isTTY) {
-      process.stdout.write(`\r${line}`);
-      this.progressOpen = true;
-    } else process.stdout.write(`${line}\n`);
+    const visibleId = id === "runtime-install" && this.runtimeUploadActive ? "runtime-upload" : id;
+    const index = this.stageIndex.get(visibleId);
+    if (index === undefined) return;
+    const label = this.stages[index - 1]?.label ?? visibleId;
+    const elapsed = Math.max(0, Math.floor(elapsedMs / 1000));
+    const safeDetail = stripEmbeddedCounter(sanitizeOperatorText(detail));
+    this.renderer.update(`[${index}/${this.stages.length}] ⏳ ${label} — ${safeDetail}, ${elapsed}s elapsed`);
   }
 
   cancellation(mutationStarted: boolean, restored: boolean): void {
     if (this.options.json) return;
-    process.stdout.write(`\n${paint("Cancellation requested.", "warning", this.color)}\n\n`);
+    this.renderer.finish();
+    process.stdout.write(`${paint("Cancellation requested.", "warning", this.color)}\n\n`);
     process.stdout.write("OpsHaven is returning to the last verified checkpoint.\n\n");
     process.stdout.write(`${section("Changes made", this.color)}\n`);
-    process.stdout.write(mutationStarted ? "  A controlled synchronization generation had started.\n" : "  No remote changes were made.\n");
+    process.stdout.write(mutationStarted ? "  A controlled synchronization generation had started.\n" : "  No active generation was changed.\n");
     process.stdout.write(`\n${section("Rollback result", this.color)}\n`);
     if (!mutationStarted) process.stdout.write("  Rollback was not required.\n");
-    else if (restored) process.stdout.write("  Previous verified installation restored and active.\n");
+    else if (restored) process.stdout.write("  Previous verified generation restored and active.\n");
     else process.stdout.write("  Recovery requires operator attention.\n");
     process.stdout.write(`\n${section("Rerun safety", this.color)}\n`);
-    process.stdout.write(!mutationStarted || restored ? "  Safe to rerun the same setup command.\n" : "  Inspect recovery state before rerunning.\n");
-    process.stdout.write(`\n${section("Next", this.color)}\n${command(restored || !mutationStarted ? "opshaven setup remote" : "opshaven doctor --debug", this.color)}\n`);
+    process.stdout.write(!mutationStarted || restored ? "  Safe to rerun the same setup command.\n" : "  Deployment operations remain blocked until reviewed recovery succeeds.\n");
+    process.stdout.write(`\n${section("Next", this.color)}\n${command(restored || !mutationStarted ? "opshaven setup remote" : "opshaven setup repair", this.color)}\n`);
   }
 
   fingerprint(label: string, value: string): void {
@@ -155,9 +317,10 @@ export class PlainSetupPresenter implements SetupPresenter {
       process.stdout.write(`${JSON.stringify(value)}\n`);
       return;
     }
+    this.renderer.finish();
     const record = value as Record<string, any>;
     const app = applicationId(record.canonicalState?.desired?.applicationScope);
-    process.stdout.write(`\n${statusLine("passed", "Remote setup complete", undefined, this.color)}\n`);
+    process.stdout.write(`${statusLine("passed", "Remote setup complete", undefined, this.color)}\n`);
     process.stdout.write(`${statusLine("passed", "Deployment capability synchronized", undefined, this.color)}\n`);
     process.stdout.write(`${statusLine("passed", "Security boundary verified", undefined, this.color)}\n`);
     if (app) process.stdout.write(`${statusLine("passed", `${applicationLabel(app)} ready for planning`, undefined, this.color)}\n`);
