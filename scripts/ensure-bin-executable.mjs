@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const targets = [
   "dist/src/cli-entry.js",
-  "dist/src/index.js",
+  "dist/src/mcp-entry.js",
   "dist/src/remote/dispatcher.js",
   "dist-readonly/src/remote/read-only-dispatcher.js",
 ];
@@ -28,7 +28,7 @@ for (const relative of targets) {
   }
   await fs.chmod(target, 0o755);
   const verified = await fs.lstat(target);
-  if ((verified.mode & 0o111) === 0) {
-    throw new Error(`Package binary target is not executable: ${relative}`);
+  if (!verified.isFile() || verified.isSymbolicLink() || (verified.mode & 0o111) === 0) {
+    throw new Error(`Package binary target is not an executable regular file: ${relative}`);
   }
 }
