@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import test, { type TestContext } from "node:test";
+import test from "node:test";
 import { parseConfig, type OpsHavenConfig } from "../src/config.js";
 import {
   DEPLOYMENT_MINIMUM_DISK_BYTES,
@@ -279,21 +279,20 @@ test("insufficient apply-time disk fails before deployment mutation", async () =
   assert.equal(value.client.mutationCalls, 0);
 });
 
-test("service and runtime drift remain stale-plan blockers", async (t: TestContext) => {
-  await t.test("service identity", async () => {
-    const value = await registeredFixture();
-    const stored = await value.coordinator.createPlan("sample-api", TARGET);
-    value.client.serviceIdentifier = "other.service";
-    await assert.rejects(value.coordinator.applyPlan(stored.planId, { approved: true }), OpsHavenError);
-    assert.equal(value.client.mutationCalls, 0);
-  });
-  await t.test("runtime readiness", async () => {
-    const value = await registeredFixture();
-    const stored = await value.coordinator.createPlan("sample-api", TARGET);
-    value.client.runtimeAvailable = false;
-    await assert.rejects(value.coordinator.applyPlan(stored.planId, { approved: true }), OpsHavenError);
-    assert.equal(value.client.mutationCalls, 0);
-  });
+test("service identity drift remains a stale-plan blocker", async () => {
+  const value = await registeredFixture();
+  const stored = await value.coordinator.createPlan("sample-api", TARGET);
+  value.client.serviceIdentifier = "other.service";
+  await assert.rejects(value.coordinator.applyPlan(stored.planId, { approved: true }), OpsHavenError);
+  assert.equal(value.client.mutationCalls, 0);
+});
+
+test("runtime readiness drift remains a stale-plan blocker", async () => {
+  const value = await registeredFixture();
+  const stored = await value.coordinator.createPlan("sample-api", TARGET);
+  value.client.runtimeAvailable = false;
+  await assert.rejects(value.coordinator.applyPlan(stored.planId, { approved: true }), OpsHavenError);
+  assert.equal(value.client.mutationCalls, 0);
 });
 
 test("changed observed state produces a different plan identity", async () => {
