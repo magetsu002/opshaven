@@ -34,6 +34,18 @@ jobs:
           node-version: 22
           cache: npm
       - run: bash integration/disposable-deployment/run.sh
+  deployment-onboarding-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+      - run: bash integration/deployment-onboarding/run.sh
   disposable-vps:
     runs-on: ubuntu-latest
     timeout-minutes: 20

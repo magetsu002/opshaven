@@ -48,6 +48,12 @@ export interface DeploymentPlannerOptions {
   nonce?: () => string;
 }
 
+export interface DeploymentRevisionChoice {
+  revision: string;
+  label: string;
+  recommended: boolean;
+}
+
 interface AuditFields {
   operation: string;
   applicationId: string;
@@ -92,6 +98,11 @@ export async function requireHealthyDeploymentAudit(config: OpsHavenConfig): Pro
 function stringValue(value: unknown): string { return typeof value === "string" ? value : ""; }
 function numberValue(value: unknown): number { return typeof value === "number" && Number.isFinite(value) ? value : 0; }
 function booleanValue(value: unknown): boolean { return value === true; }
+
+function remoteSetupRequired(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : "";
+  return /unknown resource|operator capability|policy version|authorization|remote configuration|incompatible remote resource/i.test(message);
+}
 
 export class DeploymentPlanner {
   readonly registry: DeploymentRegistry;
@@ -218,6 +229,38 @@ export class DeploymentPlanner {
     return observed;
   }
 
+  async discoverRevisions(applicationId: string): Promise<DeploymentRevisionChoice[]> {
+    const app = await this.registry.get(applicationId);
+    const observed = await this.inspect(app);
+    if (observed.sourceRepositoryDirty) {
+      throw new OpsHavenError("POLICY_DENIED", "The configured application repository has uncommitted changes and cannot provide a reviewed revision.");
+    }
+
+    let revision: string;
+    try {
+      revision = validateExactRevision(observed.sourceRepositoryRevision);
+    } catch {
+      throw new OpsHavenError("POLICY_DENIED", "The configured application repository did not provide a complete Git commit SHA.");
+    }
+
+    if (revision === observed.currentRevision) {
+      throw new OpsHavenError("POLICY_DENIED", "No different verified application revision is currently available for deployment.");
+    }
+
+    const verified = await this.inspect(app, revision);
+    if (!verified.targetRevisionVerified) {
+      throw new OpsHavenError("POLICY_DENIED", "The discovered revision was not verified in the configured repository source.");
+    }
+
+    return [{
+      revision,
+      label: app.id === "sample-api"
+        ? "Recommended healthy sample revision"
+        : "Verified repository revision",
+      recommended: true,
+    }];
+  }
+
   private async planInputs(app: DeploymentApplication, revision: string): Promise<{ observed: ObservedDeploymentState; identity: string; profile: string; definitions: string }> {
     const binding = applicationBinding(this.config, app);
     const [observed, identity, profile] = await Promise.all([this.inspect(app, revision), targetIdentityDigest(binding.host), operatorProfileDigest(this.config)]);
@@ -307,19 +350,54 @@ export class DeploymentPlanner {
 
   async deploymentDoctor(): Promise<{ apps: DeploymentApplication[]; checks: { label: string; passed: boolean; detail?: string }[]; next: string }> {
     const apps = await this.registry.list();
-    if (apps.length === 0) return { apps, checks: [{ label: "Application configuration present", passed: false, detail: "No deployment application is registered" }], next: "opshaven app add" };
+    if (apps.length === 0) {
+      return {
+        apps,
+        checks: [{ label: "No application registered", passed: false, detail: "Register one supported deployment application" }],
+        next: "opshaven app add",
+      };
+    }
+
     const checks: { label: string; passed: boolean; detail?: string }[] = [];
+    let next = `opshaven deploy plan ${apps[0]?.id ?? "sample-api"}`;
+
     for (const app of apps) {
       try {
         applicationBinding(this.config, app);
-        checks.push({ label: `${app.name}: application configuration valid`, passed: true });
+        checks.push({ label: `${app.name} registered`, passed: true });
         const observed = await this.inspect(app);
+        const repositoryAvailable = /^[a-f0-9]{40}$/i.test(observed.sourceRepositoryRevision) && !observed.sourceRepositoryDirty;
+        checks.push({
+          label: `${app.name}: repository available`,
+          passed: repositoryAvailable,
+          ...(repositoryAvailable ? {} : { detail: "The configured remote Git repository did not provide a clean complete revision" }),
+        });
+
+        let verifiedRevision = false;
+        if (repositoryAvailable && observed.sourceRepositoryRevision !== observed.currentRevision) {
+          const verified = await this.inspect(app, observed.sourceRepositoryRevision);
+          verifiedRevision = verified.targetRevisionVerified;
+        }
+        checks.push({
+          label: `${app.name}: verified revision available`,
+          passed: verifiedRevision,
+          ...(verifiedRevision ? {} : { detail: "No different verified immutable revision is ready for planning" }),
+        });
         checks.push({ label: `${app.name}: remote release layout ready`, passed: observed.rollbackAvailable });
         checks.push({ label: `${app.name}: approved service available`, passed: observed.serviceActiveState === "active" });
         checks.push({ label: `${app.name}: health check reachable`, passed: observed.healthReachable && observed.healthExpected });
         checks.push({ label: `${app.name}: rollback location available`, passed: observed.rollbackAvailable });
-      } catch (error) { checks.push({ label: `${app.name}: deployment readiness`, passed: false, detail: error instanceof Error ? error.message : "verification failed safely" }); }
+      } catch (error) {
+        checks.push({
+          label: `${app.name}: deployment readiness`,
+          passed: false,
+          detail: error instanceof Error ? error.message : "verification failed safely",
+        });
+        if (remoteSetupRequired(error)) next = "opshaven setup remote";
+        else next = "opshaven doctor --debug";
+      }
     }
-    return { apps, checks, next: `opshaven deploy plan ${apps[0]?.id ?? "sample-api"} --revision <full-commit-sha>` };
+
+    return { apps, checks, next };
   }
 }
