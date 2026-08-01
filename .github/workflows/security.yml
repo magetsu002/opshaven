@@ -22,6 +22,44 @@ jobs:
       - run: node scripts/security-scan.mjs
       - run: node scripts/verify-lockfile.mjs
       - run: node scripts/verify-workflow-pins.mjs
+  setup-synchronization-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+      - run: bash integration/setup-synchronization/run.sh
+  setup-cancellation-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+      - run: bash integration/setup-cancellation/run.sh
+  remote-setup-trust-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build
+      - run: node --test dist/tests/remote-setup-trust.test.js dist/tests/remote-setup-install.test.js dist/tests/remote-setup-lifecycle.test.js
   deployment-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 15
