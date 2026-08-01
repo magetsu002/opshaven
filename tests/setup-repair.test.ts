@@ -90,7 +90,7 @@ test("clean reinstall preparation preserves evidence before clearing fixed activ
       if (this.scripts.length === 2) {
         const requestLine = script.split("\n", 1)[0] ?? "";
         const encodedRequest = /^R=json\.loads\((.+)\)$/.exec(requestLine)?.[1];
-        assert.ok(encodedRequest, "clean reinstall script must embed one canonical request");
+        if (!encodedRequest) throw new Error("clean reinstall script must embed one canonical request");
         const request = JSON.parse(JSON.parse(encodedRequest)) as { evidenceId?: unknown };
         assert.match(String(request.evidenceId), /^[a-f0-9]{32}$/);
         const generated = String(request.evidenceId);
