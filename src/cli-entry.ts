@@ -14,6 +14,8 @@ const KNOWN_COMMANDS = new Set([
   "diagnostics",
   "boundary",
   "verify-boundary",
+  "app",
+  "deploy",
   "serve",
   "validate-config",
   "verify-audit",
@@ -51,6 +53,11 @@ ${section("Start here", color)}
   doctor                   Diagnose local and remote readiness
   boundary verify          Verify the installed security boundary
 
+${section("Deploy", color)}
+  app add                  Register one supported application
+  deploy plan <app>        Create an immutable exact-revision plan
+  deploy apply <plan-id>   Apply only the stored approved plan
+
 ${section("Operate", color)}
   authorization-report     Explain the current authorization state
   endpoint expose|status   Manage reviewed endpoint handoff
@@ -76,8 +83,10 @@ ${section("Global options", color)}
 ${paint("Normal operator workflow", "info", color)}
   opshaven init
   opshaven setup remote
+  opshaven app add
+  opshaven deploy plan sample-api --revision <full-commit-sha>
+  opshaven deploy apply <plan-id>
   opshaven doctor
-  opshaven boundary verify
 
 The opshaven command is for people. MCP clients launch opshaven-mcp.
 `;
@@ -118,6 +127,8 @@ async function main(): Promise<void> {
   if (requested === "doctor" || requested === "diagnostics") {
     const { runDoctor } = await import("./operator-doctor.js");
     await runDoctor(path, commandArgs);
+    const { runDeploymentDoctor } = await import("./deployment.js");
+    await runDeploymentDoctor(path, commandArgs);
     return;
   }
 
@@ -126,6 +137,17 @@ async function main(): Promise<void> {
     throw usageError("Setup is not initialized. Operator setup is not initialized.");
   }
   if (requiresLocalConfig && path && !explicit) process.argv.push("--config", path);
+
+  if (requested === "app") {
+    const { runAppCommand } = await import("./deployment.js");
+    await runAppCommand(path, commandArgs);
+    return;
+  }
+  if (requested === "deploy") {
+    const { runDeployCommand } = await import("./deployment.js");
+    await runDeployCommand(path, commandArgs);
+    return;
+  }
 
   if ((requested === "boundary" || requested === "verify-boundary") && !flag("--setup-config") && !explicit) {
     const setupPath = await resolveSetupConfigPath(commandArgs);
