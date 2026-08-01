@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 const pkg = JSON.parse(await fs.readFile("package.json", "utf8"));
 const expectedBins = {
   opshaven: "dist/src/cli-entry.js",
-  "opshaven-mcp": "dist/src/index.js",
+  "opshaven-mcp": "dist/src/mcp-entry.js",
   "opshaven-dispatcher": "dist/src/remote/dispatcher.js",
   "opshaven-readonly-dispatcher": "dist-readonly/src/remote/read-only-dispatcher.js",
 };
@@ -15,13 +15,17 @@ if (pkg.type !== "module") failures.push("package type must be module");
 if (pkg.engines?.node !== ">=22.0.0") failures.push("Node engine must remain >=22.0.0");
 if (JSON.stringify(pkg.bin) !== JSON.stringify(expectedBins)) failures.push("package binaries do not match the supported entrypoints");
 for (const [name, file] of Object.entries(expectedBins)) {
-  const stat = await fs.stat(file).catch(() => null);
-  if (!stat?.isFile()) failures.push(`${name}: built entrypoint is missing`);
+  const stat = await fs.lstat(file).catch(() => null);
+  if (!stat?.isFile() || stat.isSymbolicLink()) failures.push(`${name}: built entrypoint is missing or unsafe`);
+  else if ((stat.mode & 0o111) === 0) failures.push(`${name}: built entrypoint is not executable`);
+  const source = await fs.readFile(file, "utf8").catch(() => "");
+  if (!source.startsWith("#!/usr/bin/env node\n")) failures.push(`${name}: built entrypoint has no supported Node.js shebang`);
 }
 if (pkg.scripts?.cli !== "node dist/src/cli-entry.js") failures.push("human CLI script must use cli-entry.js");
 if (pkg.scripts?.["dev:cli"] !== "npm run build && node dist/src/cli-entry.js") failures.push("development CLI script must build and use cli-entry.js");
 if (pkg.scripts?.["install:local"] !== "npm run build && npm link") failures.push("local installation script must build before linking the CLI");
-if (pkg.scripts?.mcp !== "node dist/src/index.js") failures.push("MCP script must use index.js");
+if (pkg.scripts?.mcp !== "node dist/src/mcp-entry.js") failures.push("MCP script must use mcp-entry.js");
+if (pkg.scripts?.["install:check"] !== "bash scripts/check-installed-cli.sh") failures.push("installed CLI lifecycle check is missing");
 if (pkg.scripts?.start !== "npm run cli -- help") failures.push("npm start must show human CLI help");
 const isolatedFiles = [
   "src/remote/read-only-dispatcher.ts",
@@ -45,5 +49,5 @@ if (failures.length) {
   console.error(failures.join("\n"));
   process.exitCode = 1;
 } else {
-  console.log("package: human CLI, local installation, protocol server, isolated target, and built entrypoints verified");
+  console.log("package: human CLI, local installation, protocol server, isolated target, and executable entrypoints verified");
 }
