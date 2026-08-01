@@ -227,6 +227,44 @@ def load_manifest(stage_root, relative_path):
     return manifest, normalized
 
 
+def installed_runtime_matches(entries):
+    if not RUNTIME_ROOT.exists() or RUNTIME_ROOT.is_symlink() or not RUNTIME_ROOT.is_dir():
+        return False
+    expected = {str(relative): (digest, executable) for relative, digest, executable in entries}
+    actual = {}
+    try:
+        for root, directories, files in os.walk(RUNTIME_ROOT, topdown=True, followlinks=False):
+            root_path = Path(root)
+            root_info = os.lstat(root_path)
+            if not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode) or root_info.st_uid != 0 or root_info.st_gid != 0 or stat.S_IMODE(root_info.st_mode) != 0o755:
+                return False
+            for directory in directories:
+                candidate = root_path / directory
+                info = os.lstat(candidate)
+                if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+                    return False
+            for name in files:
+                candidate = root_path / name
+                info = os.lstat(candidate)
+                if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_size > 16 * 1024 * 1024 or info.st_uid != 0 or info.st_gid != 0:
+                    return False
+                relative = str(candidate.relative_to(RUNTIME_ROOT))
+                actual[relative] = candidate
+                if len(actual) > 4096:
+                    return False
+    except OSError:
+        return False
+    if set(actual.keys()) != set(expected.keys()):
+        return False
+    for relative, candidate in actual.items():
+        digest, executable = expected[relative]
+        expected_mode = 0o755 if executable else 0o644
+        info = os.lstat(candidate)
+        if stat.S_IMODE(info.st_mode) != expected_mode or sha256_file(candidate) != digest:
+            return False
+    return True
+
+
 def install_runtime(stage_root, manifest_relative, receipt_id, backup_root, backups):
     manifest, entries = load_manifest(stage_root, manifest_relative)
     source_root = stage_root / "runtime"
@@ -242,7 +280,7 @@ def install_runtime(stage_root, manifest_relative, receipt_id, backup_root, back
         try:
             with open(installed_manifest, "r", encoding="utf-8") as handle:
                 current = json.load(handle)
-            if current.get("treeSha256") == manifest.get("treeSha256"):
+            if current.get("treeSha256") == manifest.get("treeSha256") and installed_runtime_matches(entries):
                 return False, manifest["treeSha256"]
         except (OSError, ValueError, AttributeError):
             pass

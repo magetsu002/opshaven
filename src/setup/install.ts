@@ -29,7 +29,7 @@ export interface RemoteInstallResult {
   readonly receiptId: string;
 }
 
-const REQUIRED_RUNTIME_FILES = [
+const COMMON_RUNTIME_FILES = [
   "src/capabilities.js",
   "src/capability-declaration.js",
   "src/config.js",
@@ -37,11 +37,28 @@ const REQUIRED_RUNTIME_FILES = [
   "src/safe-fs.js",
   "src/remote/authenticated-protocol.js",
   "src/remote/confinement.js",
+  "src/remote/runner.js",
+] as const;
+
+const CONTROLLED_RUNTIME_FILES = [
+  ...COMMON_RUNTIME_FILES,
+  "src/approval.js",
+  "src/audit.js",
+  "src/canonical.js",
+  "src/policy.js",
+  "src/redaction.js",
+  "src/remote/dispatcher.js",
+  "src/remote/handlers.js",
+  "src/remote/mutations.js",
+  "src/remote/protocol.js",
+] as const;
+
+const READ_ONLY_RUNTIME_FILES = [
+  ...COMMON_RUNTIME_FILES,
   "src/remote/read-only-dispatcher.js",
   "src/remote/read-only-handlers.js",
   "src/remote/read-only-policy.js",
   "src/remote/read-only-protocol.js",
-  "src/remote/runner.js",
 ] as const;
 
 function relativePath(root: string, filePath: string): string {
@@ -68,38 +85,44 @@ function canonicalManifestFiles(files: readonly RuntimeManifestEntry[]): string 
 }
 
 async function readRuntimeFile(filePath: string): Promise<Uint8Array> {
-  return await readRegularFile(filePath, "Read-only runtime file", { maxBytes: 33554432, code: "POLICY_DENIED" });
+  return await readRegularFile(filePath, "Reviewed runtime file", { maxBytes: 33554432, code: "POLICY_DENIED" });
 }
 
 export async function buildRuntimeManifest(runtimeRoot: string): Promise<RuntimeManifest> {
   const rootStat = await fs.lstat(runtimeRoot);
-  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new OpsHavenError("POLICY_DENIED", "Read-only runtime root must be a real directory.");
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new OpsHavenError("POLICY_DENIED", "Reviewed runtime root must be a real directory.");
   const fullPaths = (await collectFiles(runtimeRoot)).sort();
   const entries: RuntimeManifestEntry[] = [];
   let totalBytes = 0;
   for (const fullPath of fullPaths) {
     const bytes = await readRuntimeFile(fullPath);
     totalBytes += bytes.length;
-    if (totalBytes > 33554432) throw new OpsHavenError("OUTPUT_LIMIT", "Read-only runtime exceeds the reviewed size limit.");
+    if (totalBytes > 33554432) throw new OpsHavenError("OUTPUT_LIMIT", "Reviewed runtime exceeds the size limit.");
     const relative = relativePath(runtimeRoot, fullPath);
-    entries.push(Object.freeze({ path: relative, sha256: createHash("sha256").update(bytes).digest("hex"), executable: relative === "src/remote/read-only-dispatcher.js" }));
+    const executable = relative === "src/remote/dispatcher.js" || relative === "src/remote/read-only-dispatcher.js";
+    entries.push(Object.freeze({ path: relative, sha256: createHash("sha256").update(bytes).digest("hex"), executable }));
   }
   const available = new Set(entries.map((item) => item.path));
-  for (const required of REQUIRED_RUNTIME_FILES) if (!available.has(required)) throw new OpsHavenError("POLICY_DENIED", `Read-only runtime is incomplete: ${required} is missing.`);
+  const required = available.has("src/remote/dispatcher.js") ? CONTROLLED_RUNTIME_FILES : READ_ONLY_RUNTIME_FILES;
+  for (const file of required) if (!available.has(file)) throw new OpsHavenError("POLICY_DENIED", `Reviewed runtime is incomplete: ${file} is missing.`);
   const files = Object.freeze(entries);
   return Object.freeze({ version: 1, files, treeSha256: createHash("sha256").update(canonicalManifestFiles(files)).digest("hex") });
 }
 
 export function renderReadonlyWrapper(template: string, nodePath: string, runtimeRoot: string): string {
   for (const required of ["--no-new-privs", "--inh-caps=-all", "--ambient-caps=-all", "--reset-env"]) {
-    if (!template.includes(required)) throw new OpsHavenError("POLICY_DENIED", `Read-only wrapper template is missing ${required}.`);
+    if (!template.includes(required)) throw new OpsHavenError("POLICY_DENIED", `Forced-command wrapper template is missing ${required}.`);
   }
-  if (template.includes("--bounding-set")) throw new OpsHavenError("POLICY_DENIED", "Read-only wrapper template contains the incompatible bounding-set transition.");
+  if (template.includes("--bounding-set")) throw new OpsHavenError("POLICY_DENIED", "Forced-command wrapper template contains the incompatible bounding-set transition.");
   if (!/^\/[A-Za-z0-9._/+-]+$/.test(nodePath) || !/^\/[A-Za-z0-9._/+-]+$/.test(runtimeRoot)) throw new OpsHavenError("CONFIG_INVALID", "Resolved wrapper paths are invalid.");
-  const dispatcher = `${runtimeRoot}/src/remote/read-only-dispatcher.js`;
+  const controlledPlaceholder = "/usr/lib/opshaven/dispatcher.js";
+  const readOnlyPlaceholder = "/usr/lib/opshaven/read-only-dispatcher.js";
+  const controlled = template.includes(controlledPlaceholder);
+  const placeholder = controlled ? controlledPlaceholder : readOnlyPlaceholder;
+  const dispatcher = controlled ? `${runtimeRoot}/src/remote/dispatcher.js` : `${runtimeRoot}/src/remote/read-only-dispatcher.js`;
   let rendered = template.replace("/usr/bin/node", nodePath);
-  rendered = rendered.replace("/usr/lib/opshaven/read-only-dispatcher.js", dispatcher);
-  if (!rendered.includes(`${nodePath} ${dispatcher}`)) throw new OpsHavenError("POLICY_DENIED", "Read-only wrapper template did not contain the fixed executable placeholders.");
+  rendered = rendered.replace(placeholder, dispatcher);
+  if (!rendered.includes(`${nodePath} ${dispatcher}`)) throw new OpsHavenError("POLICY_DENIED", "Forced-command wrapper template did not contain the fixed executable placeholders.");
   return rendered.endsWith("\n") ? rendered : `${rendered}\n`;
 }
 
@@ -147,6 +170,9 @@ export async function installRestrictedRuntime(
   const remotePolicyPath = `${config.policyConfigPath}.dispatcher.json`;
   await loadConfig(remotePolicyPath);
   const manifest = await buildRuntimeManifest(config.local.runtimeRoot);
+  const dispatcherRelative = relativePath(config.local.runtimeRoot, config.local.dispatcherPath);
+  const dispatcherEntry = manifest.files.find((item) => item.path === dispatcherRelative);
+  if (!dispatcherEntry || dispatcherRelative !== "src/remote/dispatcher.js") throw new OpsHavenError("POLICY_DENIED", "Remote setup requires the reviewed controlled dispatcher artifact.");
   const receiptId = randomBytes(16).toString("hex");
   const stageRoot = await fs.mkdtemp(path.join(tmpdir(), `opshaven-setup-${receiptId}-`));
   const remoteStage = `/tmp/${path.basename(stageRoot)}`;
@@ -154,7 +180,7 @@ export async function installRestrictedRuntime(
     const stageRuntime = path.join(stageRoot, "runtime");
     await fs.mkdir(stageRuntime, { recursive: true, mode: 0o700 });
     await copyRuntime(config.local.runtimeRoot, stageRuntime, manifest);
-    const wrapperTemplate = await readRegularTextFile(config.local.wrapperTemplatePath, "Read-only wrapper template", { maxBytes: 65536, code: "POLICY_DENIED" });
+    const wrapperTemplate = await readRegularTextFile(config.local.wrapperTemplatePath, "Forced-command wrapper template", { maxBytes: 65536, code: "POLICY_DENIED" });
     const wrapper = renderReadonlyWrapper(wrapperTemplate, preflight.nodePath, config.remote.runtimeRoot);
     const restrictedKey = await readRegularTextFile(config.local.restrictedAuthorizedKeyFile, "Restricted SSH public key", { maxBytes: 16384, code: "POLICY_DENIED" });
     const authorizedKey = buildRestrictedAuthorizedKey(restrictedKey, config.remote.wrapperPath, config.remote.configPath);

@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+command="${1:-}"
+unit="${2:-}"
+case "$unit" in
+  sample-api.service|sample-worker.service) ;;
+  *)
+    printf '%s\n' "unknown fixture service" >&2
+    exit 5
+    ;;
+esac
+case "$command" in
+  show)
+    cat <<EOF
+Id=$unit
+LoadState=loaded
+ActiveState=active
+SubState=running
+MainPID=4242
+ExecMainStatus=0
+ActiveEnterTimestamp=Sat 2026-08-01 00:00:00 UTC
+EOF
+    ;;
+  restart)
+    ;;
+  is-active)
+    printf '%s\n' active
+    ;;
+  *)
+    printf '%s\n' "unsupported fixture systemctl command" >&2
+    exit 2
+    ;;
+esac

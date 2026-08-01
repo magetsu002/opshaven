@@ -48,10 +48,28 @@ function safeRemoteError(value: unknown): { code: string; message: string } | nu
   return { code, message };
 }
 
+async function signedDenial(
+  host: HostResource,
+  request: RemoteRequest,
+  trust: Awaited<ReturnType<typeof loadClientProtocolContext>>,
+  expectedCodes: readonly string[],
+): Promise<{ passed: boolean; detail: string }> {
+  const created = createAuthenticatedRequest(request, trust.capability, trust.requestPrivateKey);
+  const wire = await runSsh(host, `${JSON.stringify(created.envelope)}\n`);
+  try {
+    const response = verifyAuthenticatedResponse(JSON.parse(wire.stdout) as unknown, created.requestHash, request.requestId, trust.capability, trust.responsePublicKey);
+    if (response.ok) return { passed: false, detail: "request unexpectedly succeeded" };
+    return { passed: expectedCodes.includes(response.error.code), detail: `signed ${response.error.code}` };
+  } catch {
+    return { passed: false, detail: `response verification failed (ssh=${wire.code ?? "unknown"})` };
+  }
+}
+
 export async function verifyBoundary(config: OpsHavenConfig, configPath: string, mode: "controlled" | "read-only" = "controlled"): Promise<BoundaryReport> {
   const host = selectedHost(config);
   const assertions: BoundaryAssertion[] = [];
   const trust = await loadClientProtocolContext(config, configPath, mode);
+  assertions.push(assertion("dispatcher mode matches expected", trust.capability.payload.mode === mode, `expected ${mode}, installed ${trust.capability.payload.mode}`));
   for (const [name, command] of [["interactive shell denied", "/bin/sh"], ["arbitrary SSH commands denied", "id"], ["sudo unavailable", "sudo -n true"], ["write access denied", "touch /tmp/opshaven-boundary-write"], ["Docker socket unavailable", "docker version"]] as const) {
     const result = await runSsh(host, "", command);
     assertions.push(assertion(name, deniedOriginal(result), "forced-command policy denial"));
@@ -79,23 +97,45 @@ export async function verifyBoundary(config: OpsHavenConfig, configPath: string,
     ["unknown resource denied", { ...baseRequest, requestId: "boundary-unknown-resource", resourceId: "host.unknown", args: { resourceId: "host.unknown" } }, "UNKNOWN_RESOURCE"],
   ] as const;
   for (const [name, request, expectedCode] of denialCases) {
-    const created = createAuthenticatedRequest(request as RemoteRequest, trust.capability, trust.requestPrivateKey);
-    const wire = await runSsh(host, `${JSON.stringify(created.envelope)}\n`);
-    let passed = false;
-    let detail = `expected signed ${expectedCode}`;
-    try {
-      const response = verifyAuthenticatedResponse(JSON.parse(wire.stdout) as unknown, created.requestHash, request.requestId, trust.capability, trust.responsePublicKey);
-      if (!response.ok) {
-        passed = response.error.code === expectedCode;
-        detail = `signed ${response.error.code}`;
-      }
-    } catch { passed = false; }
-    assertions.push(assertion(name, passed, detail));
+    const result = await signedDenial(host, request as RemoteRequest, trust, [expectedCode]);
+    assertions.push(assertion(name, result.passed, result.detail));
   }
-  let readOnlyUnavailable = false;
-  try { new ReadOnlyPolicyEngine(config).resolve("restart_service", { resourceId: host.id, dryRun: false }); }
-  catch (error) { readOnlyUnavailable = error instanceof OpsHavenError && error.code === "UNKNOWN_OPERATION"; }
-  assertions.push(assertion("read-only mutations unavailable", readOnlyUnavailable, "operation absent from isolated policy table"));
+
+  if (mode === "read-only") {
+    let readOnlyUnavailable = false;
+    try { new ReadOnlyPolicyEngine(config).resolve("restart_service", { resourceId: host.id, dryRun: false }); }
+    catch (error) { readOnlyUnavailable = error instanceof OpsHavenError && error.code === "UNKNOWN_OPERATION"; }
+    assertions.push(assertion("read-only mutations unavailable", readOnlyUnavailable, "operation absent from isolated policy table"));
+  } else {
+    const deployments = [...config.resources.values()].filter((resource) => resource.kind === "deployment");
+    const services = [...config.resources.values()].filter((resource) => resource.kind === "service");
+    const applications = [...config.resources.values()].filter((resource) => resource.kind === "application");
+    const allowed = trust.capability.payload.allowedResources;
+    const deploymentScopeValid = deployments.every((resource) => (allowed.deploy_commit ?? []).includes(resource.id) && (allowed.rollback_deployment ?? []).includes(resource.id));
+    const serviceScopeValid = services.every((resource) => (allowed.restart_service ?? []).includes(resource.id));
+    assertions.push(assertion("deployment capability digest matches", trust.capability.payload.mode === "controlled", "signed controlled capability verified against dispatcher hash"));
+    assertions.push(assertion("registered application resources authorized", deploymentScopeValid && serviceScopeValid, `${applications.length} applications, ${deployments.length} deployment resources`));
+    const unregisteredDenied = !(allowed.restart_service ?? []).includes("service.unregistered") && !(allowed.deploy_commit ?? []).includes("deployment.unregistered");
+    assertions.push(assertion("unregistered services and paths denied", unregisteredDenied, "unregistered logical resources absent from capability scope"));
+    if (deployments[0]) {
+      const request: RemoteRequest = {
+        version: 1,
+        requestId: "boundary-unapproved-deploy",
+        operation: "deploy_commit",
+        resourceId: deployments[0].id,
+        args: { resourceId: deployments[0].id, commit: "0".repeat(40), dryRun: false },
+        limits: { ...config.limits },
+      };
+      const denied = await signedDenial(host, request, trust, ["POLICY_DENIED", "APPROVAL_REQUIRED", "APPROVAL_INVALID"]);
+      assertions.push(assertion("deployment mutations require exact approved plans", denied.passed, denied.detail));
+    } else {
+      const noMutationScope = (trust.capability.payload.allowedResources.deploy_commit ?? []).length === 0
+        && (trust.capability.payload.allowedResources.rollback_deployment ?? []).length === 0;
+      assertions.push(assertion("deployment mutations require exact approved plans", noMutationScope, "no deployment mutation resources are authorized"));
+    }
+    assertions.push(assertion("arbitrary write operations unavailable", assertions.some((item) => item.name === "write access denied" && item.passed), "no generic write operation exists"));
+  }
+
   const replay = await runSsh(host, `${JSON.stringify(valid.envelope)}\n`);
   let replayDenied = false;
   try { const parsed = JSON.parse(replay.stdout) as Record<string, unknown>; replayDenied = parsed.ok === false && (parsed.error as Record<string, unknown> | undefined)?.code === "REMOTE_PROTOCOL_INVALID"; }

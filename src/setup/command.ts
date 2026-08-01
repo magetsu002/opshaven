@@ -4,6 +4,7 @@ import { endpointStatus, exposeEndpoint } from "./endpoint.js";
 import { executeRemoteSetup } from "./engine.js";
 import { buildRemoteSetupPlan, formatRemoteSetupPlan, loadRemoteSetupConfig } from "./remote.js";
 import { rollbackRemoteSetup, uninstallRemoteSetup } from "./rollback.js";
+import { prepareRemoteState } from "./state.js";
 
 function value(args: readonly string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -33,16 +34,31 @@ export async function runRemoteSetup(args: readonly string[]): Promise<void> {
     process.stdout.write(`${JSON.stringify(receipt, null, json ? 0 : 2)}\n`);
     return;
   }
-  const plan = buildRemoteSetupPlan(config);
+  const inspectionStarted = Date.now();
+  let comparison;
+  try {
+    comparison = await prepareRemoteState(config);
+  } catch (error) {
+    if (!args.includes("--dry-run")) throw error;
+    comparison = undefined;
+  }
+  const plan = buildRemoteSetupPlan(config, comparison);
   if (args.includes("--dry-run")) {
     process.stdout.write(json ? `${JSON.stringify(plan)}\n` : formatRemoteSetupPlan(plan));
     return;
   }
+  if (plan.changeType === "REPAIR_REQUIRED") {
+    throw new OpsHavenError("POLICY_DENIED", "Remote state cannot be synchronized safely. The installed runtime identity is incomplete or inconsistent. No changes were made.");
+  }
+  const controller = new AbortController();
+  process.on("SIGINT", () => controller.abort());
   await executeRemoteSetup(config, plan, {
     nonInteractive: args.includes("--non-interactive"),
     tui: args.includes("--tui"),
     approved: args.includes("--approve"),
     json,
+    signal: controller.signal,
+    initialTimings: { installedStateInspection: Date.now() - inspectionStarted },
   });
 }
 
@@ -60,11 +76,6 @@ export async function runEndpointHandoff(args: readonly string[]): Promise<void>
     return;
   }
   if (operation !== "expose") throw new OpsHavenError("CONFIG_INVALID", "Endpoint operation must be expose or status.");
-  const receipt = await exposeEndpoint(
-    config,
-    required(args, "--endpoint-config"),
-    required(args, "--external-url"),
-    args.includes("--verify-external"),
-  );
+  const receipt = await exposeEndpoint(config, required(args, "--endpoint-config"), required(args, "--external-url"), args.includes("--verify-external"));
   process.stdout.write(`${JSON.stringify(receipt, null, args.includes("--json") ? 0 : 2)}\n`);
 }

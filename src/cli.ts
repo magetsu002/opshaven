@@ -11,6 +11,7 @@ import { loadRemoteTrust, remoteMcpUrl } from "./remote-mcp/report.js";
 import { certifyRemoteBoundary } from "./setup/certify.js";
 import { runEndpointHandoff, runRemoteSetup, runRemoteUninstall } from "./setup/command.js";
 import { loadRemoteSetupConfig } from "./setup/remote.js";
+import { compatibilityDetails, prepareRemoteState } from "./setup/state.js";
 import { buildTrustReport, formatTrustReport } from "./trust-report.js";
 
 function flag(name: string): string | undefined {
@@ -109,8 +110,60 @@ async function main(): Promise<void> {
   if (selected === "verify-boundary") {
     const setupPath = flag("--setup-config");
     if (setupPath) {
-      const receipt = await certifyRemoteBoundary(await loadRemoteSetupConfig(setupPath));
-      process.stdout.write(process.argv.includes("--json") ? `${JSON.stringify(receipt)}\n` : `${receipt.assertions.map((item) => `${item.passed ? "PASS" : "FAIL"}  ${item.name}: ${item.detail}`).join("\n")}\nBoundary certification passed.\n`);
+      const setup = await loadRemoteSetupConfig(setupPath);
+      const receipt = await certifyRemoteBoundary(setup);
+      const canonical = await prepareRemoteState(setup);
+      const desired = canonical.desired;
+      const installed = canonical.installed;
+      const canonicalAssertions = [
+        {
+          name: "canonical runtime identity matches",
+          passed: installed.sourceSha === desired.sourceSha && installed.runtimeSha256 === desired.runtimeSha256,
+          detail: installed.sourceSha === desired.sourceSha && installed.runtimeSha256 === desired.runtimeSha256 ? "runtime version and artifact digest match" : canonical.reasons.join("; "),
+        },
+        {
+          name: "canonical dispatcher identity matches",
+          passed: installed.dispatcherMode === desired.dispatcherMode && installed.dispatcherSha256 === desired.dispatcherSha256,
+          detail: installed.dispatcherMode === desired.dispatcherMode && installed.dispatcherSha256 === desired.dispatcherSha256 ? "capability-scoped controlled dispatcher verified" : canonical.reasons.join("; "),
+        },
+        {
+          name: "canonical authorization identity matches",
+          passed: installed.policyVersion === desired.policyVersion
+            && installed.policySha256 === desired.policySha256
+            && installed.capabilityIdentitySha256 === desired.capabilityIdentitySha256
+            && installed.operatorVerificationIdentity === desired.operatorVerificationIdentity,
+          detail: installed.policyVersion === desired.policyVersion
+            && installed.policySha256 === desired.policySha256
+            && installed.capabilityIdentitySha256 === desired.capabilityIdentitySha256
+            && installed.operatorVerificationIdentity === desired.operatorVerificationIdentity
+            ? "policy, capability, and operator verification identities match"
+            : canonical.reasons.join("; "),
+        },
+        {
+          name: "canonical application declaration matches",
+          passed: installed.declarationSha256 === desired.declarationSha256,
+          detail: installed.declarationSha256 === desired.declarationSha256 ? "reviewed declaration digest matches" : canonical.reasons.join("; "),
+        },
+        {
+          name: "canonical application scope matches",
+          passed: installed.applicationScopeSha256 === desired.applicationScopeSha256,
+          detail: installed.applicationScopeSha256 === desired.applicationScopeSha256 ? `${desired.applicationScope.length} registered application scopes verified` : canonical.reasons.join("; "),
+        },
+        {
+          name: "canonical deployment readiness matches doctor",
+          passed: canonical.compatible,
+          detail: canonical.compatible ? "doctor and boundary verification consume the same installed-state model" : canonical.reasons.join("; "),
+        },
+      ];
+      const report = {
+        ok: receipt.ok && canonicalAssertions.every((item) => item.passed),
+        checkedAt: receipt.certifiedAt,
+        assertions: [...receipt.assertions, ...canonicalAssertions],
+      };
+      process.stdout.write(process.argv.includes("--json")
+        ? `${JSON.stringify({ ...report, canonicalState: compatibilityDetails(canonical) })}\n`
+        : formatBoundaryReport(report));
+      process.exitCode = report.ok ? 0 : 1;
       return;
     }
     const base = await verifyBoundary(config, path, selectedMode());

@@ -37,6 +37,11 @@ function configPath(argv: readonly string[]): string {
   return argv[3];
 }
 
+function parseEnvelope(raw: string): unknown {
+  try { return JSON.parse(raw) as unknown; }
+  catch { throw new OpsHavenError("REMOTE_PROTOCOL_INVALID", "Authenticated request envelope is not valid JSON."); }
+}
+
 function failure(requestId: string, startedAt: string, error: unknown): RemoteFailure {
   const safe = asOpsHavenError(error);
   return {
@@ -66,7 +71,7 @@ export async function dispatch(
     const responsePrivateKey = await readRegularFile(responsePrivateKeyPath(trustedConfigPath), "Response signing key", { maxBytes: 65536, code: "POLICY_DENIED" });
     const raw = await readBoundedInput();
     if (raw.split(/\r?\n/).filter(Boolean).length !== 1) throw new OpsHavenError("REMOTE_PROTOCOL_INVALID", "Exactly one authenticated request envelope is required.");
-    const verified = await verifyAuthenticatedRequest(JSON.parse(raw) as unknown, capability, requestPublicKey, requestReplayDirectory(config));
+    const verified = await verifyAuthenticatedRequest(parseEnvelope(raw), capability, requestPublicKey, requestReplayDirectory(config));
     requestId = verified.request.requestId;
     let response: RemoteResponse;
     try {
