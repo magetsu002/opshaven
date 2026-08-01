@@ -94,6 +94,24 @@ test("failed deployment health verification restores prior activation", async ()
   assert.ok(ledger.includes('"status":"failed"'));
 });
 
+test("deployment command failures retain a safe stage without command payloads", async () => {
+  const { root, commit, config, target, runner } = await fixture(true);
+  await installCurrent(root, target.currentSymlink);
+  const failing: CommandRunner = {
+    async run(executable, args, options) {
+      if (args.includes("worktree")) return { exitCode: 1, stdout: "synthetic private command output" };
+      return await runner.run(executable, args, options);
+    },
+  };
+  await assert.rejects(
+    new DeploymentManager(config, failing).deploy(target, { resourceId: "dep.web", commit, dryRun: false }, config.limits),
+    (error: unknown) => error instanceof OpsHavenError
+      && error.message === "Deployment release preparation failed safely."
+      && !error.message.includes("synthetic private command output")
+      && !error.message.includes(target.repositoryPath),
+  );
+});
+
 test("current release cannot escape through a nested symlink", async () => {
   const { root, config, target, runner } = await fixture();
   const outside = path.join(root, "outside");
