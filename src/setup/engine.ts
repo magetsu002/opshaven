@@ -21,8 +21,18 @@ import {
 } from "./state.js";
 import { provisionRemoteTrust, synchronizeRemoteTrust, type RemoteTrustReceipt } from "./trust.js";
 
+export type RemoteSetupOutcome =
+  | "SETUP_SUCCEEDED"
+  | "SETUP_NO_CHANGE"
+  | "SETUP_FAILED_NO_MUTATION"
+  | "SETUP_FAILED_ROLLED_BACK"
+  | "SETUP_FAILED_ROLLBACK_FAILED"
+  | "SETUP_CANCELLED_NO_MUTATION"
+  | "SETUP_CANCELLED_ROLLED_BACK";
+
 export interface SetupTimings { readonly [phase: string]: number }
 export interface RemoteSetupLifecycleReceipt extends SetupReceipt {
+  readonly outcome: "SETUP_SUCCEEDED" | "SETUP_NO_CHANGE";
   readonly changeType?: RemoteSetupChangeType;
   readonly timings?: SetupTimings;
   readonly preflight?: RemoteSetupPreflightReport;
@@ -67,8 +77,16 @@ const DEFAULT_DEPENDENCIES: RemoteSetupEngineDependencies = Object.freeze({
 
 function isMutating(changeType: RemoteSetupChangeType): boolean { return changeType !== "NO_CHANGE" && changeType !== "REPAIR_REQUIRED"; }
 function requiresRuntime(changeType: RemoteSetupChangeType): boolean { return changeType === "FULL_INSTALL" || changeType === "RUNTIME_UPDATE" || changeType === "DISPATCHER_UPDATE"; }
-function requiresAuthorizationOnly(changeType: RemoteSetupChangeType): boolean { return changeType === "AUTHORIZATION_ONLY" || changeType === "APPLICATION_DECLARATION_ONLY"; }
-function checkCancellation(signal: AbortSignal | undefined, mutationStarted: boolean): void { if (signal?.aborted) throw new OpsHavenError("CANCELLED", mutationStarted ? "Remote setup cancellation was requested after mutation began." : "Remote setup was cancelled before mutation.", false, { mutationStarted }); }
+function requiresAuthorizationOnly(changeType: RemoteSetupChangeType): boolean {
+  return changeType === "AUTHORIZATION_ONLY" || changeType === "APPLICATION_DECLARATION_ONLY" || changeType === "AUTHORIZATION_AND_DECLARATION";
+}
+function checkCancellation(signal: AbortSignal | undefined, mutationStarted: boolean): void {
+  if (signal?.aborted) throw new OpsHavenError("CANCELLED", mutationStarted ? "Remote setup cancellation was requested after mutation began." : "Remote setup was cancelled before mutation.", false, { mutationStarted });
+}
+function setupFailure(error: unknown, outcome: RemoteSetupOutcome, details: Record<string, unknown> = {}): OpsHavenError {
+  const source = error instanceof OpsHavenError ? error : new OpsHavenError("INTERNAL_ERROR", error instanceof Error ? error.message : "The operation failed safely.");
+  return new OpsHavenError(source.code, source.message, source.retryable, Object.freeze({ ...(source.safeDetails ?? {}), setupOutcome: outcome, ...details }));
+}
 
 async function timed<T>(presenter: SetupPresenter, timings: Record<string, number>, phase: string, progressId: string, detail: string, work: () => Promise<T>): Promise<T> {
   const started = Date.now();
@@ -99,8 +117,8 @@ export async function executeRemoteSetup(config: RemoteSetupConfig, plan: Remote
   presenter.plan(plan);
   presenter.fingerprint("SSH host key", config.target.expectedHostKeySha256);
   presenter.fingerprint("source head", config.expectedSourceSha);
-  if (plan.changeType === "REPAIR_REQUIRED") throw new OpsHavenError("POLICY_DENIED", "Remote state cannot be synchronized safely. The installed runtime identity is incomplete or inconsistent. No changes were made.");
-  if (isMutating(plan.changeType) && !(await presenter.approve("Apply the exact reviewed remote changes above?"))) throw new OpsHavenError("POLICY_DENIED", "Remote setup was not explicitly approved.");
+  if (plan.changeType === "REPAIR_REQUIRED") throw setupFailure(new OpsHavenError("POLICY_DENIED", "Remote state cannot be synchronized safely. The installed runtime identity is incomplete or inconsistent. No changes were made."), "SETUP_FAILED_NO_MUTATION");
+  if (isMutating(plan.changeType) && !(await presenter.approve("Apply the exact reviewed remote changes above?"))) throw setupFailure(new OpsHavenError("POLICY_DENIED", "Remote setup was not explicitly approved."), "SETUP_FAILED_NO_MUTATION");
 
   const startedAt = new Date().toISOString();
   let mutationStarted = false;
@@ -131,7 +149,7 @@ export async function executeRemoteSetup(config: RemoteSetupConfig, plan: Remote
       if (!dependencies.synchronize) throw new OpsHavenError("INTERNAL_ERROR", "Authorization synchronization is unavailable.");
       mutationStarted = true;
       presenter.step("runtime-install", "vps", "skipped", "existing runtime verified and reused");
-      presenter.step("trust", "local", "pending", "updating only changed signed authorization state");
+      presenter.step("trust", "local", "pending", plan.changeType === "APPLICATION_DECLARATION_ONLY" ? "updating only reviewed application declaration state" : "updating only changed signed authorization state");
       trust = await timed(presenter, timings, "authorizationSynchronization", "trust", "uploading one authorization generation", async () => await dependencies.synchronize?.(config, desired) as RemoteTrustReceipt);
     } else {
       presenter.step("preflight", "local", "skipped", "verified installed state already available");
@@ -158,6 +176,7 @@ export async function executeRemoteSetup(config: RemoteSetupConfig, plan: Remote
       canonicalState = await timed(presenter, timings, "readinessVerification", "readiness", "recording the verified synchronization generation", async () => await dependencies.readiness?.(config, desired, boundary) as RemoteStateComparison);
     }
     if (canonicalState && !canonicalState.compatible) throw new OpsHavenError("POLICY_DENIED", "Remote setup postconditions did not reach deployment-ready state.", false, { changeType: canonicalState.changeType, expectedMode: canonicalState.desired.dispatcherMode, observedMode: canonicalState.installed.dispatcherMode ?? "unknown" });
+    checkCancellation(options.signal, mutationStarted);
     presenter.step("readiness", "vps", "passed", "runtime, dispatcher, authorization, policy, and application scope match");
   } catch (error) {
     const cancelled = error instanceof OpsHavenError && error.code === "CANCELLED";
@@ -165,15 +184,31 @@ export async function executeRemoteSetup(config: RemoteSetupConfig, plan: Remote
     let restored = false;
     if (mutationStarted) {
       presenter.step("rollback", "vps", "pending", "restoring the previous verified synchronization generation");
-      try { const rollback = await dependencies.rollback(config); restored = true; presenter.step("rollback", "vps", "rolled-back", `${rollback.restored.length} restored, ${rollback.removed.length} removed`); }
-      catch (rollbackError) { presenter.step("rollback", "vps", "failed", "automatic rollback failed; recovery requires operator attention"); if (cancelled) presenter.cancellation?.(true, false); throw new OpsHavenError("POLICY_DENIED", `Remote setup failed and rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : "unknown rollback failure"}.`); }
+      try {
+        const rollback = await dependencies.rollback(config);
+        restored = true;
+        presenter.step("rollback", "vps", "rolled-back", `${rollback.restored.length} restored, ${rollback.removed.length} removed`);
+      } catch (rollbackError) {
+        presenter.step("rollback", "vps", "failed", "automatic rollback failed; recovery requires operator attention");
+        if (cancelled) presenter.cancellation?.(true, false);
+        throw setupFailure(
+          new OpsHavenError("POLICY_DENIED", `Remote setup failed and rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : "unknown rollback failure"}.`),
+          "SETUP_FAILED_ROLLBACK_FAILED",
+          { mutationStarted: true, rollbackCompleted: false },
+        );
+      }
     }
     if (cancelled) presenter.cancellation?.(mutationStarted, restored);
-    throw error;
+    const outcome: RemoteSetupOutcome = cancelled
+      ? mutationStarted ? "SETUP_CANCELLED_ROLLED_BACK" : "SETUP_CANCELLED_NO_MUTATION"
+      : mutationStarted ? "SETUP_FAILED_ROLLED_BACK" : "SETUP_FAILED_NO_MUTATION";
+    throw setupFailure(error, outcome, { mutationStarted, rollbackCompleted: restored, rerunSafe: !mutationStarted || restored });
   }
 
+  const outcome = plan.changeType === "NO_CHANGE" ? "SETUP_NO_CHANGE" : "SETUP_SUCCEEDED";
   const receipt: RemoteSetupLifecycleReceipt = Object.freeze({
     version: 1,
+    outcome,
     receiptId: trust?.receiptId ?? installation?.receiptId ?? `verify${randomBytes(8).toString("hex")}`,
     sourceSha: config.expectedSourceSha,
     target: plan.target,
