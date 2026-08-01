@@ -20,6 +20,8 @@ cleanup() {
   rm -rf "$GEN"
 }
 trap cleanup EXIT
+milliseconds() { node -e 'process.stdout.write(String(Date.now()))'; }
+elapsed() { printf '%s' "$(( $(milliseconds) - $1 ))"; }
 
 npm ci --ignore-scripts --no-audit --no-fund
 npm run build
@@ -38,6 +40,8 @@ chmod 644 "$GEN/known_hosts"
 FINGERPRINT="$(ssh-keygen -lf "$GEN/known_hosts" -E sha256 | awk 'NR==1 {print $2}')"
 [[ "$FINGERPRINT" == SHA256:* ]]
 SOURCE_SHA="$(git -C "$ROOT" rev-parse HEAD)"
+API_REVISION="$(docker exec "$CONTAINER" git -C /srv/opshaven-fixtures/sample-api/repository rev-parse HEAD)"
+[[ "$API_REVISION" =~ ^[0-9a-f]{40}$ ]]
 
 CLI=(node "$ROOT/dist/src/cli-entry.js")
 export HOME="$GEN/home"
@@ -56,17 +60,32 @@ install -d -m 700 "$HOME"
   --source-sha "$SOURCE_SHA" \
   > "$GEN/init.txt"
 grep -q 'Local authorization keys prepared' "$GEN/init.txt"
-grep -q 'opshaven setup remote' "$GEN/init.txt"
+grep -q 'opshaven app add' "$GEN/init.txt"
 ! grep -Eq 'PRIVATE KEY|BEGIN [A-Z ]+ KEY|operator-private|approval-secret' "$GEN/init.txt"
 
+"${CLI[@]}" app add \
+  --non-interactive --approve --json \
+  --id sample-api --name 'Sample API' --target host.primary \
+  --repository /srv/opshaven-fixtures/sample-api/repository \
+  --releases /srv/opshaven-fixtures/sample-api/releases \
+  --service sample-api.service \
+  --health-check http://127.0.0.1:3000/health \
+  > "$GEN/app-api.json"
+node -e 'const x=require(process.argv[1]); if(!x.ok || x.application?.id!=="sample-api") process.exit(1)' "$GEN/app-api.json"
+
+FULL_STARTED="$(milliseconds)"
 "${CLI[@]}" setup remote --non-interactive --approve --json > "$GEN/first.json"
-node -e 'const x=require(process.argv[1]); if(!x.certified || !x.installation.changed.length || !x.boundary.assertions.every(v=>v.passed)) process.exit(1)' "$GEN/first.json"
+FULL_MS="$(elapsed "$FULL_STARTED")"
+node -e 'const x=require(process.argv[1]); if(!x.certified || x.outcome!=="SETUP_SUCCEEDED" || x.changeType!=="FULL_INSTALL" || !x.installation?.changed?.length || !x.boundary.assertions.every(v=>v.passed) || !x.canonicalState?.compatible) process.exit(1)' "$GEN/first.json"
+FULL_GENERATION="$(node -e 'process.stdout.write(String(require(process.argv[1]).canonicalState.installed.generation))' "$GEN/first.json")"
+[[ "$FULL_MS" -lt 180000 ]]
 
 "${CLI[@]}" doctor --json > "$GEN/doctor.json"
 node -e 'const x=require(process.argv[1]); if(!x.ok || x.state!=="READY" || x.blocked.length) process.exit(1)' "$GEN/doctor.json"
-
 "${CLI[@]}" boundary verify --json > "$GEN/boundary.json"
-node -e 'const x=require(process.argv[1]); if(!x.ok || !x.assertions.every(v=>v.passed)) process.exit(1)' "$GEN/boundary.json"
+node -e 'const x=require(process.argv[1]); if(!x.ok || !x.assertions.every(v=>v.passed) || !x.canonicalState || x.canonicalState.result!=="compatible") process.exit(1)' "$GEN/boundary.json"
+"${CLI[@]}" deploy plan sample-api --revision "$API_REVISION" --json > "$GEN/plan.json"
+node -e 'const x=require(process.argv[1]); if(!x.ok || !x.planId?.startsWith("sha256:") || x.plan?.targetRevision!==process.argv[2]) process.exit(1)' "$GEN/plan.json" "$API_REVISION"
 
 SSH_RESTRICTED=(ssh -p "$PORT" -i "$STATE/keys/restricted-ssh" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$GEN/known_hosts" -o ClearAllForwardings=yes -o ForwardAgent=no -o RequestTTY=no opshaven@127.0.0.1)
 ORIGINAL_DENIAL="$("${SSH_RESTRICTED[@]}" id 2>&1 || true)"
@@ -74,17 +93,63 @@ ORIGINAL_DENIAL="$("${SSH_RESTRICTED[@]}" id 2>&1 || true)"
 MALFORMED="$(printf '{\n' | "${SSH_RESTRICTED[@]}")"
 node -e 'const x=JSON.parse(process.argv[1]); if(x.ok || x.error?.code!=="REMOTE_PROTOCOL_INVALID") process.exit(1)' "$MALFORMED"
 
+"${CLI[@]}" app add \
+  --non-interactive --approve --json \
+  --id sample-worker --name 'Sample Worker' --target host.primary \
+  --repository /srv/opshaven-fixtures/sample-worker/repository \
+  --releases /srv/opshaven-fixtures/sample-worker/releases \
+  --service sample-worker.service \
+  --health-check http://127.0.0.1:3001/health \
+  > "$GEN/app-worker.json"
+node -e 'const x=require(process.argv[1]); if(!x.ok || x.application?.id!=="sample-worker") process.exit(1)' "$GEN/app-worker.json"
+
+AUTH_STARTED="$(milliseconds)"
+"${CLI[@]}" setup remote --non-interactive --approve --json > "$GEN/authorization.json"
+AUTH_MS="$(elapsed "$AUTH_STARTED")"
+node -e 'const x=require(process.argv[1]); if(!x.certified || x.outcome!=="SETUP_SUCCEEDED" || x.changeType!=="AUTHORIZATION_ONLY" || x.installation || x.trust?.synchronizationKind!=="authorization-sync" || !x.canonicalState?.compatible) process.exit(1)' "$GEN/authorization.json"
+AUTH_GENERATION="$(node -e 'process.stdout.write(String(require(process.argv[1]).canonicalState.installed.generation))' "$GEN/authorization.json")"
+[[ "$AUTH_GENERATION" -eq $((FULL_GENERATION + 1)) ]]
+[[ "$AUTH_MS" -lt 20000 ]]
+
+NO_CHANGE_STARTED="$(milliseconds)"
+"${CLI[@]}" setup remote --non-interactive --approve --json > "$GEN/no-change.json"
+NO_CHANGE_MS="$(elapsed "$NO_CHANGE_STARTED")"
+node -e 'const x=require(process.argv[1]); if(!x.certified || x.outcome!=="SETUP_NO_CHANGE" || x.changeType!=="NO_CHANGE" || x.installation || x.trust || !x.canonicalState?.compatible) process.exit(1)' "$GEN/no-change.json"
+NO_CHANGE_GENERATION="$(node -e 'process.stdout.write(String(require(process.argv[1]).canonicalState.installed.generation))' "$GEN/no-change.json")"
+[[ "$NO_CHANGE_GENERATION" -eq "$AUTH_GENERATION" ]]
+[[ "$NO_CHANGE_MS" -lt 10000 ]]
+
+"${CLI[@]}" doctor --json > "$GEN/doctor-after-sync.json"
+node -e 'const x=require(process.argv[1]); if(!x.ok || x.state!=="READY") process.exit(1)' "$GEN/doctor-after-sync.json"
+
+# Deliberately replace the reviewed dispatcher with the valid legacy dispatcher artifact.
+docker exec "$CONTAINER" sh -c 'cp /usr/lib/opshaven/src/remote/read-only-dispatcher.js /usr/lib/opshaven/src/remote/dispatcher.js && chmod 755 /usr/lib/opshaven/src/remote/dispatcher.js'
+set +e
+"${CLI[@]}" doctor --debug --json > "$GEN/mismatch-doctor.json"
+DOCTOR_STATUS=$?
+"${CLI[@]}" boundary verify --json > "$GEN/mismatch-boundary.json"
+BOUNDARY_STATUS=$?
+set -e
+[[ "$DOCTOR_STATUS" -ne 0 && "$BOUNDARY_STATUS" -ne 0 ]]
+node -e 'const x=require(process.argv[1]); const d=x.details?.deploymentCompatibility; if(x.ok || !d || d.expectedDispatcherDigest===d.installedDispatcherDigest || d.repair!=="opshaven setup remote") process.exit(1)' "$GEN/mismatch-doctor.json"
+node -e 'const x=require(process.argv[1]); if(x.ok || x.canonicalState?.changeType!=="DISPATCHER_UPDATE") process.exit(1)' "$GEN/mismatch-boundary.json"
+"${CLI[@]}" setup remote --non-interactive --approve --json > "$GEN/dispatcher-repair.json"
+node -e 'const x=require(process.argv[1]); if(!x.certified || x.changeType!=="DISPATCHER_UPDATE" || !x.installation || !x.canonicalState?.compatible) process.exit(1)' "$GEN/dispatcher-repair.json"
+"${CLI[@]}" doctor --json > "$GEN/repaired-doctor.json"
+"${CLI[@]}" boundary verify --json > "$GEN/repaired-boundary.json"
+node -e 'if(!require(process.argv[1]).ok || !require(process.argv[2]).ok) process.exit(1)' "$GEN/repaired-doctor.json" "$GEN/repaired-boundary.json"
+
 "${CLI[@]}" setup remote --rollback --approve --json > "$GEN/rollback.json"
 node -e 'const x=require(process.argv[1]); if(!x.ok || x.action!=="rollback" || (!x.restored.length && !x.removed.length)) process.exit(1)' "$GEN/rollback.json"
-
 "${CLI[@]}" setup remote --non-interactive --approve --json > "$GEN/reinstalled.json"
-node -e 'const x=require(process.argv[1]); if(!x.certified || !x.installation.changed.length) process.exit(1)' "$GEN/reinstalled.json"
-"${CLI[@]}" setup remote --non-interactive --approve --json > "$GEN/repeat.json"
-node -e 'const x=require(process.argv[1]); if(!x.certified || x.changeType!=="NO_CHANGE" || x.installation || x.trust) process.exit(1)' "$GEN/repeat.json"
+node -e 'const x=require(process.argv[1]); if(!x.certified || x.changeType!=="FULL_INSTALL" || !x.installation?.changed?.length) process.exit(1)' "$GEN/reinstalled.json"
+"${CLI[@]}" setup remote --non-interactive --approve --json > "$GEN/reinstalled-no-change.json"
+node -e 'const x=require(process.argv[1]); if(!x.certified || x.changeType!=="NO_CHANGE" || x.installation || x.trust) process.exit(1)' "$GEN/reinstalled-no-change.json"
 
 "${CLI[@]}" uninstall remote --approve --json > "$GEN/uninstall.json"
 node -e 'const x=require(process.argv[1]); if(!x.ok || x.action!=="uninstall" || !x.removed.includes("/usr/lib/opshaven")) process.exit(1)' "$GEN/uninstall.json"
 docker exec "$CONTAINER" test ! -e /usr/lib/opshaven
 docker exec "$CONTAINER" test -d /home/admin
 
-printf 'remote-setup-ubuntu: empty state, init, config-free setup, doctor, boundary verification, shell denial, rollback, reinstall, no-change verification, and uninstall passed\n'
+printf 'remote-setup-ubuntu timings_ms full=%s authorization=%s no_change=%s\n' "$FULL_MS" "$AUTH_MS" "$NO_CHANGE_MS"
+printf 'remote-setup-ubuntu: one-pass setup, deployment plan, authorization-only sync, no-change verification, mismatch repair, rollback, reinstall, and uninstall passed\n'
