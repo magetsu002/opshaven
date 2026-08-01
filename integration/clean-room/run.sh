@@ -71,13 +71,14 @@ node -e 'const x=require(process.argv[1]); if(!x.ok || x.state!=="READY") proces
 opshaven boundary verify --json > "$WORK/boundary.json"
 node -e 'const x=require(process.argv[1]); if(!x.ok || !x.assertions.every(v=>v.passed)) process.exit(1)' "$WORK/boundary.json"
 
-# Create one synthetic immutable application revision after the initial active release.
+# Create one synthetic immutable application revision and advertise it through the only reviewed ref.
 docker exec "$CONTAINER" sh -ceu '
   git -C /srv/opshaven-fixtures/sample-api/repository config user.name "OpsHaven Synthetic Fixture"
   git -C /srv/opshaven-fixtures/sample-api/repository config user.email "fixture@example.invalid"
   printf "healthy revision\n" > /srv/opshaven-fixtures/sample-api/repository/REVISION.txt
   git -C /srv/opshaven-fixtures/sample-api/repository add REVISION.txt
   git -C /srv/opshaven-fixtures/sample-api/repository commit -q -m "OpsHaven clean-room healthy revision"
+  git -C /srv/opshaven-fixtures/sample-api/repository update-ref refs/remotes/origin/main HEAD
 '
 TARGET_REVISION="$(docker exec "$CONTAINER" git -C /srv/opshaven-fixtures/sample-api/repository rev-parse HEAD)"
 [[ "$TARGET_REVISION" =~ ^[0-9a-f]{40}$ ]]
