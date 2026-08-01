@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { OpsHavenError } from "../src/errors.js";
-import { formatOperatorError } from "../src/operator-errors.js";
+import { formatOperatorError } from "../src/operator-error-boundary.js";
 import { inspectRemoteSetupRepair } from "../src/setup/reliability-repair.js";
 import type { RemoteSetupConfig } from "../src/setup/remote.js";
 import type { RemoteAdminTransport, SetupCommandResult } from "../src/setup/transport.js";
