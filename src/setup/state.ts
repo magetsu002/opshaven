@@ -6,7 +6,7 @@ import { sha256 } from "../canonical.js";
 import { loadConfig } from "../config.js";
 import { OpsHavenError } from "../errors.js";
 import { readRegularFile } from "../safe-fs.js";
-import { buildRuntimeManifest } from "./install.js";
+import { buildRuntimeManifest, type RuntimeManifestEntry } from "./install.js";
 import type { RemoteSetupConfig } from "./remote.js";
 import { PinnedSshAdminTransport, type RemoteAdminTransport } from "./transport.js";
 
@@ -20,6 +20,10 @@ export type RemoteSetupChangeType =
   | "AUTHORIZATION_ONLY"
   | "APPLICATION_DECLARATION_ONLY"
   | "AUTHORIZATION_AND_DECLARATION"
+  | "DISPATCHER_ONLY"
+  | "DISPATCHER_AND_AUTHORIZATION"
+  | "RUNTIME_ONLY"
+  | "RUNTIME_AND_DISPATCHER"
   | "RUNTIME_UPDATE"
   | "DISPATCHER_UPDATE"
   | "FULL_INSTALL"
@@ -73,12 +77,21 @@ export interface RemoteStateComparison {
   readonly compatible: boolean;
 }
 
+const DISPATCHER_PATHS = new Set(["src/remote/dispatcher.js", "src/remote/read-only-dispatcher.js"]);
+
 function digestBytes(value: Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 function stableCapabilityIdentity(payload: ReturnType<typeof buildCapabilityPayload>): string {
   const { issuedAt: _issuedAt, expiresAt: _expiresAt, ...stable } = payload;
   return sha256(stable);
+}
+export function runtimeCoreIdentity(files: readonly RuntimeManifestEntry[]): string {
+  const core = files
+    .filter((item) => !DISPATCHER_PATHS.has(item.path))
+    .map((item) => ({ executable: item.executable, path: item.path, sha256: item.sha256 }));
+  if (core.length === 0) throw new OpsHavenError("POLICY_DENIED", "Reviewed runtime core is empty.");
+  return createHash("sha256").update(JSON.stringify(core)).digest("hex");
 }
 
 export async function buildDesiredRemoteState(config: RemoteSetupConfig): Promise<DesiredRemoteState> {
@@ -100,7 +113,7 @@ export async function buildDesiredRemoteState(config: RemoteSetupConfig): Promis
     schemaVersion: REMOTE_STATE_SCHEMA_VERSION,
     sourceSha: config.expectedSourceSha,
     dispatcherMode: SETUP_DISPATCHER_MODE,
-    runtimeSha256: runtime.treeSha256,
+    runtimeSha256: runtimeCoreIdentity(runtime.files),
     dispatcherSha256,
     policyVersion: remoteConfig.policyVersion,
     policySha256: sha256(policyDocument),
@@ -115,7 +128,7 @@ export async function buildDesiredRemoteState(config: RemoteSetupConfig): Promis
 
 function stateInspectionScript(config: RemoteSetupConfig): string {
   const paths = JSON.stringify({ receipt: config.remote.receiptPath, state: REMOTE_STATE_PATH, runtimeManifest: `${config.remote.stateDirectory}/runtime-manifest.json`, runtimeRoot: config.remote.runtimeRoot, config: config.remote.configPath, capability: `${config.remote.configPath}.capability.json`, declaration: `${config.remote.configPath}.declaration.json`, publicKey: "/etc/opshaven/approval-public.pem", nodeCandidates: config.remote.nodeCandidates });
-  return `import base64,hashlib,json,os,pathlib,platform,stat,subprocess\nP=json.loads(${JSON.stringify(paths)})\ndef regular(path,maximum=16777216):\n p=pathlib.Path(path)\n try: info=os.lstat(p)\n except OSError: return False\n return stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode) and info.st_size<=maximum\ndef read_json(path):\n if not regular(path,2097152): raise RuntimeError('missing or unsafe state artifact')\n with open(path,'r',encoding='utf-8') as handle: return json.load(handle)\ndef canonical(value): return json.dumps(value,sort_keys=True,separators=(',',':'))\ndef digest_json(value): return hashlib.sha256(canonical(value).encode('utf-8')).hexdigest()\ndef digest_file(path):\n if not regular(path): raise RuntimeError('missing or unsafe state artifact')\n h=hashlib.sha256()\n with open(path,'rb') as handle:\n  while True:\n   chunk=handle.read(1048576)\n   if not chunk: break\n   h.update(chunk)\n return h.hexdigest()\ndef node_version():\n for raw in P['nodeCandidates']:\n  candidate=pathlib.Path(raw)\n  if not regular(candidate,134217728) or not os.access(candidate,os.X_OK) or os.path.realpath(candidate)!=str(candidate): continue\n  result=subprocess.run([str(candidate),'--version'],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=10,check=False)\n  value=result.stdout.strip()\n  if result.returncode==0 and value.startswith('v') and value[1:].split('.')[0].isdigit(): return value\n return None\ndef absent():\n print(canonical({'status':'absent','source':'installed remote state'})); raise SystemExit(0)\nif not regular(P['receipt'],2097152): absent()\ntry:\n receipt=read_json(P['receipt'])\n rollback=receipt.get('rollback') if isinstance(receipt.get('rollback'),dict) else {}\n controlled=f"{P['runtimeRoot']}/src/remote/dispatcher.js"\n readonly=f"{P['runtimeRoot']}/src/remote/read-only-dispatcher.js"\n managed=[P['runtimeManifest'],P['config'],P['capability'],P['declaration'],P['publicKey'],controlled,readonly]\n if receipt.get('certified') is False and rollback.get('completed') is True and not any(regular(item,2097152) for item in managed): absent()\n capability_document=read_json(P['capability'])\n encoded=capability_document.get('payload','')\n if not isinstance(encoded,str): raise RuntimeError('capability payload is missing')\n padding='='*((4-len(encoded)%4)%4)\n capability=json.loads(base64.urlsafe_b64decode((encoded+padding).encode('ascii')).decode('utf-8'))\n stable={key:value for key,value in capability.items() if key not in ('issuedAt','expiresAt')}\n policy=read_json(P['config']); declaration=read_json(P['declaration']); manifest=read_json(P['runtimeManifest'])\n dispatcher=controlled if regular(controlled) else readonly if regular(readonly) else None\n if dispatcher is None: raise RuntimeError('installed dispatcher is missing')\n applications=sorted([item.get('id') for item in policy.get('resources',[]) if isinstance(item,dict) and item.get('kind')=='application' and isinstance(item.get('id'),str)])\n recorded=read_json(P['state']) if regular(P['state'],2097152) else {}\n recorded_schema=recorded.get('schemaVersion',1)\n actual={'status':'complete','source':'installed remote state','schemaVersion':recorded_schema,'generation':recorded.get('generation'),'recordedIdentityMatches':True,'sourceSha':receipt.get('sourceSha'),'dispatcherMode':capability.get('mode'),'runtimeSha256':manifest.get('treeSha256') or receipt.get('runtimeTreeSha256'),'dispatcherSha256':digest_file(dispatcher),'policyVersion':policy.get('policyVersion'),'policySha256':digest_json(policy),'capabilityIdentitySha256':digest_json(stable),'capabilityArtifactSha256':digest_file(P['capability']),'declarationSha256':digest_json(declaration),'operatorVerificationIdentity':digest_file(P['publicKey']),'applicationScope':applications,'applicationScopeSha256':digest_json(applications),'platform':platform.system(),'architecture':platform.machine(),'nodeVersion':node_version()}\n if recorded:\n  keys=['sourceSha','dispatcherMode','runtimeSha256','dispatcherSha256','policySha256','capabilityIdentitySha256','declarationSha256','operatorVerificationIdentity','applicationScopeSha256']\n  if isinstance(recorded_schema,int) and recorded_schema>=3: keys.extend(['policyVersion','platform','architecture','nodeVersion'])\n  mismatch=next((key for key in keys if recorded.get(key)!=actual.get(key)),None)\n  if mismatch: actual['recordedIdentityMatches']=False; actual['detail']=f'recorded remote state differs from installed {mismatch}'\n print(canonical(actual))\nexcept Exception as error:\n print(canonical({'status':'inconsistent','source':'installed remote state','schemaVersion':None,'generation':None,'recordedIdentityMatches':False,'sourceSha':None,'dispatcherMode':None,'runtimeSha256':None,'dispatcherSha256':None,'policyVersion':None,'policySha256':None,'capabilityIdentitySha256':None,'capabilityArtifactSha256':None,'declarationSha256':None,'operatorVerificationIdentity':None,'applicationScope':[],'applicationScopeSha256':None,'platform':platform.system(),'architecture':platform.machine(),'nodeVersion':None,'detail':str(error)[:200]}))\n`;
+  return `import base64,hashlib,json,os,pathlib,platform,stat,subprocess\nP=json.loads(${JSON.stringify(paths)})\ndef regular(path,maximum=16777216):\n p=pathlib.Path(path)\n try: info=os.lstat(p)\n except OSError: return False\n return stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode) and info.st_size<=maximum\ndef read_json(path):\n if not regular(path,2097152): raise RuntimeError('missing or unsafe state artifact')\n with open(path,'r',encoding='utf-8') as handle: return json.load(handle)\ndef canonical(value): return json.dumps(value,sort_keys=True,separators=(',',':'))\ndef digest_json(value): return hashlib.sha256(canonical(value).encode('utf-8')).hexdigest()\ndef digest_file(path):\n if not regular(path): raise RuntimeError('missing or unsafe state artifact')\n h=hashlib.sha256()\n with open(path,'rb') as handle:\n  while True:\n   chunk=handle.read(1048576)\n   if not chunk: break\n   h.update(chunk)\n return h.hexdigest()\ndef runtime_core(manifest):\n files=manifest.get('files')\n if not isinstance(files,list): raise RuntimeError('runtime manifest file list is invalid')\n core=[]\n for item in files:\n  if not isinstance(item,dict): raise RuntimeError('runtime manifest entry is invalid')\n  if item.get('path') in ('src/remote/dispatcher.js','src/remote/read-only-dispatcher.js'): continue\n  core.append({'executable':item.get('executable'),'path':item.get('path'),'sha256':item.get('sha256')})\n if not core: raise RuntimeError('installed runtime core is empty')\n return hashlib.sha256(json.dumps(core,separators=(',',':')).encode('utf-8')).hexdigest()\ndef node_version():\n for raw in P['nodeCandidates']:\n  candidate=pathlib.Path(raw)\n  if not regular(candidate,134217728) or not os.access(candidate,os.X_OK) or os.path.realpath(candidate)!=str(candidate): continue\n  result=subprocess.run([str(candidate),'--version'],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=10,check=False)\n  value=result.stdout.strip()\n  if result.returncode==0 and value.startswith('v') and value[1:].split('.')[0].isdigit(): return value\n return None\ndef absent():\n print(canonical({'status':'absent','source':'installed remote state'})); raise SystemExit(0)\nif not regular(P['receipt'],2097152): absent()\ntry:\n receipt=read_json(P['receipt'])\n rollback=receipt.get('rollback') if isinstance(receipt.get('rollback'),dict) else {}\n controlled=f"{P['runtimeRoot']}/src/remote/dispatcher.js"\n readonly=f"{P['runtimeRoot']}/src/remote/read-only-dispatcher.js"\n managed=[P['runtimeManifest'],P['config'],P['capability'],P['declaration'],P['publicKey'],controlled,readonly]\n if receipt.get('certified') is False and rollback.get('completed') is True and not any(regular(item,2097152) for item in managed): absent()\n capability_document=read_json(P['capability'])\n encoded=capability_document.get('payload','')\n if not isinstance(encoded,str): raise RuntimeError('capability payload is missing')\n padding='='*((4-len(encoded)%4)%4)\n capability=json.loads(base64.urlsafe_b64decode((encoded+padding).encode('ascii')).decode('utf-8'))\n stable={key:value for key,value in capability.items() if key not in ('issuedAt','expiresAt')}\n policy=read_json(P['config']); declaration=read_json(P['declaration']); manifest=read_json(P['runtimeManifest'])\n dispatcher=controlled if regular(controlled) else readonly if regular(readonly) else None\n if dispatcher is None: raise RuntimeError('installed dispatcher is missing')\n applications=sorted([item.get('id') for item in policy.get('resources',[]) if isinstance(item,dict) and item.get('kind')=='application' and isinstance(item.get('id'),str)])\n recorded=read_json(P['state']) if regular(P['state'],2097152) else {}\n recorded_schema=recorded.get('schemaVersion',1)\n actual={'status':'complete','source':'installed remote state','schemaVersion':recorded_schema,'generation':recorded.get('generation'),'recordedIdentityMatches':True,'sourceSha':receipt.get('sourceSha'),'dispatcherMode':capability.get('mode'),'runtimeSha256':runtime_core(manifest),'dispatcherSha256':digest_file(dispatcher),'policyVersion':policy.get('policyVersion'),'policySha256':digest_json(policy),'capabilityIdentitySha256':digest_json(stable),'capabilityArtifactSha256':digest_file(P['capability']),'declarationSha256':digest_json(declaration),'operatorVerificationIdentity':digest_file(P['publicKey']),'applicationScope':applications,'applicationScopeSha256':digest_json(applications),'platform':platform.system(),'architecture':platform.machine(),'nodeVersion':node_version()}\n if recorded:\n  keys=['sourceSha','dispatcherMode','runtimeSha256','dispatcherSha256','policySha256','capabilityIdentitySha256','declarationSha256','operatorVerificationIdentity','applicationScopeSha256']\n  if isinstance(recorded_schema,int) and recorded_schema>=3: keys.extend(['policyVersion','platform','architecture','nodeVersion'])\n  mismatch=next((key for key in keys if recorded.get(key)!=actual.get(key)),None)\n  if mismatch: actual['recordedIdentityMatches']=False; actual['detail']=f'recorded remote state differs from installed {mismatch}'\n print(canonical(actual))\nexcept Exception as error:\n print(canonical({'status':'inconsistent','source':'installed remote state','schemaVersion':None,'generation':None,'recordedIdentityMatches':False,'sourceSha':None,'dispatcherMode':None,'runtimeSha256':None,'dispatcherSha256':None,'policyVersion':None,'policySha256':None,'capabilityIdentitySha256':None,'capabilityArtifactSha256':None,'declarationSha256':None,'operatorVerificationIdentity':None,'applicationScope':[],'applicationScopeSha256':None,'platform':platform.system(),'architecture':platform.machine(),'nodeVersion':None,'detail':str(error)[:200]}))\n`;
 }
 function optionalString(value: unknown, pattern: RegExp): string | null { return typeof value === "string" && pattern.test(value) ? value : null; }
 function absentState(): InstalledRemoteState {
@@ -167,21 +180,24 @@ export function compareRemoteState(desired: DesiredRemoteState, installed: Insta
   if (major === null || major < desired.minimumNodeMajor) return repair(desired, installed, [`remote Node.js ${installed.nodeVersion ?? "unknown"} is incompatible; version ${desired.minimumNodeMajor} or newer is required`]);
   const reasons: string[] = [];
   const dispatcherChanged = installed.dispatcherMode !== desired.dispatcherMode || installed.dispatcherSha256 !== desired.dispatcherSha256;
-  const runtimeChanged = installed.sourceSha !== desired.sourceSha || installed.runtimeSha256 !== desired.runtimeSha256;
+  const runtimeChanged = installed.runtimeSha256 !== desired.runtimeSha256;
+  const sourceChanged = installed.sourceSha !== desired.sourceSha;
   if (installed.dispatcherMode !== desired.dispatcherMode) reasons.push(`dispatcher mode is ${installed.dispatcherMode ?? "unknown"}, expected ${desired.dispatcherMode}`);
   if (installed.dispatcherSha256 !== desired.dispatcherSha256) reasons.push("dispatcher artifact identity differs");
-  if (installed.sourceSha !== desired.sourceSha) reasons.push("runtime source version differs");
-  if (installed.runtimeSha256 !== desired.runtimeSha256) reasons.push("runtime artifact identity differs");
-  if (dispatcherChanged) return Object.freeze({ desired, installed, changeType: "DISPATCHER_UPDATE", reasons: Object.freeze(reasons), compatible: false });
-  if (runtimeChanged) return Object.freeze({ desired, installed, changeType: "RUNTIME_UPDATE", reasons: Object.freeze(reasons), compatible: false });
-  const authorizationDiffers = installed.policyVersion !== desired.policyVersion || installed.policySha256 !== desired.policySha256 || installed.capabilityIdentitySha256 !== desired.capabilityIdentitySha256 || installed.operatorVerificationIdentity !== desired.operatorVerificationIdentity || installed.applicationScopeSha256 !== desired.applicationScopeSha256;
+  if (installed.runtimeSha256 !== desired.runtimeSha256) reasons.push("runtime core artifact identity differs");
+  if (sourceChanged) reasons.push("build source identity differs but does not by itself require runtime replacement");
+  const authorizationDiffers = sourceChanged || installed.policyVersion !== desired.policyVersion || installed.policySha256 !== desired.policySha256 || installed.capabilityIdentitySha256 !== desired.capabilityIdentitySha256 || installed.operatorVerificationIdentity !== desired.operatorVerificationIdentity || installed.applicationScopeSha256 !== desired.applicationScopeSha256;
   const declarationDiffers = installed.declarationSha256 !== desired.declarationSha256 || installed.schemaVersion < desired.schemaVersion || installed.recordedIdentityMatches === false;
-  if (authorizationDiffers) reasons.push("signed authorization, policy, operator identity, or application scope differs");
+  if (authorizationDiffers) reasons.push("signed authorization, policy, source identity, operator identity, or application scope differs");
   if (installed.declarationSha256 !== desired.declarationSha256) reasons.push("reviewed application declaration differs");
   if (installed.schemaVersion < desired.schemaVersion) reasons.push("legacy installed state requires explicit schema synchronization");
   if (installed.recordedIdentityMatches === false) reasons.push(installed.detail ?? "canonical state record differs from complete installed artifacts");
   let changeType: RemoteSetupChangeType = "NO_CHANGE";
-  if (authorizationDiffers && declarationDiffers) changeType = "AUTHORIZATION_AND_DECLARATION";
+  if (runtimeChanged && dispatcherChanged) changeType = "RUNTIME_AND_DISPATCHER";
+  else if (runtimeChanged) changeType = "RUNTIME_ONLY";
+  else if (dispatcherChanged && (authorizationDiffers || declarationDiffers)) changeType = "DISPATCHER_AND_AUTHORIZATION";
+  else if (dispatcherChanged) changeType = "DISPATCHER_ONLY";
+  else if (authorizationDiffers && declarationDiffers) changeType = "AUTHORIZATION_AND_DECLARATION";
   else if (authorizationDiffers) changeType = "AUTHORIZATION_ONLY";
   else if (declarationDiffers) changeType = "APPLICATION_DECLARATION_ONLY";
   return Object.freeze({ desired, installed, changeType, reasons: Object.freeze(reasons), compatible: changeType === "NO_CHANGE" });
@@ -221,6 +237,6 @@ export function compatibilityDetails(comparison: RemoteStateComparison): Record<
     installationGeneration: comparison.installed.generation, recordedIdentityMatches: comparison.installed.recordedIdentityMatches,
     expectedSource: "local reviewed configuration and build artifacts", installedSource: comparison.installed.source,
     changeType: comparison.changeType, result: comparison.compatible ? "compatible" : "synchronization required",
-    diagnosis: comparison.compatible ? "Installed deployment state matches the reviewed local state." : comparison.reasons.join("; "), repair: comparison.compatible ? null : "opshaven setup remote",
+    diagnosis: comparison.compatible ? "Installed deployment state matches the reviewed local state." : comparison.reasons.join("; "), repair: comparison.compatible ? null : comparison.changeType === "REPAIR_REQUIRED" ? "opshaven setup repair" : "opshaven setup remote",
   };
 }
