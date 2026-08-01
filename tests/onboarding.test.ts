@@ -35,7 +35,7 @@ async function run(command: string, args: string[], env: Record<string, string |
 }
 
 async function runCli(args: string[], home: string): Promise<Result> {
-  return await run(process.execPath, [path.join(process.cwd(), "dist/src/cli-entry.js"), ...args], { HOME: home });
+  return await run(process.execPath, [path.join(process.cwd(), "dist/src/cli-entry.js"), ...args], { HOME: home, NO_COLOR: "" });
 }
 
 async function generateSshKey(filePath: string): Promise<void> {
@@ -71,11 +71,11 @@ test("empty environment initializes local state and reports the next action", as
 
     const doctor = await runCli(["doctor"], home);
     assert.equal(doctor.code, 1);
-    assert.match(doctor.stdout, /Current state:\nLOCAL_INITIALIZED/);
-    assert.match(doctor.stdout, /✓ Operator keys/);
-    assert.match(doctor.stdout, /✗ Remote deployment not configured/);
-    assert.match(doctor.stdout, /Next action:\nopshaven setup remote/);
-    assert.doesNotMatch(doctor.stdout, /capability|declaration binding|dispatcher hash/i);
+    assert.match(doctor.stdout, /^OpsHaven Health/);
+    assert.match(doctor.stdout, /Local environment\n✓ Operator setup ready/);
+    assert.match(doctor.stdout, /Remote connection\n✗ Remote setup not configured/);
+    assert.match(doctor.stdout, /Next action\n  opshaven setup remote/);
+    assert.doesNotMatch(doctor.stdout, /capability|declaration binding|dispatcher hash|\.json|\.pem/i);
 
     const setup = await runCli(["setup", "remote", "--non-interactive", "--dry-run"], home);
     assert.equal(setup.code, 1);
@@ -108,6 +108,7 @@ test("empty host identity is rejected without persisting initialization state", 
     ], home);
     assert.equal(initialized.code, 1);
     assert.match(initialized.stderr, /Host identity unavailable\./);
+    assert.match(initialized.stderr, /Host identity could not be verified/);
     const root = path.join(home, ".config", "opshaven");
     await assert.rejects(() => fs.readFile(path.join(root, "state.json"), "utf8"));
     await assert.rejects(() => fs.readFile(path.join(root, "setup.json"), "utf8"));
@@ -158,6 +159,7 @@ test("guided initialization accepts a valid pinned host identity", async () => {
     const translated = await runCli(["setup", "remote", "--dry-run"], home);
     assert.equal(translated.code, 1);
     assert.match(translated.stderr, /Setup state is missing or outdated\./);
+    assert.match(translated.stderr, /Checked:\n✗ Saved setup state/);
     assert.match(translated.stderr, /opshaven init/);
     assert.doesNotMatch(translated.stderr, /version 1|schema/i);
 

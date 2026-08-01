@@ -19,6 +19,8 @@ for (const [name, file] of Object.entries(expectedBins)) {
   if (!stat?.isFile()) failures.push(`${name}: built entrypoint is missing`);
 }
 if (pkg.scripts?.cli !== "node dist/src/cli-entry.js") failures.push("human CLI script must use cli-entry.js");
+if (pkg.scripts?.["dev:cli"] !== "npm run build && node dist/src/cli-entry.js") failures.push("development CLI script must build and use cli-entry.js");
+if (pkg.scripts?.["install:local"] !== "npm run build && npm link") failures.push("local installation script must build before linking the CLI");
 if (pkg.scripts?.mcp !== "node dist/src/index.js") failures.push("MCP script must use index.js");
 if (pkg.scripts?.start !== "npm run cli -- help") failures.push("npm start must show human CLI help");
 const isolatedFiles = [
@@ -43,5 +45,5 @@ if (failures.length) {
   console.error(failures.join("\n"));
   process.exitCode = 1;
 } else {
-  console.log("package: human CLI, protocol server, isolated target, and built entrypoints verified");
+  console.log("package: human CLI, local installation, protocol server, isolated target, and built entrypoints verified");
 }

@@ -8,50 +8,51 @@ function report(ok: boolean): DoctorReport {
     ok,
     mode: "read-only",
     localOperatorEnvironment: [
-      { label: "Approval signing key available", passed },
-      { label: "Pinned host-key file available", passed },
+      { label: "Authorization signing available", passed },
+      { label: "Pinned host identity available", passed },
     ],
     remoteDeploymentState: [
-      { label: "Remote host reachable", passed },
-      { label: "Runtime attestation matches", passed },
+      { label: "Remote connection available", passed },
+      { label: "Remote runtime verified", passed },
     ],
     authorizationArtifacts: [
-      { label: "Capability authorization valid", passed },
-      { label: "Signed policy artifacts valid", passed },
+      { label: "Authorization valid", passed },
+      { label: "Deployment authorization valid", passed },
     ],
     endpointReadiness: [
-      { label: "Endpoint policy valid", passed },
+      { label: "Endpoint configuration valid", passed },
       { label: "Remote endpoint is read-only", passed },
     ],
     securityBoundaryStatus: [
-      { label: "Boundary verification passed", passed },
-      { label: "Audit chain valid", passed },
+      { label: "Security boundary verified", passed },
+      { label: "Audit history valid", passed },
     ],
     endpoint: ok ? "READY" : "BLOCKED",
   };
 }
 
-test("doctor output separates operator, deployment, authorization, endpoint, and boundary status", () => {
+test("doctor output separates the operator troubleshooting areas", () => {
   const text = formatDoctorReport(report(true));
-  assert.match(text, /Local operator environment/);
-  assert.match(text, /Remote deployment state/);
-  assert.match(text, /Authorization artifacts/);
-  assert.match(text, /Endpoint readiness/);
-  assert.match(text, /Security boundary status/);
-  assert.match(text, /✓ Runtime attestation matches/);
-  assert.match(text, /Endpoint:\nREADY/);
+  assert.match(text, /^OpsHaven Health/);
+  assert.match(text, /Local environment/);
+  assert.match(text, /Remote connection/);
+  assert.match(text, /Authorization state/);
+  assert.match(text, /Security verification/);
+  assert.match(text, /✓ Remote runtime verified/);
+  assert.match(text, /Next action\nNo action required\./);
+  assert.doesNotMatch(text, /capability|declaration binding|dispatcher|\.json|\.pem/i);
 });
 
 test("doctor output marks failed readiness without exposing paths or secret material", () => {
   const value = report(false);
-  value.remoteDeploymentState[0] = { label: "Remote host reachable", passed: false, detail: "verification did not complete" };
+  value.remoteDeploymentState[0] = { label: "Remote connection available", passed: false, detail: "verification did not complete" };
   const text = formatDoctorReport(value);
-  assert.match(text, /✗ Remote host reachable — verification did not complete/);
-  assert.match(text, /Endpoint:\nBLOCKED/);
+  assert.match(text, /✗ Remote connection available — verification did not complete/);
+  assert.match(text, /opshaven doctor --debug/);
   assert.doesNotMatch(text, /PRIVATE KEY|BEGIN [A-Z ]+ KEY|\/home\//);
 });
 
-test("guided doctor output answers state, completion, blocker, and next action", () => {
+test("guided doctor output shows the exact next operator action", () => {
   const workflow: OperatorWorkflowReport = {
     ok: false,
     state: "LOCAL_INITIALIZED",
@@ -60,9 +61,11 @@ test("guided doctor output answers state, completion, blocker, and next action",
     nextAction: "opshaven setup remote",
   };
   const text = formatWorkflowReport(workflow);
-  assert.match(text, /Current state:\nLOCAL_INITIALIZED/);
-  assert.match(text, /Completed:\n✓ Operator keys\n✓ Local configuration/);
-  assert.match(text, /Blocked:\n✗ Remote deployment not configured/);
-  assert.match(text, /Next action:\nopshaven setup remote/);
-  assert.doesNotMatch(text, /capability manifest|declaration binding|dispatcher hash/i);
+  assert.match(text, /^OpsHaven Health/);
+  assert.match(text, /Local environment\n✓ Operator setup ready/);
+  assert.match(text, /Remote connection\n✗ Remote setup not configured/);
+  assert.match(text, /Authorization state\n! Waiting for remote verification/);
+  assert.match(text, /Security verification\n○ Not yet verified/);
+  assert.match(text, /Next action\n  opshaven setup remote/);
+  assert.doesNotMatch(text, /capability|declaration binding|dispatcher hash|\.json|\.pem/i);
 });

@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import { verifyBoundary, type BoundaryReport } from "./boundary.js";
 import { loadConfig } from "./config.js";
 import { inspectOperatorState } from "./operator-state.js";
+import { colorEnabled, command, heading, sanitizeOperatorText, section, statusLine } from "./operator-ui.js";
 import { loadRemoteTrust } from "./remote-mcp/report.js";
 
 export interface DoctorCheck {
@@ -50,7 +51,7 @@ async function regularFile(path: string, ownerOnly: boolean): Promise<boolean> {
 
 function safeDetail(error: unknown): string {
   const raw = error instanceof Error ? error.message : "verification did not complete";
-  const sanitized = raw.replace(/\/[A-Za-z0-9._/-]+/g, "<protected path>");
+  const sanitized = sanitizeOperatorText(raw);
   return /^[A-Za-z0-9 .,:;()'"_<>-]{1,240}$/.test(sanitized) ? sanitized : "verification did not complete";
 }
 
@@ -62,31 +63,48 @@ function assertionPassed(report: BoundaryReport | null, name: string): boolean {
   return report?.assertions.find((item) => item.name === name)?.passed === true;
 }
 
+function renderChecks(title: string, checks: readonly DoctorCheck[], color: boolean): string[] {
+  const lines = [section(title, color)];
+  if (checks.length === 0) lines.push(statusLine("skipped", "Not checked", undefined, color));
+  else for (const item of checks) lines.push(statusLine(item.passed ? "passed" : "failed", item.label, item.detail, color));
+  return lines;
+}
+
 export function formatDoctorReport(report: DoctorReport): string {
-  const lines: string[] = [];
-  const section = (title: string, checks: DoctorCheck[]): void => {
-    lines.push(title, "");
-    for (const item of checks) lines.push(`${item.passed ? "✓" : "✗"} ${item.label}${item.detail ? ` — ${item.detail}` : ""}`);
-    lines.push("");
-  };
-  section("Local operator environment", report.localOperatorEnvironment);
-  section("Remote deployment state", report.remoteDeploymentState);
-  section("Authorization artifacts", report.authorizationArtifacts);
-  section("Endpoint readiness", report.endpointReadiness);
-  section("Security boundary status", report.securityBoundaryStatus);
-  lines.push("Endpoint:", report.endpoint);
+  const color = colorEnabled();
+  const lines: string[] = [heading("OpsHaven Health", color), ""];
+  lines.push(...renderChecks("Local environment", report.localOperatorEnvironment, color), "");
+  lines.push(...renderChecks("Remote connection", report.remoteDeploymentState, color), "");
+  lines.push(...renderChecks("Authorization state", report.authorizationArtifacts, color), "");
+  lines.push(...renderChecks("Security verification", [...report.endpointReadiness, ...report.securityBoundaryStatus], color), "");
+  lines.push(section("Next action", color));
+  lines.push(report.ok ? "No action required." : command("opshaven doctor --debug", color));
   return `${lines.join("\n")}\n`;
 }
 
+function has(completed: readonly string[], value: string): boolean {
+  return completed.includes(value);
+}
+
 export function formatWorkflowReport(report: OperatorWorkflowReport): string {
-  const lines = ["Current state:", report.state, "", "Completed:"];
-  if (report.completed.length === 0) lines.push("None");
-  else for (const item of report.completed) lines.push(`✓ ${item}`);
-  lines.push("", "Blocked:");
-  if (report.blocked.length === 0) lines.push("None");
-  else for (const item of report.blocked) lines.push(`✗ ${item}`);
-  lines.push("", "Next action:", report.nextAction ?? "No action required.");
-  if (report.details) lines.push("", "Debug details:", "", formatDoctorReport(report.details).trimEnd());
+  const color = colorEnabled();
+  const localReady = has(report.completed, "Operator keys") && has(report.completed, "Local configuration");
+  const remoteConfigured = report.state === "REMOTE_CONFIGURED" || report.state === "READY" || has(report.completed, "Remote setup state");
+  const remoteReady = report.state === "READY" || has(report.completed, "Remote deployment");
+  const verified = report.state === "READY" || has(report.completed, "Boundary verification");
+  const blocked = report.blocked[0];
+  const lines = [heading("OpsHaven Health", color), ""];
+  lines.push(section("Local environment", color));
+  lines.push(statusLine(localReady ? "passed" : "failed", localReady ? "Operator setup ready" : "Operator setup incomplete", localReady ? undefined : blocked, color), "");
+  lines.push(section("Remote connection", color));
+  lines.push(statusLine(remoteReady ? "passed" : remoteConfigured ? "warning" : "failed", remoteReady ? "Remote machine reachable" : remoteConfigured ? "Remote setup requires attention" : "Remote setup not configured", remoteReady ? undefined : blocked, color), "");
+  lines.push(section("Authorization state", color));
+  lines.push(statusLine(report.state === "READY" ? "passed" : localReady ? "warning" : "failed", report.state === "READY" ? "Authorization valid" : localReady ? "Waiting for remote verification" : "Authorization not ready", undefined, color), "");
+  lines.push(section("Security verification", color));
+  lines.push(statusLine(verified ? "passed" : "skipped", verified ? "Security boundary verified" : "Not yet verified", undefined, color), "");
+  lines.push(section("Next action", color));
+  lines.push(report.nextAction ? command(report.nextAction, color) : "No action required.");
+  if (report.details) lines.push("", section("Debug details", color), "", formatDoctorReport(report.details).trimEnd());
   return `${lines.join("\n")}\n`;
 }
 
@@ -102,11 +120,11 @@ async function buildDoctorReport(configPath: string, args: string[]): Promise<Do
   const approvalPrivateKey = await regularFile(config.approvals.signingPrivateKeyFile, true);
   const approvalPublicKey = await regularFile(config.approvals.verificationPublicKeyFile, false);
   const localChecks = [
-    check("Configured host identity available", hosts.length > 0 && hostFiles.every((item) => item.identity)),
-    check("Pinned host-key file available", hosts.length > 0 && hostFiles.every((item) => item.knownHosts)),
-    check("Approval signing key available", approvalPrivateKey),
-    check("Approval verification key available", approvalPublicKey),
-    check("Approval replay secret available", approvalSecret),
+    check("Operator SSH key available", hosts.length > 0 && hostFiles.every((item) => item.identity)),
+    check("Pinned host identity available", hosts.length > 0 && hostFiles.every((item) => item.knownHosts)),
+    check("Authorization signing available", approvalPrivateKey),
+    check("Authorization verification available", approvalPublicKey),
+    check("Replay protection available", approvalSecret),
   ];
   const localOk = localChecks.every((item) => item.passed);
 
@@ -143,20 +161,20 @@ async function buildDoctorReport(configPath: string, args: string[]): Promise<Do
     mode,
     localOperatorEnvironment: localChecks,
     remoteDeploymentState: [
-      check("Remote host reachable", authenticatedInspection, boundaryError || undefined),
-      check("Runtime attestation matches", authenticatedInspection, boundaryError || undefined),
+      check("Remote connection available", authenticatedInspection, boundaryError || undefined),
+      check("Remote runtime verified", authenticatedInspection, boundaryError || undefined),
     ],
     authorizationArtifacts: [
-      check("Capability authorization valid", authenticatedInspection, boundaryError || undefined),
-      check("Signed policy artifacts valid", authenticatedInspection, boundaryError || undefined),
+      check("Authorization valid", authenticatedInspection, boundaryError || undefined),
+      check("Deployment authorization valid", authenticatedInspection, boundaryError || undefined),
     ],
     endpointReadiness: [
-      check("Endpoint policy valid", endpointConfigurationValid, endpointError || undefined),
-      check(endpointEnabled ? "Remote endpoint is read-only" : "Local stdio mode selected", endpointEnabled ? endpointReadOnly : true),
+      check("Endpoint configuration valid", endpointConfigurationValid, endpointError || undefined),
+      check(endpointEnabled ? "Remote endpoint is read-only" : "Local connection mode selected", endpointEnabled ? endpointReadOnly : true),
     ],
     securityBoundaryStatus: [
-      check("Boundary verification passed", boundaryValid, boundaryError || undefined),
-      check("Audit chain valid", auditValid, boundaryError || undefined),
+      check("Security boundary verified", boundaryValid, boundaryError || undefined),
+      check("Audit history valid", auditValid, boundaryError || undefined),
     ],
     endpoint: localOk && authenticatedInspection && endpointConfigurationValid && boundaryValid ? "READY" : "BLOCKED",
   };
