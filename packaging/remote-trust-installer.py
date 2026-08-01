@@ -280,6 +280,14 @@ def main():
     journal = []
     changed = []
     try:
+        # Authorization synchronization replaces the live generation receipt. Preserve
+        # the exact previous receipt before any trust or canonical-state mutation so
+        # installer-local failure can restore it and transaction rollback retains
+        # independent historical evidence. The current desired source is never used
+        # to reinterpret this backup.
+        if plan["kind"] == "authorization-sync":
+            previous_receipt_backup = backup_existing(RECEIPT, backup_root)
+            journal.append((RECEIPT, previous_receipt_backup))
         for name, (destination, mode) in DESTINATIONS.items():
             install_changed(stage / name, destination, mode, backup_root, journal, changed)
         private_stage, public_stage = generate_response_pair(stage)
