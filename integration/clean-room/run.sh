@@ -38,6 +38,8 @@ failure() {
         .split(home).join("<home>");
       process.stderr.write(clean.split("\n").slice(-80).join("\n")+"\n");
     ' "$WORK/apply.console" "$WORK" "$HOME" || true
+    printf '%s\n' 'clean-room synthetic restart trace:' >&2
+    docker exec "$CONTAINER" sh -c 'test ! -f /tmp/opshaven-fixture-systemctl.log || tail -n 10 /tmp/opshaven-fixture-systemctl.log' >&2 || true
   fi
   exit "$status"
 }

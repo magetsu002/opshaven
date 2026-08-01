@@ -2,6 +2,7 @@
 set -eu
 command="${1:-}"
 unit="${2:-}"
+printf 'uid=%s command=%s unit=%s\n' "$(/usr/bin/id -u)" "$command" "$unit" >> /tmp/opshaven-fixture-systemctl.log
 case "$unit" in
   sample-api.service|sample-worker.service) ;;
   *)
