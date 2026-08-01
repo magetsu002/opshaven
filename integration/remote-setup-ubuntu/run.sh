@@ -111,12 +111,20 @@ AUTH_GENERATION="$(node -e 'process.stdout.write(String(require(process.argv[1])
 [[ "$AUTH_GENERATION" -eq $((FULL_GENERATION + 1)) ]]
 [[ "$AUTH_MS" -lt 20000 ]]
 
+# Roll back the authorization-only update to the previous verified generation.
+"${CLI[@]}" setup remote --rollback --approve --json > "$GEN/authorization-rollback.json"
+node -e 'const x=require(process.argv[1]); if(!x.ok || x.action!=="rollback" || !x.restored.length) process.exit(1)' "$GEN/authorization-rollback.json"
+"${CLI[@]}" setup remote --non-interactive --approve --json > "$GEN/authorization-reapplied.json"
+node -e 'const x=require(process.argv[1]); if(!x.certified || x.changeType!=="AUTHORIZATION_ONLY" || x.installation || x.trust?.synchronizationKind!=="authorization-sync" || !x.canonicalState?.compatible) process.exit(1)' "$GEN/authorization-reapplied.json"
+REAPPLIED_GENERATION="$(node -e 'process.stdout.write(String(require(process.argv[1]).canonicalState.installed.generation))' "$GEN/authorization-reapplied.json")"
+[[ "$REAPPLIED_GENERATION" -eq "$AUTH_GENERATION" ]]
+
 NO_CHANGE_STARTED="$(milliseconds)"
 "${CLI[@]}" setup remote --non-interactive --approve --json > "$GEN/no-change.json"
 NO_CHANGE_MS="$(elapsed "$NO_CHANGE_STARTED")"
 node -e 'const x=require(process.argv[1]); if(!x.certified || x.outcome!=="SETUP_NO_CHANGE" || x.changeType!=="NO_CHANGE" || x.installation || x.trust || !x.canonicalState?.compatible) process.exit(1)' "$GEN/no-change.json"
 NO_CHANGE_GENERATION="$(node -e 'process.stdout.write(String(require(process.argv[1]).canonicalState.installed.generation))' "$GEN/no-change.json")"
-[[ "$NO_CHANGE_GENERATION" -eq "$AUTH_GENERATION" ]]
+[[ "$NO_CHANGE_GENERATION" -eq "$REAPPLIED_GENERATION" ]]
 [[ "$NO_CHANGE_MS" -lt 10000 ]]
 
 "${CLI[@]}" doctor --json > "$GEN/doctor-after-sync.json"
@@ -135,17 +143,10 @@ node -e 'const x=require(process.argv[1]); if(!x.certified || x.changeType!=="DI
 "${CLI[@]}" boundary verify --json > "$GEN/repaired-boundary.json"
 node -e 'if(!require(process.argv[1]).ok || !require(process.argv[2]).ok) process.exit(1)' "$GEN/repaired-doctor.json" "$GEN/repaired-boundary.json"
 
-"${CLI[@]}" setup remote --rollback --approve --json > "$GEN/rollback.json"
-node -e 'const x=require(process.argv[1]); if(!x.ok || x.action!=="rollback" || (!x.restored.length && !x.removed.length)) process.exit(1)' "$GEN/rollback.json"
-"${CLI[@]}" setup remote --non-interactive --approve --json > "$GEN/reinstalled.json"
-node -e 'const x=require(process.argv[1]); if(!x.certified || x.changeType!=="FULL_INSTALL" || !x.installation?.changed?.length) process.exit(1)' "$GEN/reinstalled.json"
-"${CLI[@]}" setup remote --non-interactive --approve --json > "$GEN/reinstalled-no-change.json"
-node -e 'const x=require(process.argv[1]); if(!x.certified || x.changeType!=="NO_CHANGE" || x.installation || x.trust) process.exit(1)' "$GEN/reinstalled-no-change.json"
-
 "${CLI[@]}" uninstall remote --approve --json > "$GEN/uninstall.json"
 node -e 'const x=require(process.argv[1]); if(!x.ok || x.action!=="uninstall" || !x.removed.includes("/usr/lib/opshaven")) process.exit(1)' "$GEN/uninstall.json"
 docker exec "$CONTAINER" test ! -e /usr/lib/opshaven
 docker exec "$CONTAINER" test -d /home/admin
 
 printf 'remote-setup-ubuntu timings_ms full=%s authorization=%s no_change=%s\n' "$FULL_MS" "$AUTH_MS" "$NO_CHANGE_MS"
-printf 'remote-setup-ubuntu: one-pass setup, deployment plan, authorization-only sync, no-change verification, mismatch repair, rollback, reinstall, and uninstall passed\n'
+printf 'remote-setup-ubuntu: one-pass setup, deployment plan, authorization rollback/resync, no-change verification, mismatch repair, and uninstall passed\n'
