@@ -6,6 +6,7 @@ import { colorEnabled, command, heading, sanitizeOperatorText, section, statusLi
 import { loadRemoteTrust } from "./remote-mcp/report.js";
 import { loadRemoteSetupConfig } from "./setup/remote.js";
 import { compatibilityDetails, prepareRemoteState, type RemoteStateComparison } from "./setup/state.js";
+import { inspectRemoteSynchronizationTransaction, type SynchronizationTransactionInspection } from "./setup/transaction-inspection.js";
 
 export interface DoctorCheck { label: string; passed: boolean; detail?: string }
 export interface DoctorReport {
@@ -18,6 +19,7 @@ export interface DoctorReport {
   securityBoundaryStatus: DoctorCheck[];
   endpoint: "READY" | "BLOCKED";
   deploymentCompatibility?: Record<string, unknown>;
+  synchronizationTransaction?: Record<string, unknown>;
 }
 export type OperatorWorkflowState = "NOT_INITIALIZED" | "LOCAL_INITIALIZED" | "REMOTE_CONFIGURED" | "READY" | "BLOCKED";
 export interface OperatorWorkflowReport { ok: boolean; state: OperatorWorkflowState; completed: string[]; blocked: string[]; nextAction: string | null; details?: DoctorReport }
@@ -53,35 +55,30 @@ function scalar(value: unknown): string {
 function renderCompatibility(value: Record<string, unknown>, color: boolean): string[] {
   const lines = [section("Deployment compatibility", color)];
   const fields: Array<[string, string]> = [
-    ["Expected runtime version", "expectedRuntimeVersion"],
-    ["Installed runtime version", "installedRuntimeVersion"],
-    ["Expected runtime digest", "expectedRuntimeDigest"],
-    ["Installed runtime digest", "installedRuntimeDigest"],
-    ["Expected dispatcher", "expectedDispatcher"],
-    ["Installed dispatcher", "installedDispatcher"],
-    ["Expected dispatcher mode", "expectedDispatcherMode"],
-    ["Installed dispatcher mode", "installedDispatcherMode"],
-    ["Expected dispatcher digest", "expectedDispatcherDigest"],
-    ["Installed dispatcher digest", "installedDispatcherDigest"],
-    ["Expected policy version", "expectedPolicyVersion"],
-    ["Installed policy version", "installedPolicyVersion"],
-    ["Expected policy identity", "expectedPolicyIdentity"],
-    ["Installed policy identity", "installedPolicyIdentity"],
-    ["Expected capability digest", "expectedCapabilityDigest"],
-    ["Installed capability digest", "installedCapabilityDigest"],
-    ["Expected declaration digest", "expectedDeclarationDigest"],
-    ["Installed declaration digest", "installedDeclarationDigest"],
-    ["Expected application scope", "expectedApplicationScope"],
-    ["Installed application scope", "installedApplicationScope"],
-    ["Installed platform", "installedPlatform"],
-    ["Installed architecture", "installedArchitecture"],
-    ["Installed Node.js", "installedNodeVersion"],
-    ["Installation generation", "installationGeneration"],
-    ["Expected value source", "expectedSource"],
-    ["Installed value source", "installedSource"],
-    ["Result", "result"],
-    ["Diagnosis", "diagnosis"],
-    ["Repair", "repair"],
+    ["Expected runtime version", "expectedRuntimeVersion"], ["Installed runtime version", "installedRuntimeVersion"],
+    ["Expected runtime digest", "expectedRuntimeDigest"], ["Installed runtime digest", "installedRuntimeDigest"],
+    ["Expected dispatcher", "expectedDispatcher"], ["Installed dispatcher", "installedDispatcher"],
+    ["Expected dispatcher mode", "expectedDispatcherMode"], ["Installed dispatcher mode", "installedDispatcherMode"],
+    ["Expected dispatcher digest", "expectedDispatcherDigest"], ["Installed dispatcher digest", "installedDispatcherDigest"],
+    ["Expected policy version", "expectedPolicyVersion"], ["Installed policy version", "installedPolicyVersion"],
+    ["Expected policy identity", "expectedPolicyIdentity"], ["Installed policy identity", "installedPolicyIdentity"],
+    ["Expected capability digest", "expectedCapabilityDigest"], ["Installed capability digest", "installedCapabilityDigest"],
+    ["Expected declaration digest", "expectedDeclarationDigest"], ["Installed declaration digest", "installedDeclarationDigest"],
+    ["Expected application scope", "expectedApplicationScope"], ["Installed application scope", "installedApplicationScope"],
+    ["Installed platform", "installedPlatform"], ["Installed architecture", "installedArchitecture"], ["Installed Node.js", "installedNodeVersion"],
+    ["Installation generation", "installationGeneration"], ["Expected value source", "expectedSource"], ["Installed value source", "installedSource"],
+    ["Result", "result"], ["Diagnosis", "diagnosis"], ["Repair", "repair"],
+  ];
+  for (const [label, key] of fields) lines.push(`${label}\n  ${sanitizeOperatorText(scalar(value[key]))}`);
+  return lines;
+}
+function renderTransaction(value: Record<string, unknown>, color: boolean): string[] {
+  const lines = [section("Synchronization transaction", color)];
+  const fields: Array<[string, string]> = [
+    ["Status", "status"], ["Last completed phase", "lastCompletedPhase"], ["Desired generation", "desiredGeneration"],
+    ["Active generation", "activeGeneration"], ["Previous verified generation", "previousGeneration"], ["Staged generation", "stagedGeneration"],
+    ["Receipt integrity", "receiptIntegrity"], ["Host binding", "hostBinding"], ["Rollback availability", "rollbackAvailability"],
+    ["Canonical readiness", "canonicalReadiness"], ["Recovery", "repair"],
   ];
   for (const [label, key] of fields) lines.push(`${label}\n  ${sanitizeOperatorText(scalar(value[key]))}`);
   return lines;
@@ -93,9 +90,11 @@ export function formatDoctorReport(report: DoctorReport): string {
   lines.push(...renderChecks("Remote connection", report.remoteDeploymentState, color), "");
   lines.push(...renderChecks("Authorization state", report.authorizationArtifacts, color), "");
   lines.push(...renderChecks("Security verification", [...report.endpointReadiness, ...report.securityBoundaryStatus], color), "");
+  if (report.synchronizationTransaction) lines.push(...renderTransaction(report.synchronizationTransaction, color), "");
   if (report.deploymentCompatibility) lines.push(...renderCompatibility(report.deploymentCompatibility, color), "");
   lines.push(section("Next action", color));
   if (report.ok) lines.push("No action required.");
+  else if (report.synchronizationTransaction?.repair === "opshaven setup repair") lines.push(command("opshaven setup repair", color), "", section("Diagnostics", color), command("opshaven doctor --debug", color));
   else lines.push(command("opshaven setup remote", color), "", section("Diagnostics", color), command("opshaven doctor --debug", color));
   return `${lines.join("\n")}\n`;
 }
@@ -111,10 +110,30 @@ export function formatWorkflowReport(report: OperatorWorkflowReport): string {
   if (report.details) lines.push("", section("Debug details", color), "", formatDoctorReport(report.details).trimEnd());
   return `${lines.join("\n")}\n`;
 }
-async function canonicalComparison(setupPath: string | null): Promise<{ comparison: RemoteStateComparison | null; error: string }> {
-  if (!setupPath) return { comparison: null, error: "Remote setup state is unavailable" };
-  try { return { comparison: await prepareRemoteState(await loadRemoteSetupConfig(setupPath)), error: "" }; }
-  catch (error) { return { comparison: null, error: safeDetail(error) }; }
+async function canonicalComparison(setupPath: string | null): Promise<{ comparison: RemoteStateComparison | null; transaction: SynchronizationTransactionInspection | null; error: string }> {
+  if (!setupPath) return { comparison: null, transaction: null, error: "Remote setup state is unavailable" };
+  try {
+    const setup = await loadRemoteSetupConfig(setupPath);
+    const [comparison, transaction] = await Promise.all([prepareRemoteState(setup), inspectRemoteSynchronizationTransaction(setup)]);
+    return { comparison, transaction, error: "" };
+  } catch (error) { return { comparison: null, transaction: null, error: safeDetail(error) }; }
+}
+function transactionDetails(transaction: SynchronizationTransactionInspection | null, canonicalReady: boolean): Record<string, unknown> {
+  const record = transaction?.transaction;
+  const unresolved = transaction ? !transaction.activeGenerationCertain || !transaction.integrityValid || !transaction.hostBindingValid : false;
+  return {
+    status: transaction?.status ?? "unavailable",
+    lastCompletedPhase: transaction?.lastCompletedPhase ?? "none",
+    desiredGeneration: record?.desiredGenerationIdentity ?? "unavailable",
+    activeGeneration: transaction?.activeGenerationCertain ? record?.desiredGenerationIdentity ?? record?.previousGenerationIdentity ?? "recorded" : "uncertain",
+    previousGeneration: record?.previousGenerationIdentity ?? "unavailable",
+    stagedGeneration: record && ["STAGE", "VERIFY_STAGED", "ACTIVATE", "VERIFY_ACTIVE"].includes(record.phase) ? record.desiredGenerationIdentity : "none",
+    receiptIntegrity: transaction?.integrityValid === true ? "valid" : "invalid or unavailable",
+    hostBinding: transaction?.hostBindingValid === true ? "valid" : "invalid or unavailable",
+    rollbackAvailability: transaction?.rollbackAvailable === true ? "available" : "unavailable",
+    canonicalReadiness: canonicalReady && !unresolved ? "ready" : "blocked",
+    repair: unresolved ? "opshaven setup repair" : null,
+  };
 }
 async function buildDoctorReport(configPath: string, args: string[], setupPath: string | null): Promise<DoctorReport> {
   const mode = selectedMode(args);
@@ -128,9 +147,9 @@ async function buildDoctorReport(configPath: string, args: string[], setupPath: 
   catch (error) { endpointError = safeDetail(error); }
   const canonical = await canonicalComparison(setupPath);
   const canonicalOk = canonical.comparison?.compatible === true;
+  const transactionOk = canonical.transaction?.activeGenerationCertain !== false && canonical.transaction?.integrityValid !== false && canonical.transaction?.hostBindingValid !== false;
   const canonicalDetail = canonical.comparison?.reasons.join("; ") || canonical.error || undefined;
-  const runtimeCurrent = canonical.comparison?.installed.sourceSha === canonical.comparison?.desired.sourceSha
-    && canonical.comparison?.installed.runtimeSha256 === canonical.comparison?.desired.runtimeSha256;
+  const runtimeCurrent = canonical.comparison?.installed.runtimeSha256 === canonical.comparison?.desired.runtimeSha256;
   const authorizationCurrent = canonical.comparison?.installed.policyVersion === canonical.comparison?.desired.policyVersion
     && canonical.comparison?.installed.policySha256 === canonical.comparison?.desired.policySha256
     && canonical.comparison?.installed.capabilityIdentitySha256 === canonical.comparison?.desired.capabilityIdentitySha256
@@ -145,25 +164,30 @@ async function buildDoctorReport(configPath: string, args: string[], setupPath: 
   const deploymentScopeValid = [...config.resources.values()].some((item) => item.kind === "deployment") ? assertionPassed(boundary, "registered application resources authorized") && scopeCurrent : dispatcherCompatible;
   const auditValid = assertionPassed(boundary, "audit chain valid");
   const boundaryValid = boundary?.ok === true;
-  const ok = localOk && authenticatedInspection && endpointConfigurationValid && boundaryValid && dispatcherCompatible && runtimeCurrent && authorizationCurrent && declarationCurrent && deploymentScopeValid;
+  const ok = localOk && transactionOk && authenticatedInspection && endpointConfigurationValid && boundaryValid && dispatcherCompatible && runtimeCurrent && authorizationCurrent && declarationCurrent && deploymentScopeValid;
+  const transactionDetail = canonical.transaction && !transactionOk ? `transaction ${canonical.transaction.status}; phase ${canonical.transaction.lastCompletedPhase ?? "unknown"}; run opshaven setup repair` : undefined;
   return {
     ok,
     mode,
     localOperatorEnvironment: localChecks,
     remoteDeploymentState: [
       check("Remote connection available", authenticatedInspection, boundaryError || undefined),
+      check("Synchronization transaction resolved", transactionOk, transactionDetail),
       check("Remote runtime identity current", runtimeCurrent, canonicalDetail),
       check("Dispatcher compatible", dispatcherCompatible, canonicalDetail || boundaryError || undefined),
     ],
     authorizationArtifacts: [
       check("Authorization valid", authenticatedInspection && authorizationCurrent, canonicalDetail || boundaryError || undefined),
       check("Application declaration valid", declarationCurrent, canonicalDetail),
-      check("Deployment authorization valid", canonicalOk && deploymentScopeValid, canonicalDetail || boundaryError || undefined),
+      check("Deployment authorization valid", canonicalOk && deploymentScopeValid && transactionOk, canonicalDetail || transactionDetail || boundaryError || undefined),
     ],
     endpointReadiness: [check("Endpoint configuration valid", endpointConfigurationValid, endpointError || undefined), check(endpointEnabled ? "Remote endpoint is read-only" : "Local connection mode selected", endpointEnabled ? endpointReadOnly : true)],
-    securityBoundaryStatus: [check("Security boundary verified", boundaryValid, boundaryError || undefined), check("Audit history valid", auditValid, boundaryError || undefined)],
+    securityBoundaryStatus: [check("Security boundary verified", boundaryValid && transactionOk, transactionDetail || boundaryError || undefined), check("Audit history valid", auditValid, boundaryError || undefined)],
     endpoint: ok ? "READY" : "BLOCKED",
-    ...(args.includes("--debug") && canonical.comparison ? { deploymentCompatibility: compatibilityDetails(canonical.comparison) } : {}),
+    ...(args.includes("--debug") ? {
+      synchronizationTransaction: transactionDetails(canonical.transaction, canonicalOk),
+      ...(canonical.comparison ? { deploymentCompatibility: compatibilityDetails(canonical.comparison) } : {}),
+    } : {}),
   };
 }
 function initialReport(initialized: boolean, keysReady: boolean, localReady: boolean): OperatorWorkflowReport {
@@ -182,6 +206,7 @@ export async function runDoctor(configPath: string, args: string[]): Promise<voi
     const report: OperatorWorkflowReport = { ok: false, state: "BLOCKED", completed: [...(snapshot.keysReady ? ["Operator keys"] : []), "Local configuration"], blocked: ["Operator readiness checks could not complete"], nextAction: snapshot.initialized ? "opshaven setup remote" : "opshaven doctor --debug --config <path>", ...(debug ? { details: { ok: false, mode: selectedMode(args), localOperatorEnvironment: [check("Diagnostic execution", false, safeDetail(error))], remoteDeploymentState: [], authorizationArtifacts: [], endpointReadiness: [], securityBoundaryStatus: [], endpoint: "BLOCKED" } } : {}) };
     process.stdout.write(args.includes("--json") ? `${JSON.stringify(report)}\n` : formatWorkflowReport(report)); process.exitCode = 1; return;
   }
-  const report: OperatorWorkflowReport = { ok: details.ok, state: details.ok ? "READY" : snapshot.initialized ? "REMOTE_CONFIGURED" : "BLOCKED", completed: [...(snapshot.keysReady ? ["Operator keys"] : []), "Local configuration", ...(snapshot.setupReady ? ["Remote setup state"] : []), ...(details.ok ? ["Remote deployment", "Boundary verification"] : [])], blocked: details.ok ? [] : ["Remote deployment is not ready"], nextAction: details.ok ? null : snapshot.initialized ? "opshaven setup remote" : "opshaven doctor --debug --config <path>", ...(debug ? { details } : {}) };
+  const repairRequired = details.synchronizationTransaction?.repair === "opshaven setup repair";
+  const report: OperatorWorkflowReport = { ok: details.ok, state: details.ok ? "READY" : snapshot.initialized ? "REMOTE_CONFIGURED" : "BLOCKED", completed: [...(snapshot.keysReady ? ["Operator keys"] : []), "Local configuration", ...(snapshot.setupReady ? ["Remote setup state"] : []), ...(details.ok ? ["Remote deployment", "Boundary verification"] : [])], blocked: details.ok ? [] : [repairRequired ? "Synchronization transaction requires reviewed recovery" : "Remote deployment is not ready"], nextAction: details.ok ? null : repairRequired ? "opshaven setup repair" : snapshot.initialized ? "opshaven setup remote" : "opshaven doctor --debug --config <path>", ...(debug ? { details } : {}) };
   process.stdout.write(args.includes("--json") ? `${JSON.stringify(report)}\n` : formatWorkflowReport(report)); process.exitCode = report.ok ? 0 : 1;
 }
