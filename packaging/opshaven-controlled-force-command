@@ -15,7 +15,6 @@ case "$2" in
 esac
 
 exec /usr/bin/setpriv \
-  --no-new-privs \
   --inh-caps=-all \
   --ambient-caps=-all \
   --reset-env \

@@ -110,14 +110,22 @@ export async function buildRuntimeManifest(runtimeRoot: string): Promise<Runtime
 }
 
 export function renderReadonlyWrapper(template: string, nodePath: string, runtimeRoot: string): string {
-  for (const required of ["--no-new-privs", "--inh-caps=-all", "--ambient-caps=-all", "--reset-env"]) {
-    if (!template.includes(required)) throw new OpsHavenError("POLICY_DENIED", `Forced-command wrapper template is missing ${required}.`);
-  }
-  if (template.includes("--bounding-set")) throw new OpsHavenError("POLICY_DENIED", "Forced-command wrapper template contains the incompatible bounding-set transition.");
-  if (!/^\/[A-Za-z0-9._/+-]+$/.test(nodePath) || !/^\/[A-Za-z0-9._/+-]+$/.test(runtimeRoot)) throw new OpsHavenError("CONFIG_INVALID", "Resolved wrapper paths are invalid.");
   const controlledPlaceholder = "/usr/lib/opshaven/dispatcher.js";
   const readOnlyPlaceholder = "/usr/lib/opshaven/read-only-dispatcher.js";
   const controlled = template.includes(controlledPlaceholder);
+  const readOnly = template.includes(readOnlyPlaceholder);
+  if (controlled === readOnly) throw new OpsHavenError("POLICY_DENIED", "Forced-command wrapper must select exactly one dispatcher mode.");
+  const requiredFlags = controlled
+    ? ["--inh-caps=-all", "--ambient-caps=-all", "--reset-env"]
+    : ["--no-new-privs", "--inh-caps=-all", "--ambient-caps=-all", "--reset-env"];
+  for (const required of requiredFlags) {
+    if (!template.includes(required)) throw new OpsHavenError("POLICY_DENIED", `Forced-command wrapper template is missing ${required}.`);
+  }
+  if (controlled && template.includes("--no-new-privs")) {
+    throw new OpsHavenError("POLICY_DENIED", "Controlled dispatcher cannot use no-new-privileges because exact approved OS privilege transitions would be impossible.");
+  }
+  if (template.includes("--bounding-set")) throw new OpsHavenError("POLICY_DENIED", "Forced-command wrapper contains the incompatible bounding-set transition.");
+  if (!/^\/[A-Za-z0-9._/+-]+$/.test(nodePath) || !/^\/[A-Za-z0-9._/+-]+$/.test(runtimeRoot)) throw new OpsHavenError("CONFIG_INVALID", "Resolved wrapper paths are invalid.");
   const placeholder = controlled ? controlledPlaceholder : readOnlyPlaceholder;
   const dispatcher = controlled ? `${runtimeRoot}/src/remote/dispatcher.js` : `${runtimeRoot}/src/remote/read-only-dispatcher.js`;
   let rendered = template.replace("/usr/bin/node", nodePath);

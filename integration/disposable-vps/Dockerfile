@@ -3,6 +3,7 @@ WORKDIR /src
 COPY package.json package-lock.json tsconfig.json tsconfig.build.json tsconfig.readonly.json ./
 COPY types ./types
 COPY src ./src
+COPY scripts/ensure-bin-executable.mjs ./scripts/ensure-bin-executable.mjs
 RUN npm ci --ignore-scripts --no-audit --no-fund && npm run build
 
 FROM node:22-bookworm-slim

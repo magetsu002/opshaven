@@ -345,6 +345,9 @@ export class DeploymentPlanner {
       || plan.observedStateFingerprint !== observedFingerprint(observed) || !observed.rollbackAvailable || observed.activeReleaseId !== plan.rollback.releaseId) {
       throw new OpsHavenError("POLICY_DENIED", "Deployment plan is stale. The remote deployment state or authorization changed after planning. No changes were made. Create a new deployment plan.");
     }
+    if (observed.availableDiskBytes < DEPLOYMENT_MINIMUM_DISK_BYTES) {
+      throw new OpsHavenError("POLICY_DENIED", "Available disk space is below the supported deployment minimum. No changes were made.");
+    }
     return observed;
   }
 

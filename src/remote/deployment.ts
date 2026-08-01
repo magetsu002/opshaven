@@ -16,6 +16,25 @@ const COMMIT = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
 const RELEASE_ID = /^[A-Za-z0-9._-]{1,128}$/;
 interface ReleaseRecord { releaseId: string; commit: string; path: string; activatedAt: string; previousPath: string | null; status: "active" | "failed" | "rolled_back"; migrationPolicy: "none" | "manual" }
 
+async function requireDeploymentCommand(
+  runner: CommandRunner,
+  executable: string,
+  args: readonly string[],
+  options: RunOptions,
+  stage: string,
+): Promise<string> {
+  try {
+    return await requireSuccess(runner, executable, args, options);
+  } catch (error) {
+    if (error instanceof OpsHavenError && error.code !== "REMOTE_OPERATION_FAILED") throw error;
+    throw new OpsHavenError("REMOTE_OPERATION_FAILED", `${stage} failed safely.`);
+  }
+}
+
+function safeDeploymentFailure(error: unknown): string {
+  return error instanceof OpsHavenError ? error.message : "Deployment transaction failed safely.";
+}
+
 function commandOptions(limits: { timeoutMs: number; maxBytes: number; maxLines: number }, cwd?: string): RunOptions { return { ...limits, ...(cwd ? { cwd } : {}) }; }
 function replaceArgs(step: TrustedStep, target: DeploymentResource, releasePath: string, commit: string): string[] {
   return step.args.map((arg) => arg.replaceAll("{releasePath}", releasePath).replaceAll("{repositoryPath}", target.repositoryPath).replaceAll("{commit}", commit));
@@ -59,9 +78,9 @@ export class DeploymentManager {
   }
   private async activate(target: DeploymentResource, releasePath: string, limits: RunOptions): Promise<void> {
     if (target.activation === "systemd") {
-      for (const id of target.serviceIds) await requireSuccess(this.runner, SUDO, ["--non-interactive", SYSTEMCTL, "restart", this.service(id).unit], limits);
+      for (const id of target.serviceIds) await requireDeploymentCommand(this.runner, SUDO, ["--non-interactive", SYSTEMCTL, "restart", this.service(id).unit], limits, "Approved service restart");
     } else {
-      await requireSuccess(this.runner, DOCKER, ["compose", "--project-directory", releasePath, "up", "-d", "--remove-orphans"], limits);
+      await requireDeploymentCommand(this.runner, DOCKER, ["compose", "--project-directory", releasePath, "up", "-d", "--remove-orphans"], limits, "Approved container activation");
     }
   }
   private async verifyHealth(target: DeploymentResource): Promise<void> {
@@ -132,10 +151,19 @@ export class DeploymentManager {
     const plan = { releaseId, commit: exactCommit, currentCommit: state.activeCommit, previousPath, activation: target.activation, services: target.serviceIds, probes: target.probeIds, migrationPolicy: target.migrationPolicy, migrationWarning: "Database migrations are never run or reversed automatically." };
     if (dryRun) return { dryRun: true, changed: false, plan };
     await ensureReleaseRoot(target);
-    await requireSuccess(this.runner, GIT, ["-C", target.repositoryPath, "worktree", "add", "--detach", releasePath, exactCommit], limits);
+    await requireDeploymentCommand(this.runner, GIT, ["-C", target.repositoryPath, "worktree", "add", "--detach", releasePath, exactCommit], limits, "Deployment release preparation");
     await validateReleaseDirectory(target, releasePath);
     try {
-      for (const step of [...target.buildSteps, ...target.checkSteps]) await requireSuccess(this.runner, step.executable, replaceArgs(step, target, releasePath, exactCommit), commandOptions(limitsInput, step.cwd === "release" ? releasePath : target.repositoryPath));
+      const reviewedSteps = [...target.buildSteps, ...target.checkSteps];
+    for (const [index, step] of reviewedSteps.entries()) {
+      await requireDeploymentCommand(
+        this.runner,
+        step.executable,
+        replaceArgs(step, target, releasePath, exactCommit),
+        commandOptions(limitsInput, step.cwd === "release" ? releasePath : target.repositoryPath),
+        `Deployment reviewed build or check step ${index + 1}`,
+      );
+    }
       await this.switchSymlink(target, releasePath);
       await this.activate(target, releasePath, limits);
       await this.verifyHealth(target);
@@ -143,7 +171,7 @@ export class DeploymentManager {
       return { dryRun: false, changed: true, releaseId, commit: exactCommit, previousCommit: state.activeCommit, previousPath, healthVerified: true, migrationPolicy: target.migrationPolicy, migrationWarning: "Database migrations were not changed automatically." };
     } catch (error) {
       try { await this.restore(target, previousPath, limits); }
-      catch { throw new OpsHavenError("REMOTE_OPERATION_FAILED", "Deployment failed and the prior activation could not be restored safely."); }
+      catch { throw new OpsHavenError("REMOTE_OPERATION_FAILED", `${safeDeploymentFailure(error)} Prior activation restoration failed safely.`); }
       await this.record(target, { releaseId, commit: exactCommit, path: releasePath, activatedAt: new Date().toISOString(), previousPath, status: "failed", migrationPolicy: target.migrationPolicy }).catch(() => undefined);
       throw error;
     }

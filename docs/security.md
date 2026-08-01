@@ -99,6 +99,8 @@ The dispatcher artifact, policy, capability authorization, declarations, binding
 
 The isolated read-only launcher uses no-new-privileges and an empty capability set. The reference systemd profile adds private temporary space, filesystem protections, restricted address families, device isolation, and syscall filtering where supported.
 
+Controlled mode drops inherited and ambient capabilities and resets the environment, but it does not set no-new-privileges because that kernel flag would make the reviewed exact sudo transition impossible. The restricted account remains outside privileged groups; host policy must allow only the exact reviewed service restart commands. Signed operation approval, dispatcher allowlists, configured service identity, and the host sudoers rule must all agree before a restart can occur.
+
 Controlled mode intentionally requires narrowly documented exceptions for approved deployment writes, configured health-probe networking, and exact systemd sudo transitions. Distribution-specific systemd and syscall behavior must be validated before production adoption.
 
 See [Remote confinement](confinement.md) for the detailed reference profile.

@@ -13,7 +13,7 @@ import { PolicyEngine } from "../src/policy.js";
 import { sanitizeOutput } from "../src/redaction.js";
 import { createAuthenticatedRequest, verifyAuthenticatedRequest } from "../src/remote/authenticated-protocol.js";
 import { parseRemoteRequest } from "../src/remote/protocol.js";
-import { FixedCommandRunner } from "../src/remote/runner.js";
+import { FIXED_COMMAND_ENV, FixedCommandRunner } from "../src/remote/runner.js";
 
 async function root(): Promise<string> { return await fs.mkdtemp(path.join(tmpdir(), "opshaven-assurance-")); }
 async function configFixture() {
@@ -73,6 +73,18 @@ test("nonce replay and clock skew fail closed across deterministic boundary case
     const skewed = createAuthenticatedRequest(request, capability, privateKey, now + skew, 30);
     await assert.rejects(verifyAuthenticatedRequest(skewed.envelope, capability, publicKey, path.join(await root(), "replay"), now));
   }
+});
+
+test("fixed command environment is complete and does not inherit operator variables", () => {
+  assert.deepEqual(FIXED_COMMAND_ENV, {
+    HOME: "/home/opshaven",
+    PATH: "/usr/bin:/bin",
+    LANG: "C",
+    LC_ALL: "C",
+  });
+  assert.deepEqual(Object.keys(FIXED_COMMAND_ENV).sort(), ["HOME", "LANG", "LC_ALL", "PATH"]);
+  assert.equal("NPM_CONFIG_USERCONFIG" in FIXED_COMMAND_ENV, false);
+  assert.equal("NODE_OPTIONS" in FIXED_COMMAND_ENV, false);
 });
 
 test("oversized, slow, binary, and malicious output is bounded or rejected", async () => {

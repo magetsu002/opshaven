@@ -4,6 +4,7 @@ COPY package.json package-lock.json tsconfig.json tsconfig.build.json tsconfig.r
 COPY types ./types
 COPY src ./src
 COPY tests ./tests
+COPY scripts/ensure-bin-executable.mjs ./scripts/ensure-bin-executable.mjs
 COPY integration/remote-mcp-podman ./integration/remote-mcp-podman
 RUN npm ci --ignore-scripts --no-audit --no-fund \
   && npm run build \
