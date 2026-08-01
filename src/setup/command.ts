@@ -2,7 +2,8 @@ import { OpsHavenError } from "../errors.js";
 import { ensureRemoteSetupState, resolveSetupConfigPath } from "../operator-state.js";
 import { endpointStatus, exposeEndpoint } from "./endpoint.js";
 import { executeRemoteSetup } from "./engine.js";
-import { inspectRemoteSetupRepair, repairRemoteSetup } from "./repair.js";
+import { createSetupPresenter, type SetupPresenter } from "./presentation.js";
+import { inspectRemoteSetupRepair, prepareReviewedCleanReinstall, repairRemoteSetup } from "./repair.js";
 import { buildRemoteSetupPlan, formatRemoteSetupPlan, loadRemoteSetupConfig } from "./remote.js";
 import { rollbackRemoteSetup, uninstallRemoteSetup } from "./rollback.js";
 import { prepareRemoteState } from "./state.js";
@@ -91,6 +92,19 @@ function formatRepairPlan(plan: Awaited<ReturnType<typeof inspectRemoteSetupRepa
   return `${lines.join("\n")}\n`;
 }
 
+function suppressReceipt(base: SetupPresenter): SetupPresenter {
+  return {
+    plan: (value) => base.plan(value),
+    step: (id, scope, state, detail) => base.step(id, scope, state, detail),
+    progress: base.progress ? (id, detail, elapsedMs) => base.progress?.(id, detail, elapsedMs) : undefined,
+    heartbeatMs: base.heartbeatMs ? () => base.heartbeatMs?.() ?? 15000 : undefined,
+    cancellation: base.cancellation ? (mutationStarted, restored) => base.cancellation?.(mutationStarted, restored) : undefined,
+    fingerprint: (label, value) => base.fingerprint(label, value),
+    approve: async (message) => await base.approve(message),
+    receipt: () => undefined,
+  };
+}
+
 export async function runRemoteRepair(args: readonly string[]): Promise<void> {
   const config = await loadRemoteSetupConfig(await setupPath(args, false));
   const json = args.includes("--json");
@@ -100,6 +114,39 @@ export async function runRemoteRepair(args: readonly string[]): Promise<void> {
     if (plan.action !== "none") process.exitCode = 2;
     return;
   }
+
+  if (args.includes("--clean-reinstall")) {
+    const evidence = await prepareReviewedCleanReinstall(config, true);
+    const comparison = await prepareRemoteState(config);
+    const setupPlan = buildRemoteSetupPlan(config, comparison);
+    if (setupPlan.changeType !== "FULL_INSTALL") throw new OpsHavenError("POLICY_DENIED", "Reviewed clean reinstall preparation did not produce an empty installation state.", false, { evidenceRoot: evidence.evidenceRoot });
+    const controller = new AbortController();
+    process.on("SIGINT", () => controller.abort());
+    const basePresenter = createSetupPresenter({ tui: args.includes("--tui"), nonInteractive: true, preapproved: true, json });
+    const setup = await executeRemoteSetup(config, setupPlan, {
+      nonInteractive: true,
+      tui: args.includes("--tui"),
+      approved: true,
+      json,
+      signal: controller.signal,
+      presenter: suppressReceipt(basePresenter),
+    });
+    const combined = Object.freeze({ ok: true, action: "clean-reinstall", evidence, setup });
+    if (json) {
+      process.stdout.write(`${JSON.stringify(combined)}\n`);
+      return;
+    }
+    process.stdout.write("✓ Reviewed clean reinstall complete\n\n");
+    process.stdout.write("Evidence\n");
+    process.stdout.write(`  Preserved under ${evidence.evidenceRoot}\n`);
+    process.stdout.write(`  Manifest ${evidence.evidenceManifestSha256}\n\n`);
+    process.stdout.write("Current state\n");
+    process.stdout.write("  ✓ New reviewed generation installed\n");
+    process.stdout.write("  ✓ Dispatcher and authorization verified\n");
+    process.stdout.write("  ✓ Canonical readiness and security boundary verified\n");
+    return;
+  }
+
   const receipt = await repairRemoteSetup(config, true);
   if (json) {
     process.stdout.write(`${JSON.stringify(receipt)}\n`);
