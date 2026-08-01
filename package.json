@@ -21,6 +21,8 @@
     "build": "npm run clean && npm run build:main && npm run build:readonly",
     "test": "npm run build && node --test dist/tests/*.test.js",
     "cli": "node dist/src/cli-entry.js",
+    "dev:cli": "npm run build && node dist/src/cli-entry.js",
+    "install:local": "npm run build && npm link",
     "mcp": "node dist/src/index.js",
     "start": "npm run cli -- help",
     "start:mcp": "npm run mcp",
