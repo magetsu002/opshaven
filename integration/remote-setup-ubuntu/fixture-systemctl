@@ -2,7 +2,12 @@
 set -eu
 command="${1:-}"
 unit="${2:-}"
-printf 'uid=%s command=%s unit=%s\n' "$(/usr/bin/id -u)" "$command" "$unit" >> /tmp/opshaven-fixture-systemctl.log
+trace=/tmp/opshaven-fixture-systemctl.log
+if [ ! -e "$trace" ]; then
+  : > "$trace" 2>/dev/null || true
+  chmod 666 "$trace" 2>/dev/null || true
+fi
+printf 'uid=%s command=%s unit=%s\n' "$(/usr/bin/id -u)" "$command" "$unit" >> "$trace" 2>/dev/null || true
 case "$unit" in
   sample-api.service|sample-worker.service) ;;
   *)
