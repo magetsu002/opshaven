@@ -31,6 +31,7 @@ ${section("Start here", color)}
   init                     Configure this operator machine
   app add                  Register a supported application locally
   setup remote             Install or synchronize the remote target
+  setup repair             Inspect or repair a failed synchronization
   doctor                   Diagnose canonical local and remote readiness
   boundary verify          Verify the installed deployment boundary
 
@@ -68,7 +69,12 @@ ${paint("Recommended deployment onboarding", "info", color)}
   opshaven boundary verify
   opshaven deploy plan sample-api
 
-Later setup runs compare verified content identities. Unchanged state is verified without mutation, and authorization-only changes reuse the installed runtime.
+Later setup runs compare verified content identities. Unchanged state is verified without mutation. Dispatcher-only and authorization-only changes reuse the installed runtime.
+
+After a failed synchronization:
+  opshaven doctor --debug
+  opshaven setup repair
+  opshaven setup repair --approve
 
 Non-interactive planning must supply:
   opshaven deploy plan sample-api --revision <full-commit-sha>
@@ -122,11 +128,28 @@ async function main(): Promise<void> {
   if (requested === "deploy") {
     const setupPath = await resolveSetupConfigPath(commandArgs);
     if (!setupPath) throw new OpsHavenError("POLICY_DENIED", "Deployment is blocked until remote setup is configured and verified.");
-    const [{ loadRemoteSetupConfig }, { compatibilityDetails, prepareRemoteState }] = await Promise.all([
+    const [{ loadRemoteSetupConfig }, { compatibilityDetails, prepareRemoteState }, { inspectRemoteSynchronizationTransaction }] = await Promise.all([
       import("./setup/remote.js"),
       import("./setup/state.js"),
+      import("./setup/transaction-inspection.js"),
     ]);
-    const comparison = await prepareRemoteState(await loadRemoteSetupConfig(setupPath));
+    const setup = await loadRemoteSetupConfig(setupPath);
+    const [comparison, transaction] = await Promise.all([
+      prepareRemoteState(setup),
+      inspectRemoteSynchronizationTransaction(setup),
+    ]);
+    if (!transaction.activeGenerationCertain || !transaction.integrityValid || !transaction.hostBindingValid) {
+      throw new OpsHavenError(
+        "POLICY_DENIED",
+        "Deployment is blocked because the active synchronization generation is uncertain. Inspect the transaction and run the reviewed recovery flow.",
+        false,
+        {
+          synchronizationTransaction: transaction,
+          blockedOperations: ["deployment planning", "deployment apply"],
+          safeNextCommand: "opshaven setup repair",
+        },
+      );
+    }
     if (!comparison.compatible) {
       throw new OpsHavenError(
         "POLICY_DENIED",
