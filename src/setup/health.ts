@@ -98,6 +98,10 @@ function repairForTransaction(transaction: SynchronizationTransactionInspection)
   return "EVIDENCE_PRESERVING_REINSTALL";
 }
 
+function canAutomateRepair(classification: RepairClassification): boolean {
+  return classification !== "MANUAL_RECOVERY_REQUIRED";
+}
+
 export function evaluateInstallationHealth(
   installed: InstalledRemoteState,
   transaction: SynchronizationTransactionInspection,
@@ -138,11 +142,11 @@ export function evaluateInstallationHealth(
     if (footprint?.kind === "partial") {
       states.push("REMOTE_GENERATION_PARTIAL", "REMOTE_REPAIR_REQUIRED", "REMOTE_ROLLBACK_UNAVAILABLE");
       reasons.push("installed generation history contains incomplete identity evidence");
-      repairClassification = "EVIDENCE_PRESERVING_REINSTALL";
+      if (canAutomateRepair(repairClassification)) repairClassification = "EVIDENCE_PRESERVING_REINSTALL";
     } else if (footprint?.kind === "legacy") {
       states.push("REMOTE_LEGACY", "REMOTE_REPAIR_REQUIRED", "REMOTE_ROLLBACK_UNAVAILABLE");
       reasons.push("managed runtime artifacts exist without canonical generation records");
-      repairClassification = "MIGRATE_LEGACY_STATE";
+      if (canAutomateRepair(repairClassification)) repairClassification = "MIGRATE_LEGACY_STATE";
       migrationStatus = "required";
     } else if (!transactionIncomplete && !transactionUncertain && footprint?.kind !== "unsafe") {
       states.push("REMOTE_ABSENT");
@@ -154,34 +158,36 @@ export function evaluateInstallationHealth(
     if (legacyDetail(installed) || footprint?.kind === "legacy") {
       states.push("REMOTE_LEGACY");
       migrationStatus = "required";
-      repairClassification = repairClassification === "NO_REPAIR_NEEDED" ? "MIGRATE_LEGACY_STATE" : repairClassification;
+      if (repairClassification === "NO_REPAIR_NEEDED") repairClassification = "MIGRATE_LEGACY_STATE";
     } else if (partialDetail(installed) || footprint?.kind === "partial") {
       states.push("REMOTE_GENERATION_PARTIAL");
-      repairClassification = transaction.rollbackAvailable ? "RESTORE_PREVIOUS_GENERATION" : "EVIDENCE_PRESERVING_REINSTALL";
+      if (canAutomateRepair(repairClassification)) {
+        repairClassification = transaction.rollbackAvailable ? "RESTORE_PREVIOUS_GENERATION" : "EVIDENCE_PRESERVING_REINSTALL";
+      }
     } else if (receiptDetail(installed)) {
       states.push("REMOTE_RECEIPT_INVALID");
-      repairClassification = "EVIDENCE_PRESERVING_REINSTALL";
+      if (canAutomateRepair(repairClassification)) repairClassification = "EVIDENCE_PRESERVING_REINSTALL";
     } else {
       states.push("REMOTE_STATE_UNCERTAIN");
       migrationStatus = "unknown";
       repairClassification = "MANUAL_RECOVERY_REQUIRED";
     }
   } else {
-    if (footprint && footprint.kind !== "canonical-pair") {
+    if (footprint && footprint.kind !== "canonical-pair" && footprint.kind !== "unsafe") {
       states.push("REMOTE_GENERATION_PARTIAL", "REMOTE_REPAIR_REQUIRED");
       reasons.push("canonical receipt and installed-state evidence are not both present");
-      repairClassification = "EVIDENCE_PRESERVING_REINSTALL";
+      if (canAutomateRepair(repairClassification)) repairClassification = "EVIDENCE_PRESERVING_REINSTALL";
     }
     if (legacyDetail(installed)) {
       states.push("REMOTE_LEGACY", "REMOTE_SYNC_REQUIRED");
       reasons.push(`installed state schema ${installed.schemaVersion ?? "unknown"} requires explicit migration`);
       migrationStatus = "required";
-      repairClassification = "MIGRATE_LEGACY_STATE";
+      if (canAutomateRepair(repairClassification)) repairClassification = "MIGRATE_LEGACY_STATE";
     }
     if (installed.recordedIdentityMatches === false) {
       states.push("REMOTE_RECEIPT_INVALID", "REMOTE_REPAIR_REQUIRED");
       reasons.push(installed.detail ?? "recorded generation identity does not match installed artifacts");
-      repairClassification = "EVIDENCE_PRESERVING_REINSTALL";
+      if (canAutomateRepair(repairClassification)) repairClassification = "EVIDENCE_PRESERVING_REINSTALL";
     }
     if (comparison?.changeType === "REPAIR_REQUIRED") {
       states.push("REMOTE_REPAIR_REQUIRED");
@@ -190,7 +196,7 @@ export function evaluateInstallationHealth(
     } else if (comparison && !comparison.compatible) {
       states.push("REMOTE_SYNC_REQUIRED");
       reasons.push(...comparison.reasons);
-    } else if (!states.some((state) => state === "REMOTE_REPAIR_REQUIRED" || state === "REMOTE_RECEIPT_INVALID" || state === "REMOTE_GENERATION_PARTIAL" || state === "REMOTE_LEGACY")) {
+    } else if (!states.some((state) => state === "REMOTE_REPAIR_REQUIRED" || state === "REMOTE_RECEIPT_INVALID" || state === "REMOTE_GENERATION_PARTIAL" || state === "REMOTE_LEGACY" || state === "REMOTE_STATE_UNCERTAIN")) {
       states.push(installed.dispatcherMode === "read-only" ? "REMOTE_HEALTHY_READ_ONLY" : "REMOTE_HEALTHY_DEPLOYMENT");
     }
   }
@@ -231,7 +237,7 @@ export function evaluateInstallationHealth(
     comparison,
     activeGeneration: installed.generation,
     previousGenerationIdentity: transaction.transaction?.previousGenerationIdentity ?? null,
-    receiptValidity: installed.status === "complete" && installed.recordedIdentityMatches === true && footprint?.kind !== "partial"
+    receiptValidity: installed.status === "complete" && installed.recordedIdentityMatches === true && footprint?.kind === "canonical-pair"
       ? "valid"
       : installed.status === "absent" && footprint?.kind === "empty"
         ? "unavailable"
