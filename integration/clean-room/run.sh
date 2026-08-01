@@ -22,7 +22,23 @@ cleanup() {
 
 failure() {
   local status=$?
+  trap - ERR
   printf 'clean-room failed during stage: %s\n' "$STAGE" >&2
+  if [[ "$STAGE" == "apply exact deployment plan" && -s "$WORK/apply.console" ]]; then
+    printf '%s\n' 'clean-room apply diagnostic:' >&2
+    node -e '
+      const fs=require("node:fs");
+      const file=process.argv[1];
+      const work=process.argv[2];
+      const home=process.argv[3];
+      const clean=fs.readFileSync(file,"utf8")
+        .replace(/\u001b\[[0-9;]*m/g,"")
+        .replace(/\r/g,"")
+        .split(work).join("<work>")
+        .split(home).join("<home>");
+      process.stderr.write(clean.split("\n").slice(-80).join("\n")+"\n");
+    ' "$WORK/apply.console" "$WORK" "$HOME" || true
+  fi
   exit "$status"
 }
 trap failure ERR
