@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [main, fix/v1-1-clean-room-reliability]
+    branches: [main]
   pull_request:
 permissions:
   contents: read
@@ -29,53 +29,3 @@ jobs:
           node-version: 22
           cache: npm
       - run: scripts/check-reproducible-build.sh
-  strengthen-clean-room-fixture:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/fix/v1-1-clean-room-reliability'
-    permissions:
-      contents: write
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: fix/v1-1-clean-room-reliability
-          fetch-depth: 0
-      - name: Add restricted fixture assertions
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path("integration/clean-room/run.sh")
-          text = path.read_text()
-          marker = '''node -e 'const x=require(process.argv[1]); if(!x.certified || x.changeType!=="FULL_INSTALL" || !x.canonicalState?.compatible) process.exit(1)' "$WORK/setup.json"
-
-          stage "verify initial health"'''
-          replacement = '''node -e 'const x=require(process.argv[1]); if(!x.certified || x.changeType!=="FULL_INSTALL" || !x.canonicalState?.compatible) process.exit(1)' "$WORK/setup.json"
-
-          stage "verify synthetic deployment boundary"
-          for _ in $(seq 1 100); do
-            if docker exec "$CONTAINER" test -f /run/opshaven-fixtures-owned; then break; fi
-            sleep 0.1
-          done
-          docker exec "$CONTAINER" test -f /run/opshaven-fixtures-owned
-          docker exec -u opshaven "$CONTAINER" test -w /srv/opshaven-fixtures/sample-api/repository
-          docker exec -u opshaven "$CONTAINER" test -w /srv/opshaven-fixtures/sample-api/releases
-          docker exec -u opshaven "$CONTAINER" /usr/bin/npm --version >/dev/null
-          docker exec -u opshaven "$CONTAINER" /usr/bin/sudo --non-interactive /usr/bin/systemctl restart sample-api.service
-
-          stage "verify initial health"'''
-          if marker not in text:
-              raise SystemExit("setup insertion marker missing")
-          text = text.replace(marker, replacement, 1)
-          old = 'docker exec "$CONTAINER" sh -ceu \'\n'
-          new = 'docker exec -u opshaven "$CONTAINER" sh -ceu \'\n'
-          if old not in text:
-              raise SystemExit("target revision execution marker missing")
-          text = text.replace(old, new, 1)
-          path.write_text(text)
-          PY
-          git config user.name "OpsHaven Reliability Bot"
-          git config user.email "opshaven-reliability@example.invalid"
-          git add integration/clean-room/run.sh
-          git commit -m "test: verify restricted deployment fixture boundary"
-          git push origin HEAD:fix/v1-1-clean-room-reliability
