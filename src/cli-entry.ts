@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { OpsHavenError } from "./errors.js";
-import { formatOperatorError } from "./operator-errors.js";
+import { formatOperatorError } from "./operator-error-boundary.js";
 import { colorEnabled, heading, paint, section } from "./operator-ui.js";
 
 const HELP_COMMANDS = new Set(["help", "--help", "-h"]);
@@ -105,11 +105,6 @@ async function main(): Promise<void> {
 
   if (requested === "doctor" || requested === "diagnostics") {
     const deployment = await import("./deployment.js");
-    const setupPath = await resolveSetupConfigPath(commandArgs);
-    if (!commandArgs.includes("--json") && path && setupPath && !(await deployment.hasRegisteredApplications(path))) {
-      await deployment.runDeploymentDoctor(path, commandArgs);
-      return;
-    }
     const { runDoctor } = await import("./operator-doctor.js");
     await runDoctor(path, commandArgs);
     await deployment.runDeploymentDoctor(path, commandArgs);
@@ -128,34 +123,27 @@ async function main(): Promise<void> {
   if (requested === "deploy") {
     const setupPath = await resolveSetupConfigPath(commandArgs);
     if (!setupPath) throw new OpsHavenError("POLICY_DENIED", "Deployment is blocked until remote setup is configured and verified.");
-    const [{ loadRemoteSetupConfig }, { compatibilityDetails, prepareRemoteState }, { inspectRemoteSynchronizationTransaction }] = await Promise.all([
+    const [{ loadRemoteSetupConfig }, { inspectInstallationHealth }] = await Promise.all([
       import("./setup/remote.js"),
-      import("./setup/state.js"),
-      import("./setup/transaction-inspection.js"),
+      import("./setup/health.js"),
     ]);
     const setup = await loadRemoteSetupConfig(setupPath);
-    const [comparison, transaction] = await Promise.all([
-      prepareRemoteState(setup),
-      inspectRemoteSynchronizationTransaction(setup),
-    ]);
-    if (!transaction.activeGenerationCertain || !transaction.integrityValid || !transaction.hostBindingValid) {
+    const health = await inspectInstallationHealth(setup);
+    if (!health.deploymentAllowed) {
       throw new OpsHavenError(
         "POLICY_DENIED",
-        "Deployment is blocked because the active synchronization generation is uncertain. Inspect the transaction and run the reviewed recovery flow.",
+        health.repairRequired
+          ? "Deployment is blocked because the remote installation requires reviewed repair."
+          : "Deployment is blocked because the canonical remote state requires synchronization.",
         false,
         {
-          synchronizationTransaction: transaction,
+          currentKnownState: health.primary,
+          healthStates: health.states,
+          repairClassification: health.repairClassification,
+          reasons: health.reasons,
           blockedOperations: ["deployment planning", "deployment apply"],
-          safeNextCommand: "opshaven setup repair",
+          safeNextCommand: health.safeNextCommand ?? "opshaven setup remote",
         },
-      );
-    }
-    if (!comparison.compatible) {
-      throw new OpsHavenError(
-        "POLICY_DENIED",
-        "Deployment is blocked because the canonical remote state is not ready. Run opshaven setup remote before planning or applying a deployment.",
-        false,
-        compatibilityDetails(comparison),
       );
     }
     const { runDeployCommand } = await import("./deployment.js");
@@ -163,9 +151,32 @@ async function main(): Promise<void> {
     return;
   }
 
-  if ((requested === "boundary" || requested === "verify-boundary") && !flag("--setup-config") && !explicit) {
+  if (requested === "boundary" || requested === "verify-boundary") {
     const setupPath = await resolveSetupConfigPath(commandArgs);
-    if (setupPath) process.argv.push("--setup-config", setupPath);
+    if (setupPath) {
+      if (!flag("--setup-config") && !explicit) process.argv.push("--setup-config", setupPath);
+      const [{ loadRemoteSetupConfig }, { inspectInstallationHealth }] = await Promise.all([
+        import("./setup/remote.js"),
+        import("./setup/health.js"),
+      ]);
+      const setup = await loadRemoteSetupConfig(setupPath);
+      const health = await inspectInstallationHealth(setup);
+      if (!health.boundaryCertificationAllowed) {
+        throw new OpsHavenError(
+          "POLICY_DENIED",
+          "Boundary certification is blocked because the installed generation cannot be verified completely.",
+          false,
+          {
+            currentKnownState: health.primary,
+            healthStates: health.states,
+            repairClassification: health.repairClassification,
+            reasons: health.reasons,
+            verifiedProtections: ["pinned host identity remains required", "arbitrary commands remain denied"],
+            safeNextCommand: health.safeNextCommand ?? "opshaven setup remote",
+          },
+        );
+      }
+    }
   }
   if (requested === "authorization-report") process.argv[2] = "trust-report";
   await import("./cli.js");
