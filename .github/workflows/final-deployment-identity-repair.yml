@@ -1,0 +1,237 @@
+name: Final Deployment Identity Repair
+
+on:
+  push:
+    branches: [fix/v1-1-clean-room-reliability]
+    paths: [.github/workflows/final-deployment-identity-repair.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: fix/v1-1-clean-room-reliability
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+      - name: Apply reviewed identity and readiness repair
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(file_name: str, old: str, new: str) -> None:
+              path = Path(file_name)
+              text = path.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected one match in {file_name}, found {count}")
+              path.write_text(text.replace(old, new))
+
+          replace_once(
+              "src/deployment/model.ts",
+              'export function observedFingerprint(value: ObservedDeploymentState): string { return sha256(value); }',
+              '''export function observedFingerprint(value: ObservedDeploymentState): string {
+            return sha256({
+              currentRevision: value.currentRevision,
+              activeReleaseId: value.activeReleaseId,
+              sourceRepositoryRevision: value.sourceRepositoryRevision,
+              sourceRepositoryDirty: value.sourceRepositoryDirty,
+              serviceIdentifier: value.serviceIdentifier,
+              serviceActiveState: value.serviceActiveState,
+              serviceSubState: value.serviceSubState,
+              serviceExitStatus: value.serviceExitStatus,
+              healthReachable: value.healthReachable,
+              healthExpected: value.healthExpected,
+              healthStatusCode: value.healthStatusCode,
+              runtimeAvailable: value.runtimeAvailable,
+              rollbackAvailable: value.rollbackAvailable,
+              targetRevisionVerified: value.targetRevisionVerified,
+            });
+          }''',
+          )
+
+          replace_once(
+              "src/deployment/planning.ts",
+              '''    if (plan.applicationId !== app.id || plan.applicationConfigDigest !== app.resourceBindingDigest || plan.policyVersion !== this.config.policyVersion
+                || plan.operationDefinitionsDigest !== operationDefinitionsDigest(this.config, app) || plan.target.identityDigest !== identity
+                || plan.requiredAuthorization.operatorProfileDigest !== profile || plan.currentRevision !== observed.currentRevision
+                || plan.observedStateFingerprint !== observedFingerprint(observed) || !observed.rollbackAvailable || observed.activeReleaseId !== plan.rollback.releaseId) {
+                throw new OpsHavenError("POLICY_DENIED", "Deployment plan is stale. The remote deployment state or authorization changed after planning. No changes were made. Create a new deployment plan.");
+              }
+              return observed;''',
+              '''    if (plan.applicationId !== app.id || plan.applicationConfigDigest !== app.resourceBindingDigest || plan.policyVersion !== this.config.policyVersion
+                || plan.operationDefinitionsDigest !== operationDefinitionsDigest(this.config, app) || plan.target.identityDigest !== identity
+                || plan.requiredAuthorization.operatorProfileDigest !== profile || plan.currentRevision !== observed.currentRevision
+                || plan.observedStateFingerprint !== observedFingerprint(observed) || !observed.rollbackAvailable || observed.activeReleaseId !== plan.rollback.releaseId) {
+                throw new OpsHavenError("POLICY_DENIED", "Deployment plan is stale. The remote deployment state or authorization changed after planning. No changes were made. Create a new deployment plan.");
+              }
+              if (observed.availableDiskBytes < DEPLOYMENT_MINIMUM_DISK_BYTES) {
+                throw new OpsHavenError("POLICY_DENIED", "Available disk space is below the supported deployment minimum. No changes were made.");
+              }
+              return observed;''',
+          )
+
+          replace_once(
+              "tests/deployment-plans.test.ts",
+              '''  DeploymentCoordinator,
+            DeploymentPlanStore,''',
+              '''  DEPLOYMENT_MINIMUM_DISK_BYTES,
+            DeploymentCoordinator,
+            DeploymentPlanStore,''',
+          )
+
+          replace_once(
+              "tests/deployment-plans.test.ts",
+              '''  healthy = true;
+            mutationCalls = 0;''',
+              '''  healthy = true;
+            availableDiskBytes = 10 * 1024 * 1024 * 1024;
+            serviceIdentifier = "sample-api.service";
+            runtimeAvailable = true;
+            mutationCalls = 0;''',
+          )
+
+          replace_once(
+              "tests/deployment-plans.test.ts",
+              '''        unit: "sample-api.service",''',
+              '''        unit: this.serviceIdentifier,''',
+          )
+
+          replace_once(
+              "tests/deployment-plans.test.ts",
+              '''        uname: "Linux synthetic 6.0 x86_64 GNU/Linux",
+                  rootFilesystem: "/dev/synthetic 1000000 1000 999000 1% /",''',
+              '''        uname: this.runtimeAvailable ? "Linux synthetic 6.0 x86_64 GNU/Linux" : "",
+                  rootFilesystem: `/dev/synthetic 20000000 1000 ${Math.floor(this.availableDiskBytes / 1024)} 1% /`,''',
+          )
+
+          marker = '''test("changed observed state produces a different plan identity", async () => {'''
+          additions = '''test("volatile disk observations do not change deterministic plan identity", async () => {
+            const value = await registeredFixture();
+            const plannedDiskBytes = 10 * 1024 * 1024 * 1024;
+            value.client.availableDiskBytes = plannedDiskBytes;
+            const first = await value.coordinator.createPlan("sample-api", TARGET);
+            value.client.availableDiskBytes = plannedDiskBytes - (100 * 1024 * 1024);
+            const second = await value.coordinator.createPlan("sample-api", TARGET);
+            assert.equal(first.planId, second.planId);
+            assert.equal(first.plan.observedStateFingerprint, second.plan.observedStateFingerprint);
+            assert.equal(first.plan.observed.availableDiskBytes, plannedDiskBytes);
+            assert.equal(value.client.mutationCalls, 0);
+          });
+
+          test("minor disk drift remains an apply-time readiness constraint", async () => {
+            const value = await registeredFixture();
+            value.client.availableDiskBytes = 10 * 1024 * 1024 * 1024;
+            const stored = await value.coordinator.createPlan("sample-api", TARGET);
+            value.client.availableDiskBytes -= 100 * 1024 * 1024;
+            const result = await value.coordinator.applyPlan(stored.planId, { approved: true });
+            assert.equal(result.outcome, "DEPLOYMENT_SUCCEEDED");
+            assert.equal(value.client.mutationCalls, 1);
+          });
+
+          test("insufficient apply-time disk fails before mutation", async () => {
+            const value = await registeredFixture();
+            value.client.availableDiskBytes = 10 * 1024 * 1024 * 1024;
+            const stored = await value.coordinator.createPlan("sample-api", TARGET);
+            value.client.availableDiskBytes = DEPLOYMENT_MINIMUM_DISK_BYTES - 1;
+            await assert.rejects(
+              value.coordinator.applyPlan(stored.planId, { approved: true }),
+              (error: unknown) => error instanceof OpsHavenError && error.code === "POLICY_DENIED" && /disk space/i.test(error.message),
+            );
+            assert.equal(value.client.mutationCalls, 0);
+          });
+
+          test("stable observed identity drift still blocks before mutation", async (t) => {
+            const cases: Array<[string, (value: Fixture) => void]> = [
+              ["current revision", (value) => { value.client.currentRevision = CHANGED; }],
+              ["active release", (value) => { value.client.activeReleaseId = "release-changed"; }],
+              ["service identity", (value) => { value.client.serviceIdentifier = "other.service"; }],
+              ["runtime readiness", (value) => { value.client.runtimeAvailable = false; }],
+            ];
+            for (const [name, mutate] of cases) {
+              await t.test(name, async () => {
+                const value = await registeredFixture();
+                const stored = await value.coordinator.createPlan("sample-api", TARGET);
+                mutate(value);
+                await assert.rejects(value.coordinator.applyPlan(stored.planId, { approved: true }), OpsHavenError);
+                assert.equal(value.client.mutationCalls, 0);
+              });
+            }
+          });
+
+          test("policy and authorization drift still block before mutation", async (t) => {
+            await t.test("policy version", async () => {
+              const value = await registeredFixture();
+              const stored = await value.coordinator.createPlan("sample-api", TARGET);
+              const document = JSON.parse(await fs.readFile(value.configPath, "utf8")) as Record<string, unknown>;
+              document.policyVersion = "v2";
+              await fs.writeFile(value.configPath, `${JSON.stringify(document, null, 2)}\n`, { mode: 0o600 });
+              const config = await import("../src/config.js").then(({ loadConfig }) => loadConfig(value.configPath));
+              const coordinator = new DeploymentCoordinator(config, value.configPath, { root: value.stateRoot, client: value.client });
+              await assert.rejects(coordinator.applyPlan(stored.planId, { approved: true }), OpsHavenError);
+              assert.equal(value.client.mutationCalls, 0);
+            });
+            await t.test("authorization identity", async () => {
+              const value = await registeredFixture();
+              const stored = await value.coordinator.createPlan("sample-api", TARGET);
+              await fs.writeFile(value.config.approvals.verificationPublicKeyFile, "changed-verification-key\n", { mode: 0o600 });
+              await assert.rejects(value.coordinator.applyPlan(stored.planId, { approved: true }), OpsHavenError);
+              assert.equal(value.client.mutationCalls, 0);
+            });
+          });
+
+          test("application and health-check binding drift still block before mutation", async (t) => {
+            for (const field of ["release layout", "health-check definition"] as const) {
+              await t.test(field, async () => {
+                const value = await registeredFixture();
+                const stored = await value.coordinator.createPlan("sample-api", TARGET);
+                const document = JSON.parse(await fs.readFile(value.configPath, "utf8")) as { resources: Array<Record<string, unknown>> };
+                const resource = document.resources.find((item) => item.kind === (field === "release layout" ? "deployment" : "probe"));
+                assert.ok(resource);
+                if (field === "release layout") resource.releasesPath = `${String(resource.releasesPath)}-changed`;
+                else resource.url = "http://127.0.0.1:3999/health";
+                await fs.writeFile(value.configPath, `${JSON.stringify(document, null, 2)}\n`, { mode: 0o600 });
+                const config = await import("../src/config.js").then(({ loadConfig }) => loadConfig(value.configPath));
+                const coordinator = new DeploymentCoordinator(config, value.configPath, { root: value.stateRoot, client: value.client });
+                await assert.rejects(coordinator.applyPlan(stored.planId, { approved: true }), OpsHavenError);
+                assert.equal(value.client.mutationCalls, 0);
+              });
+            }
+          });
+
+          '''
+          test_path = Path("tests/deployment-plans.test.ts")
+          test_text = test_path.read_text()
+          if test_text.count(marker) != 1:
+              raise SystemExit("deployment test insertion marker was not unique")
+          test_path.write_text(test_text.replace(marker, additions + marker))
+          PY
+      - name: Validate focused deployment repair
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+          node --test dist/tests/deployment-plans.test.js
+      - name: Validate complete repository
+        run: |
+          npm test
+          npm run release:check
+          npm run security
+          npm audit --omit=dev --audit-level=high
+          bash integration/clean-room/run.sh
+      - name: Commit reviewed repair
+        shell: bash
+        run: |
+          rm .github/workflows/final-deployment-identity-repair.yml
+          git config user.name "OpsHaven Reliability Bot"
+          git config user.email "opshaven-reliability@example.invalid"
+          git add src/deployment/model.ts src/deployment/planning.ts tests/deployment-plans.test.ts .github/workflows/final-deployment-identity-repair.yml
+          git commit -m "fix: separate volatile readiness from deployment state identity"
+          git push origin HEAD:fix/v1-1-clean-room-reliability
