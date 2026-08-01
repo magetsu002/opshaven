@@ -83,21 +83,17 @@ test("invalid or unavailable rollback evidence selects preserved-evidence clean 
 test("clean reinstall preparation preserves evidence before clearing fixed active state", async () => {
   const value = await fixture();
   try {
-    const evidenceId = "f".repeat(32);
-    const transport = new QueueTransport([
-      result({ status: "invalid", transaction: null, integrityValid: false, hostBindingValid: false, rollbackAvailable: false, activeGenerationCertain: false, lastCompletedPhase: null, detail: "receipt chain invalid" }),
-      result({ ok: true, action: "clean-reinstall-prepared", evidenceId, evidenceRoot: `/var/lib/opshaven/recovery-evidence/${evidenceId}`, evidenceManifestSha256: "1".repeat(64), preserved: ["/usr/lib/opshaven", "/var/lib/opshaven/synchronization-transaction.json"], removed: ["/usr/lib/opshaven", "/var/lib/opshaven/synchronization-transaction.json"], transactionId: null, preparedAt: "2026-08-01T17:02:00.000Z" }),
-      result({ status: "absent", source: "installed remote state" }),
-    ]);
-    const originalRandomBytes = await import("node:crypto");
-    void originalRandomBytes;
-    // The returned ID is generated internally; derive it from the script request for the fixture response.
+    const transport = new QueueTransport([]);
     transport.runPython = async function(script: string): Promise<SetupCommandResult> {
       this.scripts.push(script);
       if (this.scripts.length === 1) return result({ status: "invalid", transaction: null, integrityValid: false, hostBindingValid: false, rollbackAvailable: false, activeGenerationCertain: false, lastCompletedPhase: null, detail: "receipt chain invalid" });
       if (this.scripts.length === 2) {
-        const matched = script.match(/"evidenceId":\s*"([a-f0-9]{32})"/);
-        const generated = matched?.[1] ?? evidenceId;
+        const requestLine = script.split("\n", 1)[0] ?? "";
+        const encodedRequest = /^R=json\.loads\((.+)\)$/.exec(requestLine)?.[1];
+        assert.ok(encodedRequest, "clean reinstall script must embed one canonical request");
+        const request = JSON.parse(JSON.parse(encodedRequest)) as { evidenceId?: unknown };
+        assert.match(String(request.evidenceId), /^[a-f0-9]{32}$/);
+        const generated = String(request.evidenceId);
         return result({ ok: true, action: "clean-reinstall-prepared", evidenceId: generated, evidenceRoot: `/var/lib/opshaven/recovery-evidence/${generated}`, evidenceManifestSha256: "1".repeat(64), preserved: ["/usr/lib/opshaven", "/var/lib/opshaven/synchronization-transaction.json"], removed: ["/usr/lib/opshaven", "/var/lib/opshaven/synchronization-transaction.json"], transactionId: null, preparedAt: "2026-08-01T17:02:00.000Z" });
       }
       return result({ status: "absent", source: "installed remote state" });
