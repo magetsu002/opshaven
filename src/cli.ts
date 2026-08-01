@@ -5,7 +5,7 @@ import { formatBoundaryReport, verifyBoundary } from "./boundary.js";
 import { compareCapabilityDeclarations, formatCapabilityComparison, loadCapabilityDeclaration } from "./capability-declaration.js";
 import { loadConfig } from "./config.js";
 import { OperationService } from "./operations.js";
-import { formatOperatorError } from "./operator-errors.js";
+import { formatOperatorError } from "./operator-error-boundary.js";
 import { runRemoteServe } from "./remote-mcp/command.js";
 import { loadRemoteTrust, remoteMcpUrl } from "./remote-mcp/report.js";
 import { certifyRemoteBoundary } from "./setup/certify.js";
