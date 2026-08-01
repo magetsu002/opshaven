@@ -5,11 +5,11 @@ import test from "node:test";
 
 interface Result { code: number | null; stdout: string; stderr: string }
 
-async function runCli(args: string[]): Promise<Result> {
+async function runCli(args: string[], env: Record<string, string | undefined> = {}): Promise<Result> {
   const child = spawn(process.execPath, [path.join(process.cwd(), "dist/src/cli-entry.js"), ...args], {
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
+    env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", ...env },
   });
   return await new Promise((resolve, reject) => {
     let stdout = "";
@@ -33,11 +33,17 @@ async function runCli(args: string[]): Promise<Result> {
 
 for (const command of [["help"], ["--help"], ["-h"]]) {
   test(`CLI ${command[0]} works without configuration`, async () => {
-    const result = await runCli(command);
+    const result = await runCli(command, { NO_COLOR: "" });
     assert.equal(result.code, 0);
+    assert.match(result.stdout, /OpsHaven Operator CLI/);
     assert.match(result.stdout, /OpsHaven human CLI/);
     assert.match(result.stdout, /opshaven init/);
+    assert.match(result.stdout, /opshaven setup remote/);
+    assert.match(result.stdout, /opshaven doctor/);
+    assert.match(result.stdout, /opshaven boundary verify/);
     assert.match(result.stdout, /opshaven-mcp/);
+    assert.doesNotMatch(result.stdout, /node dist\/src\/cli-entry\.js/);
+    assert.doesNotMatch(result.stdout, /\u001b\[/);
     assert.equal(result.stderr, "");
   });
 }
@@ -49,19 +55,24 @@ test("CLI version works without configuration", async () => {
   assert.equal(result.stderr, "");
 });
 
-test("invalid CLI commands fail clearly before configuration loading", async () => {
-  const result = await runCli(["not-a-command"]);
+test("invalid CLI commands answer what happened and what to run next", async () => {
+  const result = await runCli(["not-a-command"], { NO_COLOR: "" });
   assert.equal(result.code, 1);
   assert.match(result.stderr, /Startup blocked\./);
-  assert.match(result.stderr, /Unknown command "not-a-command"\./);
-  assert.match(result.stderr, /opshaven help/);
+  assert.match(result.stderr, /✗ Command not recognized/);
+  assert.match(result.stderr, /Cause:\nUnknown command "not-a-command"\./);
+  assert.match(result.stderr, /Next:/);
+  assert.match(result.stderr, /Run:\n  opshaven help/);
   assert.doesNotMatch(result.stderr, /configuration path is required/i);
+  assert.doesNotMatch(result.stderr, /\u001b\[/);
 });
 
-test("operational CLI commands still require initialized operator state", async () => {
-  const result = await runCli(["validate-config"]);
+test("operational CLI commands clearly route an uninitialized operator", async () => {
+  const result = await runCli(["validate-config"], { NO_COLOR: "" });
   assert.equal(result.code, 1);
+  assert.match(result.stderr, /OpsHaven is not initialized/);
   assert.match(result.stderr, /Setup is not initialized\./);
-  assert.match(result.stderr, /opshaven init/);
+  assert.match(result.stderr, /Checked:\n✗ Local operator setup/);
+  assert.match(result.stderr, /Run:\n  opshaven init/);
   assert.doesNotMatch(result.stderr, /RemoteSetupConfig|schema/i);
 });

@@ -2,207 +2,221 @@
 
 **Let AI troubleshoot your Linux VPS without giving it a shell.**
 
-OpsHaven is an MCP server that gives AI clients structured access to approved VPS operations through restricted SSH. You choose the resources, capabilities, keys, and update policy. OpsHaven enforces that boundary locally and again on the server.
+OpsHaven is a professional operator CLI and MCP server for approved Linux inspection and controlled operations over restricted SSH. Operators use normal terminal commands; generated configuration, keys, authorization data, receipts, and runtime verification stay behind the CLI.
 
-## What it feels like
+## Operator workflow
 
-```text
-You: Why is my website returning 502?
-
-AI through OpsHaven:
-- application service is running
-- health probe passes on port 3001
-- Nginx points to port 3000
-- likely cause: reverse-proxy upstream mismatch
-- no changes were made
-```
-
-Instead of opening an SSH session, checking several tools manually, and copying logs into a chat, you can ask a question and let the AI inspect only the signals you approved.
-
-## Why operators can verify the boundary
-
-- You generate and own the SSH, approval, capability, response-signing, and OAuth configuration.
-- A separate read-only dispatcher contains no restart, deployment, rollback, sudo, or Docker control handlers.
-- Operator-signed capability authorization binds the exact operations, resources, limits, policy version, and dispatcher identity.
-- Requests and responses are authenticated, time-bounded, and replay-resistant.
-- The dispatcher accepts logical resource IDs, not arbitrary commands, paths, services, scripts, or flags.
-- Sensitive sources are summarized, bounded, and redacted before they reach the AI client.
-- Future builds declare their capabilities so authority expansion can be detected and blocked.
-- `opshaven boundary verify` tests the installed restrictions.
-- `opshaven authorization-report` explains active capability authorization and remaining platform assumptions.
-
-OpsHaven does not claim absolute security. The boundary still depends on the VPS kernel, OpenSSH, Node.js, systemd, configured resource mappings, identity provider, proxy or tunnel, and operator-owned keys behaving as configured.
-
-## Executables
-
-OpsHaven intentionally separates the human interface from the protocol process:
-
-```text
-opshaven
-    Human CLI for initialization, setup, diagnostics, verification, reports, and approvals.
-
-opshaven-mcp
-    JSON-RPC MCP protocol server launched by an MCP client.
-```
-
-Use `opshaven help` in a terminal. Configure an MCP client with `opshaven-mcp`; do not run it expecting an interactive prompt.
-
-The package scripts make the same distinction:
+A normal installation follows four commands:
 
 ```bash
-npm run cli -- help
-npm run start:mcp -- --config /absolute/path/to/local.config.json
+opshaven init
+opshaven setup remote
+opshaven doctor
+opshaven boundary verify
 ```
 
-`npm start` prints human CLI help rather than starting a protocol server.
+You do not need to run files from `dist`, edit generated JSON, inspect PEM files, or calculate internal runtime hashes.
 
-## How it works
+## Install from a reviewed checkout
 
-### Local stdio
+Requirements:
 
 ```text
-Local AI client
-→ local OpsHaven stdio MCP server
-→ policy and authenticated request checks
-→ restricted SSH account
-→ independently validating VPS dispatcher
-→ bounded authenticated response
-→ audit log
+Linux or macOS
+Node.js 22 or newer
+OpenSSH client tools
 ```
 
-The `opshaven-mcp` command is stdio-only and starts no network listener.
-
-### Opt-in remote MCP
-
-```text
-Hosted MCP client
-→ HTTPS tunnel or configured reverse proxy
-→ localhost-bound OpsHaven Streamable HTTP server
-→ OIDC bearer verification and operator profile mapping
-→ signed read-only capability intersection
-→ restricted SSH read-only dispatcher
-→ bounded authenticated response
-→ audit log
-```
-
-Remote MCP is disabled by default, binds to `127.0.0.1` when enabled, requires an external OAuth/OIDC provider, and exposes only the effective intersection of the operator profile and signed read-only capability. Direct public binding and generic stdio relays are outside the reviewed boundary.
-
-## Supported operations
-
-### Inspection
-
-- Host and deployed commit information
-- systemd service status
-- Docker and Docker Compose status in controlled local mode
-- Runtime configuration presence
-- Nginx and firewall summaries
-- Health probes
-- Bounded, redacted logs
-- Monitoring and backup status
-- Restore readiness
-
-### Controlled local changes
-
-- Restart a configured service
-- Deploy an exact Git commit
-- Restore the previous activation after failed health verification
-- Roll back to a recorded release
-
-Remote profiles cannot include these mutation tools.
-
-## Recommended first run
-
-Validate and build the reviewed checkout:
+Install dependencies, validate the checkout, and create the `opshaven` command:
 
 ```bash
 npm ci --ignore-scripts --no-audit --no-fund
 npm run release:check
 npm run security
-npm run build
+npm run install:local
 ```
 
-Initialize the operator environment:
+Confirm the installation:
+
+```bash
+opshaven --version
+opshaven --help
+```
+
+`npm run install:local` builds the reviewed source and links its executable into your npm command path. The human command is `opshaven`; MCP clients launch `opshaven-mcp`.
+
+## Initialize
+
+Run the first-time wizard:
 
 ```bash
 opshaven init
 ```
 
-The guided command prepares protected local state, authorization keys, a restricted SSH key, local policy, remote policy, and setup state. New operators do not create internal JSON schemas or signed authorization files manually.
+The wizard explains and validates:
 
-Preview and apply remote setup:
+- a friendly name for the remote machine;
+- the SSH hostname or IP address and port;
+- the administrator account used only for installation;
+- the administrator SSH key;
+- the pinned SSH host identity;
+- final confirmation before protected local state is created.
+
+When a host identity is already present in the selected `known_hosts` source, OpsHaven derives and displays its SHA-256 fingerprint. The operator must explicitly accept it. Cancellation or invalid input does not create incomplete setup state.
+
+## Set up the remote machine
+
+Run from the operator machine:
+
+```bash
+opshaven setup remote
+```
+
+The command shows the target, explains which work is local or remote, performs preflight checks, requests confirmation, installs the restricted runtime, configures authorization, verifies the security boundary, and prints the next commands.
+
+Preview without changing the remote machine:
 
 ```bash
 opshaven setup remote --dry-run
-opshaven setup remote --tui
 ```
 
-For reviewed non-interactive automation, approval remains explicit:
+Reviewed non-interactive automation remains explicit:
 
 ```bash
 opshaven setup remote --non-interactive --approve
 ```
 
-Check readiness and certify the installed boundary:
+## Diagnose
+
+Use `doctor` as the main troubleshooting command:
 
 ```bash
 opshaven doctor
+```
+
+The normal report separates:
+
+```text
+Local environment
+Remote connection
+Authorization state
+Security verification
+Next action
+```
+
+It does not print internal filenames or private material. Add `--debug` only when lower-level support details are required:
+
+```bash
+opshaven doctor --debug
+```
+
+## Verify
+
+After setup succeeds:
+
+```bash
 opshaven boundary verify
+```
+
+This verifies the installed restrictions, authenticated execution, read-only enforcement, replay resistance, response verification, and audit integrity. A failure returns a nonzero exit code.
+
+Review the current operator authorization summary with:
+
+```bash
 opshaven authorization-report --mode read-only
 ```
 
-`opshaven doctor` reports the current workflow state, completed steps, blocker, and exact next command. Add `--debug` only when lower-level validation details are needed.
+## Operate
 
-Rollback and uninstall automatically use the generated setup state:
+Use an MCP client with the generated configuration:
+
+```bash
+opshaven print-mcp-config
+```
+
+The MCP client launches:
+
+```text
+opshaven-mcp --config <generated configuration>
+```
+
+The `opshaven-mcp` process speaks MCP JSON-RPC over stdio. It is not an interactive terminal interface.
+
+Controlled local operations still require exact one-time approvals:
+
+```bash
+opshaven approve-restart --resource service.example
+opshaven approve-deploy --resource deployment.example --commit <sha>
+opshaven approve-rollback --resource deployment.example --release <release-id>
+```
+
+Rollback and uninstall use the protected setup record:
 
 ```bash
 opshaven setup remote --rollback --approve
 opshaven uninstall remote --approve
 ```
 
-Existing installations may continue passing `--config` and `--setup-config` explicitly. No existing policy, signature, receipt, rollback, or audit format is removed.
+## Terminal behavior
 
-Read the [operator workflow](docs/operator-workflow.md) for the guided sequence and the [setup guide](docs/setup.md) for host-key verification, non-interactive initialization, compatibility, and troubleshooting.
+OpsHaven uses consistent symbols and optional terminal colors:
 
-See the [security guide](docs/security.md) for the enforced boundary and the [architecture guide](docs/architecture.md) for the enforcement layers.
+- green for success;
+- yellow for warnings, pending work, and confirmation;
+- red for failures and blockers;
+- blue for information and next commands.
+
+Colors are presentation only. Disable them with either:
+
+```bash
+NO_COLOR=1 opshaven doctor
+OPSHAVEN_COLOR=never opshaven doctor
+```
+
+Machine-readable commands continue to support `--json` where documented.
+
+## What OpsHaven enforces
+
+- restricted SSH with pinned host verification;
+- logical resource IDs instead of arbitrary commands or paths;
+- exact authorization and request validation;
+- bounded, redacted output;
+- replay-resistant authenticated requests and responses;
+- read-only remote profiles;
+- one-time approvals for controlled local changes;
+- rollback after failed post-install verification;
+- tamper-evident audit history;
+- independent installed-boundary verification.
+
+OpsHaven does not claim absolute security. Its boundary still depends on the VPS kernel, OpenSSH, Node.js, systemd, configured resource mappings, identity provider, proxy or tunnel, and operator-owned keys behaving as configured.
 
 ## Development
 
-Requirements:
-
-```text
-Node.js 22 or newer
-```
-
-Install dependencies and run the full validation suite:
+Install dependencies and run the human CLI directly from source:
 
 ```bash
 npm ci --ignore-scripts --no-audit --no-fund
+npm run dev:cli -- --help
+npm run dev:cli -- doctor
+```
+
+Run the complete validation suite:
+
+```bash
+npm test
 npm run release:check
 npm run security
 npm run reproducible:check
 ```
 
-Build and inspect the human CLI:
+Start the MCP protocol process only when testing an MCP client:
 
 ```bash
-npm run build
-npm run cli -- help
+npm run start:mcp -- --config /absolute/path/to/generated-config.json
 ```
 
-Start the local stdio MCP server only when testing the protocol process:
+## Documentation
 
-```bash
-npm run start:mcp -- --config /absolute/path/to/local.config.json
-```
+Read the [operator workflow](docs/operator-workflow.md) for the normal command sequence and the [setup guide](docs/setup.md) for host identity preparation, automation, rollback, and troubleshooting.
 
-The native remote command is explicit and uses the reviewed companion configuration:
-
-```bash
-opshaven serve \
-  --transport streamable-http \
-  --config /absolute/path/to/local.config.json
-```
-
-## Project links
-
-[Operator workflow](docs/operator-workflow.md) · [Setup](docs/setup.md) · [Security](docs/security.md) · [Architecture](docs/architecture.md) · [Contributing](CONTRIBUTING.md) · [License](LICENSE)
+See the [security guide](docs/security.md) for the enforced boundary and the [architecture guide](docs/architecture.md) for implementation details. Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md). OpsHaven is provided under the [MIT License](LICENSE).

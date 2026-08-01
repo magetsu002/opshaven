@@ -1,6 +1,6 @@
 # Setup
 
-This guide connects OpsHaven to a restricted Linux VPS. Start with a disposable server that contains no production secrets or customer data. The automated workflow installs only the isolated read-only dispatcher.
+This guide connects OpsHaven to a restricted Linux VPS. Begin with a disposable server that contains no production secrets or customer data.
 
 ## Requirements
 
@@ -11,37 +11,50 @@ The operator machine needs:
 - a clean checkout at the exact reviewed commit;
 - OpenSSH client tools at their standard absolute paths;
 - an administrator SSH identity;
-- a separately verified SHA-256 SSH host-key fingerprint.
+- a separately verified SHA-256 SSH host identity.
 
 The VPS needs a supported Ubuntu or Debian release, Python 3, OpenSSH, OpenSSL, `setpriv`, at least 128 MiB of free space, and Node.js 22 or newer at a reviewed absolute path.
 
-Validate and build the reviewed checkout:
+## Install the operator CLI
+
+From the reviewed checkout:
 
 ```bash
 npm ci --ignore-scripts --no-audit --no-fund
 npm run release:check
 npm run security
-npm run build
+npm run install:local
 ```
 
-## Verify the VPS host key
+Confirm the command is available:
 
-Collect the server key into a temporary file:
+```bash
+opshaven --version
+opshaven --help
+```
+
+For development without a linked installation:
+
+```bash
+npm run dev:cli -- --help
+```
+
+## Prepare a pinned host identity
+
+OpsHaven never silently trusts the first server key it sees. Obtain the host key and verify its fingerprint through an independent trusted channel before accepting it.
+
+One preparation method is:
 
 ```bash
 ssh-keyscan -t ed25519 your-host.example \
   > "$HOME/.ssh/opshaven-known-hosts.pending"
-```
 
-Display its SHA-256 fingerprint:
-
-```bash
 ssh-keygen -lf \
   "$HOME/.ssh/opshaven-known-hosts.pending" \
   -E sha256
 ```
 
-Compare the fingerprint through a separate trusted channel. Only after it matches, move the file into the location you will give to `opshaven init`:
+After the fingerprint is independently confirmed:
 
 ```bash
 mv "$HOME/.ssh/opshaven-known-hosts.pending" \
@@ -49,9 +62,9 @@ mv "$HOME/.ssh/opshaven-known-hosts.pending" \
 chmod 644 "$HOME/.ssh/opshaven-known-hosts"
 ```
 
-OpsHaven does not silently use trust on first use.
+A live scan is only a collection mechanism. Independent fingerprint comparison is what establishes the expected host identity.
 
-## Initialize the operator environment
+## Initialize the operator machine
 
 Run:
 
@@ -59,18 +72,39 @@ Run:
 opshaven init
 ```
 
-In an interactive terminal, the command asks for the remote host, SSH port, administrator user, administrator SSH identity, pinned known-hosts file, and verified host-key fingerprint.
+The interactive wizard clearly separates a friendly machine name from the SSH network address. It explains each prompt, validates required files, detects a fingerprint from the pinned `known_hosts` source when possible, displays that fingerprint, and requires explicit acceptance.
 
-OpsHaven then creates, with protected permissions:
+Example:
 
-- the local operator state directory;
-- authorization signing keys;
-- approval state and replay secret;
-- a restricted-account SSH key;
-- local and remote policy configuration;
-- setup state for installation, rollback, and uninstall.
+```text
+OpsHaven first-time setup
 
-Normal output does not display internal filenames, private key contents, or secret values.
+This wizard runs on your operator machine. Nothing is installed remotely until you run opshaven setup remote.
+
+Remote machine
+
+Name [PRIMARY]: MAGETSU
+SSH address: 13.63.19.157:22
+Administrator SSH user [root]:
+Administrator SSH private key [/home/operator/.ssh/id_ed25519]:
+Pinned known_hosts file [/home/operator/.ssh/known_hosts]:
+
+Host identity
+
+Detected host identity:
+SHA256:xxxxxxxx
+
+Use this host identity? [y/N] y
+✓ Host identity verified
+
+Ready to initialize
+
+Continue? [Y/n] y
+```
+
+The final confirmation occurs before protected local state is created. Rejected confirmation, empty host identity, missing SSH files, or invalid input does not create incomplete state.
+
+The wizard creates the local keys, generated configuration, authorization state, restricted SSH identity, and setup record required by later commands. Normal output does not display their filenames or secret contents.
 
 For reviewed non-interactive automation:
 
@@ -86,44 +120,61 @@ opshaven init \
   --privilege sudo-noninteractive
 ```
 
-Use `--privilege root` only when the administrator SSH user is root. Use `sudo-noninteractive` for a reviewed administrator account with non-interactive sudo access required by installation.
+Use `--privilege root` only when the administrator SSH user is root. Use `sudo-noninteractive` for a reviewed administrator account with the narrowly required non-interactive installation permission.
 
-`opshaven init` is idempotent. It does not rotate existing local keys during a normal repeat run.
+## Preview remote setup
 
-## Preview and install
-
-Preview every local and VPS mutation without applying it:
+Preview the exact plan without applying changes:
 
 ```bash
 opshaven setup remote --dry-run
 ```
 
-Run the guided terminal workflow:
+The dry run remains detailed because its purpose is reviewing mutations. It does not connect through an unpinned SSH path or apply remote changes.
+
+## Install the remote runtime
+
+Run from the operator machine:
 
 ```bash
-opshaven setup remote --tui
+opshaven setup remote
 ```
 
-For CI or another reviewed non-interactive environment, approval remains explicit:
+The command displays:
+
+- the selected remote target;
+- that execution starts on the operator machine;
+- the pinned host identity;
+- preflight progress;
+- installation progress;
+- authorization progress;
+- security verification progress;
+- the exact next commands.
+
+The operator must confirm before installation begins. For reviewed non-interactive automation, approval remains explicit:
 
 ```bash
 opshaven setup remote --non-interactive --approve
 ```
 
-The CLI automatically locates the setup state created by `opshaven init`.
+The underlying engine still performs the same security work:
 
-The engine still performs the same security checks:
+1. verifies the exact source checkout, safe local files, corresponding keys, pinned host identity, SSH access, remote platform, Node.js runtime, disk space, privilege, and existing installation state;
+2. creates or validates the locked `opshaven` account without an interactive shell or privileged group membership;
+3. installs the complete hashed read-only runtime and forced-command wrapper atomically;
+4. prepares and verifies exact read-only authorization locally;
+5. uploads only public verification material and signed authorization data;
+6. generates response-signing material on the VPS and returns only public verification data;
+7. verifies shell denial, arbitrary-command denial, host identity pinning, authenticated read-only execution, replay resistance, malformed-input denial, response verification, and audit integrity;
+8. writes matching receipts only after successful certification.
 
-1. verifies the exact local source head, local files, key correspondence, pinned host fingerprint, SSH connectivity, remote platform, resolved Node executable, disk space, privilege, and existing installation state;
-2. creates or validates the locked `opshaven` account with no sudo or privileged-group membership;
-3. installs the complete hashed read-only runtime tree, forced-command wrapper, policy, and restricted `authorized_keys` entry atomically;
-4. generates and verifies signed read-only authorization locally;
-5. uploads only public verification material and signed policy data;
-6. generates the response-signing private key on the VPS and downloads only its public key;
-7. proves shell denial, command denial, host-key pinning, signed authorization, authenticated read-only execution, replay and mutation resistance, malformed-input denial, and audit integrity;
-8. writes matching local and remote receipts only after certification succeeds.
+A failure after installation begins invokes the existing rollback behavior. The presentation layer does not alter rollback scope or acceptance rules.
 
-A repeat run is idempotent. Unchanged runtime and installation files are retained rather than replaced.
+Use `--debug` to display the full mutation plan and lower-level verification identifiers:
+
+```bash
+opshaven setup remote --debug
+```
 
 ## Diagnose current state
 
@@ -133,44 +184,46 @@ Run:
 opshaven doctor
 ```
 
-The normal output reports:
-
-- the current workflow state;
-- completed setup steps;
-- the current blocker;
-- the exact next command.
-
-Examples:
+The report is organized as:
 
 ```text
-Current state:
-LOCAL_INITIALIZED
+OpsHaven Health
 
-Blocked:
-✗ Remote deployment not configured
-
-Next action:
-opshaven setup remote
+Local environment
+Remote connection
+Authorization state
+Security verification
+Next action
 ```
+
+Typical incomplete setup:
 
 ```text
-Current state:
-READY
+OpsHaven Health
 
-Blocked:
-None
+Local environment
+✓ Operator setup ready
 
-Next action:
-No action required.
+Remote connection
+✗ Remote setup not configured
+
+Authorization state
+! Waiting for remote verification
+
+Security verification
+○ Not yet verified
+
+Next action
+  opshaven setup remote
 ```
 
-Use debug output only for troubleshooting:
+Use debug mode only for troubleshooting:
 
 ```bash
 opshaven doctor --debug
 ```
 
-Debug mode includes lower-level validation results while still sanitizing protected paths and never printing private keys or secret values.
+Debug mode adds lower-level validation results while continuing to sanitize protected paths and omit private keys and secret values.
 
 ## Verify the installed boundary
 
@@ -180,9 +233,9 @@ Run:
 opshaven boundary verify
 ```
 
-The CLI automatically locates the generated local policy and setup state. A failed assertion returns nonzero. Endpoint handoff remains blocked until the protected remote receipt contains a matching successful certification.
+The CLI automatically locates generated operator and setup state. A failed assertion returns nonzero. Endpoint handoff remains blocked until the protected remote receipt contains matching successful verification.
 
-Review active authorization separately:
+Review the current authorization summary separately:
 
 ```bash
 opshaven authorization-report --mode read-only
@@ -190,23 +243,23 @@ opshaven authorization-report --mode read-only
 
 ## Roll back or uninstall
 
-Rollback restores only files recorded in the protected setup receipt and removes newly created recorded files:
+Rollback restores only recorded prior files and removes only newly created recorded files:
 
 ```bash
 opshaven setup remote --rollback --approve
 ```
 
-Uninstall removes only fixed OpsHaven paths and the exact forced-command key entry. It preserves unrelated `authorized_keys` entries, unrelated files, users, services, and SSH configuration:
+Uninstall removes only fixed OpsHaven paths and the exact restricted key entry. It preserves unrelated SSH keys, files, users, services, and SSH configuration:
 
 ```bash
 opshaven uninstall remote --approve
 ```
 
-Both commands emit a machine-readable receipt. Omit `--approve` to confirm that destructive execution remains blocked.
+Omitting `--approve` confirms that destructive non-interactive execution remains blocked.
 
 ## Existing installations
 
-Explicit configuration remains supported for compatibility and debugging:
+Explicit paths remain supported for compatibility and support diagnostics:
 
 ```bash
 opshaven setup remote \
@@ -221,39 +274,53 @@ opshaven boundary verify \
   --setup-config /absolute/path/to/existing-setup.json
 ```
 
-Existing policy files, signed authorization artifacts, receipts, and remote installations do not need to be renamed or regenerated solely to use the guided CLI.
+Normal new-user setup does not require locating these files.
 
-## Error translation and debugging
+## Error handling
 
-Normal setup failures use operator actions rather than internal schema or cryptographic names:
+Normal failures answer three questions:
+
+1. what happened;
+2. which operator-facing check failed;
+3. what to do or run next.
+
+Example:
 
 ```text
-Setup state is missing or outdated.
+✗ Remote setup cannot continue
+
+Cause:
+Administrator SSH authentication failed.
+
+Checked:
+✓ Host identity
+✗ SSH authentication
+
+Next:
+Verify the administrator username and private key, then run the health check.
 
 Run:
-opshaven init
+  opshaven doctor
 ```
 
-```text
-Authorization setup is incomplete.
+Add `--debug` to the failing command to see the original lower-level validation message. Debug mode never disables authorization, signatures, host verification, rollback, boundary verification, least privilege, or audit behavior.
 
-Run:
-opshaven init
-```
+## Color and automation
 
-Add `--debug` to the failing command to see the original validation message:
+Color is optional and never carries correctness information. Disable it with:
 
 ```bash
-opshaven setup remote --dry-run --debug
+NO_COLOR=1 opshaven doctor
+OPSHAVEN_COLOR=never opshaven setup remote
 ```
 
-Debug mode is intended for troubleshooting and support. It does not disable validation, signature checks, rollback protection, boundary verification, least privilege, or audit behavior.
+Use `--json` for machine-readable output where supported.
 
 ## Prepare endpoint handoff
 
-Create a reviewed remote MCP companion configuration as described in [Secure remote MCP](remote-mcp.md). The endpoint configuration remains explicit because it contains deployment-specific OIDC, Host, Origin, proxy, rate-limit, and request-bound policy.
+Create a reviewed remote MCP companion configuration as described in [Secure remote MCP](remote-mcp.md). Endpoint configuration remains explicit because it contains deployment-specific identity, Host, Origin, proxy, rate-limit, and request-bound policy.
 
-Prepare generic HTTPS proxy or tunnel instructions:
+Prepare the handoff:
 
 ```bash
 opshaven endpoint expose \
@@ -275,37 +342,3 @@ Inspect current handoff state:
 ```bash
 opshaven endpoint status
 ```
-
-The command refuses public OpsHaven binding, credential-bearing URLs, mismatched paths, permissive proxy state, missing OIDC assumptions, wildcard CORS evidence, and endpoints that accept anonymous MCP requests.
-
-## Troubleshooting
-
-### Setup is not initialized
-
-Run:
-
-```bash
-opshaven init
-```
-
-For a non-interactive environment, provide the remote host, administrator identity, known-hosts file, verified fingerprint, and privilege flags shown above.
-
-### The source identity cannot be detected
-
-Run OpsHaven from the clean reviewed Git checkout. Reviewed automation may pass the exact commit explicitly:
-
-```bash
-opshaven init --source-sha <40-character-reviewed-commit> ...
-```
-
-### Missing remote Node.js candidate
-
-Install Node.js 22 or newer on the VPS at `/usr/local/bin/node` or `/usr/bin/node`, then rerun:
-
-```bash
-opshaven setup remote
-```
-
-### Advanced validation failure
-
-Run the same command with `--debug`, correct the reported prerequisite without weakening the boundary, and rerun the normal command.

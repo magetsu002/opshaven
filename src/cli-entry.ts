@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { formatOperatorError } from "./operator-errors.js";
+import { colorEnabled, heading, paint, section } from "./operator-ui.js";
 
 const HELP_COMMANDS = new Set(["help", "--help", "-h"]);
 const VERSION_COMMANDS = new Set(["version", "--version", "-V"]);
@@ -37,58 +38,53 @@ function explicitConfigPath(): string {
 }
 
 function help(): string {
-  return `OpsHaven human CLI
+  const color = colorEnabled();
+  return `${heading("OpsHaven Operator CLI", color)}
+OpsHaven human CLI for secure Linux operations.
 
-Usage:
+${section("Usage", color)}
   opshaven <command> [options]
 
-First run:
-  init                     Prepare local operator state and authorization keys
-  setup remote             Install the reviewed read-only runtime
-  doctor                   Show current state, blockers, and the next action
-  boundary verify          Verify the installed boundary
+${section("Start here", color)}
+  init                     Configure this operator machine
+  setup remote             Install and verify the remote runtime
+  doctor                   Diagnose local and remote readiness
+  boundary verify          Verify the installed security boundary
 
-Operator workflow:
-  uninstall remote         Remove the recorded remote installation
+${section("Operate", color)}
+  authorization-report     Explain the current authorization state
   endpoint expose|status   Manage reviewed endpoint handoff
-  authorization-report     Explain active capability authorization
+  uninstall remote         Remove the recorded remote installation
 
-Configuration and audit:
-  validate-config          Validate local policy and authorization artifacts
+${section("Advanced", color)}
+  validate-config          Validate generated operator configuration
   verify-audit             Verify the tamper-evident audit chain
-  compare-capabilities     Compare build capability declarations
-  print-mcp-config         Print local MCP client configuration
+  compare-capabilities     Compare build authorization declarations
+  print-mcp-config         Print MCP client configuration
   print-remote-mcp-url     Print the configured remote MCP URL
-
-Controlled local approvals:
-  approve-restart
-  approve-deploy
-  approve-rollback
-
-Remote transport:
+  approve-restart          Create a one-time restart approval
+  approve-deploy           Create a one-time deployment approval
+  approve-rollback         Create a one-time rollback approval
   serve                    Start the explicitly configured HTTP transport
 
-Other:
-  help, --help, -h         Show this help
-  version, --version, -V   Show the CLI version
+${section("Global options", color)}
+  --help, -h               Show this help
+  --version, -V            Show the CLI version
+  --json                   Produce machine-readable output where supported
+  --debug                  Show lower-level diagnostic details
 
-Normal first run:
+${paint("Normal operator workflow", "info", color)}
   opshaven init
   opshaven setup remote
   opshaven doctor
   opshaven boundary verify
 
-Existing installations may continue passing --config and --setup-config explicitly.
-
-MCP protocol server:
-  opshaven-mcp --config <path>
-
-The opshaven command is for humans. The opshaven-mcp executable is for MCP clients.
+The opshaven command is for people. MCP clients launch opshaven-mcp.
 `;
 }
 
-function startupBlocked(reason: string, action: string): Error {
-  return new Error(`Startup blocked.\n\nReason:\n${reason}\n\nAction:\n${action}`);
+function usageError(message: string): Error {
+  return new Error(message);
 }
 
 async function main(): Promise<void> {
@@ -102,16 +98,16 @@ async function main(): Promise<void> {
     return;
   }
   if (!KNOWN_COMMANDS.has(requested)) {
-    throw startupBlocked(`Unknown command "${requested}".`, "Run:\nopshaven help");
+    throw usageError(`Unknown command "${requested}".`);
   }
   if (requested === "boundary" && process.argv[3] !== "verify") {
-    throw startupBlocked("Unknown boundary command.", "Run:\nopshaven boundary verify");
+    throw usageError("Unknown boundary command.");
   }
 
   const commandArgs = process.argv.slice(3);
   if (requested === "init") {
-    const { runInit } = await import("./operator-state.js");
-    await runInit(commandArgs);
+    const { runFirstRunWizard } = await import("./operator-init.js");
+    await runFirstRunWizard(commandArgs);
     return;
   }
 
@@ -119,7 +115,7 @@ async function main(): Promise<void> {
   const explicit = explicitConfigPath();
   const path = explicit || await resolveLocalConfigPath(commandArgs) || "";
 
-  if ((requested === "doctor" || requested === "diagnostics")) {
+  if (requested === "doctor" || requested === "diagnostics") {
     const { runDoctor } = await import("./operator-doctor.js");
     await runDoctor(path, commandArgs);
     return;
@@ -127,7 +123,7 @@ async function main(): Promise<void> {
 
   const requiresLocalConfig = !COMMANDS_WITHOUT_LOCAL_CONFIG.has(requested);
   if (requiresLocalConfig && !path) {
-    throw startupBlocked("Operator setup is not initialized.", "Run:\nopshaven init");
+    throw usageError("Setup is not initialized. Operator setup is not initialized.");
   }
   if (requiresLocalConfig && path && !explicit) process.argv.push("--config", path);
 
