@@ -139,9 +139,11 @@ test("normal operator errors never expose an embedded Python traceback", () => {
 
 test("clean build output keeps installed CLI entry points executable", async () => {
   const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-  for (const relative of ["dist/src/cli-entry.js", "dist/src/index.js"]) {
+  for (const relative of ["dist/src/cli-entry.js", "dist/src/mcp-entry.js"]) {
     const target = path.join(repositoryRoot, relative);
-    const stat = await fs.stat(target);
+    const stat = await fs.lstat(target);
+    assert.equal(stat.isSymbolicLink(), false);
+    assert.ok(stat.isFile());
     assert.ok((stat.mode & 0o111) !== 0, `${relative} must retain an executable bit after a clean build`);
     const source = await fs.readFile(target, "utf8");
     assert.match(source, /^#!\/usr\/bin\/env node\n/);
