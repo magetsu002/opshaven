@@ -14,7 +14,12 @@ RUN apt-get update \
   && passwd -d admin \
   && install -d -m 700 -o admin -g admin /home/admin/.ssh \
   && printf '%s\n' 'admin ALL=(root) NOPASSWD: ALL' > /etc/sudoers.d/opshaven-integration-admin \
-  && chmod 440 /etc/sudoers.d/opshaven-integration-admin \
+  && printf '%s\n' \
+    'Defaults:opshaven !requiretty' \
+    'opshaven ALL=(root) NOPASSWD: /usr/bin/systemctl restart sample-api.service, /usr/bin/systemctl restart sample-worker.service' \
+    > /etc/sudoers.d/opshaven-integration-deploy \
+  && chmod 440 /etc/sudoers.d/opshaven-integration-admin /etc/sudoers.d/opshaven-integration-deploy \
+  && /usr/sbin/visudo -cf /etc/sudoers.d/opshaven-integration-deploy \
   && install -d -m 755 /run/sshd /bootstrap /opt/opshaven-fixtures \
   && ssh-keygen -A \
   && printf '%s\n' \
