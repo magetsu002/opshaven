@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { parseConfig, type OpsHavenConfig } from "../src/config.js";
 import {
   DEPLOYMENT_MINIMUM_DISK_BYTES,
@@ -279,7 +279,7 @@ test("insufficient apply-time disk fails before deployment mutation", async () =
   assert.equal(value.client.mutationCalls, 0);
 });
 
-test("service and runtime drift remain stale-plan blockers", async (t) => {
+test("service and runtime drift remain stale-plan blockers", async (t: TestContext) => {
   await t.test("service identity", async () => {
     const value = await registeredFixture();
     const stored = await value.coordinator.createPlan("sample-api", TARGET);
