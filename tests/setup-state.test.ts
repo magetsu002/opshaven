@@ -32,6 +32,7 @@ function installed(overrides: Partial<InstalledRemoteState> = {}): InstalledRemo
     source: "installed remote state",
     schemaVersion: 3,
     generation: 1,
+    recordedIdentityMatches: true,
     sourceSha: expected.sourceSha,
     dispatcherMode: expected.dispatcherMode,
     runtimeSha256: expected.runtimeSha256,
@@ -78,6 +79,20 @@ test("authorization-only, declaration-only, and combined changes remain explicit
   assert.equal(compareRemoteState(desired(), installed({ schemaVersion: 2 })).changeType, "APPLICATION_DECLARATION_ONLY");
 });
 
+test("complete canonical-record drift remains repairable from verified installed artifacts", () => {
+  const stateOnly = compareRemoteState(desired(), installed({ recordedIdentityMatches: false, detail: "recorded remote state differs from installed dispatcherSha256" }));
+  assert.equal(stateOnly.changeType, "APPLICATION_DECLARATION_ONLY");
+  assert.match(stateOnly.reasons.join("; "), /recorded remote state differs/);
+
+  const dispatcherDrift = compareRemoteState(desired(), installed({
+    recordedIdentityMatches: false,
+    dispatcherMode: "read-only",
+    dispatcherSha256: "a".repeat(64),
+    detail: "recorded remote state differs from installed dispatcherSha256",
+  }));
+  assert.equal(dispatcherDrift.changeType, "DISPATCHER_UPDATE");
+});
+
 test("runtime and dispatcher identities take precedence over authorization synchronization", () => {
   assert.equal(compareRemoteState(desired(), installed({ sourceSha: "a".repeat(40) })).changeType, "RUNTIME_UPDATE");
   assert.equal(compareRemoteState(desired(), installed({ runtimeSha256: "b".repeat(64), policySha256: "c".repeat(64) })).changeType, "RUNTIME_UPDATE");
@@ -85,9 +100,9 @@ test("runtime and dispatcher identities take precedence over authorization synch
 });
 
 test("inconsistent or unsupported remote identity fails closed instead of being inferred as valid", () => {
-  const inconsistent = compareRemoteState(desired(), installed({ status: "inconsistent", detail: "recorded state differs from installed artifacts" }));
+  const inconsistent = compareRemoteState(desired(), installed({ status: "inconsistent", recordedIdentityMatches: false, detail: "installed capability artifact is missing" }));
   assert.equal(inconsistent.changeType, "REPAIR_REQUIRED");
-  assert.match(inconsistent.reasons[0] ?? "", /recorded state differs/);
+  assert.match(inconsistent.reasons[0] ?? "", /capability artifact is missing/);
   assert.equal(compareRemoteState(desired(), installed({ schemaVersion: 4 })).changeType, "REPAIR_REQUIRED");
   assert.equal(compareRemoteState(desired(), installed({ platform: "Darwin" })).changeType, "REPAIR_REQUIRED");
   assert.equal(compareRemoteState(desired(), installed({ architecture: "mips" })).changeType, "REPAIR_REQUIRED");
