@@ -120,14 +120,9 @@ node -e 'const x=require(process.argv[1]); if(!x.certified || x.changeType!=="NO
 
 stage "diagnose partial generation"
 docker exec "$CONTAINER" rm -f /var/lib/opshaven/setup-receipt.json
-set +e
-opshaven setup remote --non-interactive --approve > "$WORK/blocked.out" 2> "$WORK/blocked.err"
-BLOCKED_STATUS=$?
-opshaven doctor --debug --json > "$WORK/damaged-doctor.json" 2> "$WORK/damaged-doctor.err"
-DOCTOR_STATUS=$?
-opshaven setup repair --json > "$WORK/repair-plan.json" 2> "$WORK/repair-plan.err"
-REPAIR_STATUS=$?
-set -e
+if opshaven setup remote --non-interactive --approve > "$WORK/blocked.out" 2> "$WORK/blocked.err"; then BLOCKED_STATUS=0; else BLOCKED_STATUS=$?; fi
+if opshaven doctor --debug --json > "$WORK/damaged-doctor.json" 2> "$WORK/damaged-doctor.err"; then DOCTOR_STATUS=0; else DOCTOR_STATUS=$?; fi
+if opshaven setup repair --json > "$WORK/repair-plan.json" 2> "$WORK/repair-plan.err"; then REPAIR_STATUS=0; else REPAIR_STATUS=$?; fi
 [[ "$BLOCKED_STATUS" -ne 0 && "$DOCTOR_STATUS" -ne 0 && "$REPAIR_STATUS" -ne 0 ]]
 ! grep -Eq 'Traceback|RuntimeError|/tmp/' "$WORK/blocked.out" "$WORK/blocked.err" "$WORK/damaged-doctor.err" "$WORK/repair-plan.err"
 node -e 'const x=require(process.argv[1]); if(x.primary!=="REMOTE_GENERATION_PARTIAL" || x.repairClassification!=="EVIDENCE_PRESERVING_REINSTALL" || x.nextAction!=="opshaven setup repair") process.exit(1)' "$WORK/damaged-doctor.json"
