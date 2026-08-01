@@ -88,7 +88,7 @@ function usageError(message: string): Error { return new Error(message); }
 async function main(): Promise<void> {
   const requested = process.argv[2] ?? "help";
   if (HELP_COMMANDS.has(requested)) { process.stdout.write(help()); return; }
-  if (VERSION_COMMANDS.has(requested)) { process.stdout.write(`OpsHaven ${process.env.npm_package_version ?? "1.0.0"}\n`); return; }
+  if (VERSION_COMMANDS.has(requested)) { process.stdout.write(`OpsHaven ${process.env.npm_package_version ?? "1.1.0"}\n`); return; }
   if (!KNOWN_COMMANDS.has(requested)) throw usageError(`Unknown command "${requested}".`);
   if (requested === "boundary" && process.argv[3] !== "verify") throw usageError("Unknown boundary command.");
 

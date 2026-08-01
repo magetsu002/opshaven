@@ -10,7 +10,7 @@ const expectedBins = {
 const failures = [];
 const noFollow = fsConstants.O_NOFOLLOW ?? 0;
 if (pkg.name !== "opshaven") failures.push("package name must be opshaven");
-if (pkg.version !== "1.0.0") failures.push("package version must be 1.0.0");
+if (pkg.version !== "1.1.0") failures.push("package version must be 1.1.0");
 if (pkg.license !== "MIT") failures.push("package license must be MIT");
 if (pkg.type !== "module") failures.push("package type must be module");
 if (pkg.engines?.node !== ">=22.0.0") failures.push("Node engine must remain >=22.0.0");

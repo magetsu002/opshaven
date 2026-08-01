@@ -29,14 +29,14 @@ npm run install:local
 hash -r
 assert_installed_command opshaven "$repository_root/dist/src/cli-entry.js"
 assert_installed_command opshaven-mcp "$repository_root/dist/src/mcp-entry.js"
-opshaven --version | grep -Eq '^OpsHaven 1\.0\.0$'
-opshaven-mcp --version | grep -Eq '^OpsHaven MCP 1\.0\.0$'
+opshaven --version | grep -Eq '^OpsHaven 1\.1\.0$'
+opshaven-mcp --version | grep -Eq '^OpsHaven MCP 1\.1\.0$'
 
 npm run build
 hash -r
 assert_installed_command opshaven "$repository_root/dist/src/cli-entry.js"
 assert_installed_command opshaven-mcp "$repository_root/dist/src/mcp-entry.js"
-opshaven --version | grep -Eq '^OpsHaven 1\.0\.0$'
-opshaven-mcp --version | grep -Eq '^OpsHaven MCP 1\.0\.0$'
+opshaven --version | grep -Eq '^OpsHaven 1\.1\.0$'
+opshaven-mcp --version | grep -Eq '^OpsHaven MCP 1\.1\.0$'
 
 printf 'installed CLI: link, executable mode, version, and rebuild lifecycle verified\n'

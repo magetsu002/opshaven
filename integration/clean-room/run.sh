@@ -51,8 +51,8 @@ npm run install:local
 hash -r
 command -v opshaven >/dev/null
 command -v opshaven-mcp >/dev/null
-opshaven --version | grep -Eq '^OpsHaven 1\.0\.0$'
-opshaven-mcp --version | grep -Eq '^OpsHaven MCP 1\.0\.0$'
+opshaven --version | grep -Eq '^OpsHaven 1\.1\.0$'
+opshaven-mcp --version | grep -Eq '^OpsHaven MCP 1\.1\.0$'
 
 stage "start disposable Ubuntu host"
 ssh-keygen -q -t ed25519 -N '' -f "$WORK/admin_id"
@@ -176,8 +176,8 @@ node -e 'const d=require(process.argv[1]); const b=require(process.argv[2]); if(
 stage "rebuild linked commands"
 npm run build
 hash -r
-opshaven --version | grep -Eq '^OpsHaven 1\.0\.0$'
-opshaven-mcp --version | grep -Eq '^OpsHaven MCP 1\.0\.0$'
+opshaven --version | grep -Eq '^OpsHaven 1\.1\.0$'
+opshaven-mcp --version | grep -Eq '^OpsHaven MCP 1\.1\.0$'
 
 ELAPSED="$(( $(date +%s) - STARTED_AT ))"
 printf 'clean-room workflow: installed CLI, init, app registration, setup, doctor, boundary, exact plan/apply, no-change, partial-state diagnosis, evidence-preserving repair, and rebuild passed in %ss\n' "$ELAPSED"
