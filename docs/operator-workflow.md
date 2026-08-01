@@ -22,13 +22,6 @@ opshaven --help
 
 `opshaven` is the operator interface. `opshaven-mcp` is the stdio protocol process launched by an MCP client; it is not an interactive shell command.
 
-For local development without installing the executable globally:
-
-```bash
-npm run dev:cli -- --help
-npm run dev:cli -- doctor
-```
-
 ## Initialize
 
 Run:
@@ -39,54 +32,19 @@ opshaven init
 
 The wizard explains that it runs on the operator machine and does not install anything remotely. It asks for a friendly target name, SSH address, administrator account used only for installation, owner-only administrator key, pinned `known_hosts` source, independently verified host fingerprint, and final confirmation.
 
-Example:
-
-```text
-OpsHaven first-time setup
-
-Remote machine
-Name [PRIMARY]: EXAMPLE
-SSH address: example.invalid:22
-Administrator SSH user [root]:
-
-Host identity
-Detected host identity:
-SHA256:xxxxxxxx
-
-Use this host identity? [y/N] y
-✓ Host identity verified
-
-Ready to initialize
-Continue? [Y/n] y
-```
-
 Every prerequisite and confirmation is checked before persistence. Rejecting the host identity, cancelling final confirmation, or providing invalid input leaves no incomplete setup record.
-
-For reviewed non-interactive automation:
-
-```bash
-opshaven init \
-  --non-interactive \
-  --host example.invalid \
-  --port 22 \
-  --admin-user ubuntu \
-  --admin-identity "$HOME/.ssh/example-admin" \
-  --known-hosts "$HOME/.ssh/known_hosts" \
-  --host-key-sha256 "SHA256:verified-value" \
-  --privilege sudo-noninteractive
-```
-
-Non-interactive setup never treats an automatically discovered fingerprint as operator approval. The expected fingerprint must be supplied after independent verification.
 
 ## Set up the remote machine
 
-Run on the operator machine:
+Run:
 
 ```bash
 opshaven setup remote
 ```
 
-The command identifies the target, performs exact preflight checks, installs the restricted runtime, configures authorization, verifies the boundary, and reports the next command. Preview without changes with:
+The command identifies the target, performs exact preflight checks, installs the restricted runtime, configures authorization, verifies the boundary, and reports the next command.
+
+Preview without changes:
 
 ```bash
 opshaven setup remote --dry-run
@@ -98,11 +56,9 @@ Reviewed automation remains explicit:
 opshaven setup remote --non-interactive --approve
 ```
 
-Add `--debug` to display lower-level setup evidence. Normal output intentionally hides protected paths and implementation hashes.
+Normal output hides protected paths and implementation hashes. Add `--debug` only when lower-level evidence is required.
 
 ## Register an application
-
-The initial deployment profile is deliberately narrow: an existing Git repository on the approved host, fixed npm install and build operations, versioned release directories, an atomic active-release symlink, one approved systemd service, one bounded HTTP GET health check, and automatic restoration of the previous release.
 
 Run:
 
@@ -110,58 +66,131 @@ Run:
 opshaven app add
 ```
 
-The guided command collects only operator-facing facts:
+The guided workflow first explains the supported profile and then describes every field before asking for a value. Pressing Enter at every prompt accepts the complete bundled synthetic example.
+
+The two application names have different purposes:
 
 ```text
+Application ID
+  Permanent lowercase identifier used in commands.
+  Example: sample-api
+
 Application name
-Remote target
-Repository location
-Release location
-Service identifier
-Health check
-Expected status
-Rollback behavior
+  Friendly label shown in reports.
+  Example: Sample API
 ```
 
-It rejects unsafe or overlapping paths, duplicate application IDs, malformed service identifiers, unsupported build strategies, credentials in health URLs, and arbitrary command input before persistence. Cancellation and validation failure create no partial state.
-
-After registration, synchronize and verify the generated authorization at the restricted remote boundary:
-
-```bash
-opshaven setup remote
-```
-
-Synthetic example:
+The repository and release locations are absolute paths on the remote machine:
 
 ```text
-Application: sample-api
-Repository: /srv/opshaven-fixtures/sample-api/repository
-Releases:   /srv/opshaven-fixtures/sample-api/releases
-Service:    sample-api.service
-Health:     http://127.0.0.1:3000/health
+Repository
+  /srv/opshaven-fixtures/sample-api/repository
+
+Releases
+  /srv/opshaven-fixtures/sample-api/releases
 ```
 
-## Plan an exact revision
+The repository path identifies the reviewed Git repository containing the application code. The release path is where separate versioned releases are prepared. OpsHaven never builds incrementally inside the active release.
 
-Create a read-only plan:
+The initial profile remains narrow:
+
+```text
+Git repository on one approved remote machine
+fixed npm install and build operations
+versioned release directories
+atomic active-release switch
+one approved systemd service restart
+one bounded HTTP GET health check
+automatic previous-release restoration
+```
+
+Registration rejects unsafe or overlapping paths, duplicate IDs, malformed service identifiers, unsupported build strategies, credential-bearing health URLs, and arbitrary command input before persistence. Cancellation and validation failure create no partial state.
+
+After registration, OpsHaven checks the real state before printing the next command:
+
+- when the installed boundary already recognizes the application and a verified revision is available, it prints the plan command;
+- when the updated application authorization still needs installation, it prints `opshaven setup remote`;
+- when the repository or runtime is unavailable, it directs the operator to the relevant readiness check.
+
+It does not print both actions indiscriminately.
+
+## Understand application revisions
+
+A revision is the exact ID of one saved version of the application code.
+
+OpsHaven requires a complete Git commit SHA so approved code cannot later change because a branch or tag moved. A valid revision:
+
+```text
+contains exactly 40 hexadecimal characters
+uses only 0-9 and a-f
+belongs to the application's configured repository
+```
+
+A server fingerprint and an application revision are different:
+
+```text
+SHA256:...
+  Identifies the remote server.
+
+40-character Git commit SHA
+  Identifies one exact saved application version.
+```
+
+Do not paste an SSH host fingerprint into `--revision`.
+
+## Choose a revision interactively
+
+For normal interactive use:
 
 ```bash
-opshaven deploy plan sample-api --revision <full-commit-sha>
+opshaven deploy plan sample-api
 ```
 
-Only a complete 40-character Git commit SHA is accepted. Branches, tags, `HEAD`, `latest`, abbreviated SHAs, and arbitrary ref expressions are rejected. The restricted remote runtime verifies the exact commit belongs to the configured source before any deployment mutation.
+OpsHaven inspects only the configured repository through the existing bounded deployment boundary. It explains revisions, displays verified complete commit SHAs, and requires an explicit numbered selection.
 
-Planning inspects only the active release, current exact revision, approved service state, health status, available disk, runtime availability, rollback release, and target revision membership. It does not build, fetch into active state, restart services, activate releases, run migrations, or change authorization.
+For the bundled sample, the recommended healthy revision is derived from the actual synthetic repository. The full SHA is displayed at runtime rather than hardcoded in documentation. When a reviewed unhealthy rollback-test revision is available in the fixture, it is labeled separately and remains opt-in.
 
-The plan contains ordered typed operations, permitted resources, privilege requirements, timeouts, output bounds, redaction rules, mutation classes, verification steps, rollback steps, current and target revisions, target identity, policy and operation-definition digests, risk, expiration, and a nonce.
+The selected value is always converted to and verified as a complete immutable 40-character SHA before plan creation. Branches, tags, `HEAD`, `latest`, abbreviated SHAs, and arbitrary ref expressions remain rejected.
 
-Its immutable identity is:
+## Plan non-interactively
+
+Non-interactive and JSON callers must provide the exact revision explicitly:
+
+```bash
+opshaven deploy plan sample-api \
+  --revision 0123456789abcdef0123456789abcdef01234567 \
+  --non-interactive
+```
+
+The SHA above is a format example only. Use the complete SHA reported from the application's actual configured repository.
+
+OpsHaven never silently chooses a revision for non-interactive or JSON planning.
+
+Planning remains read-only. It may inspect:
+
+```text
+current active release and revision
+approved service state
+health state
+available disk
+runtime availability
+rollback release
+target revision membership
+```
+
+It does not build, restart, activate, run migrations, modify configuration, or change authorization.
+
+## Review the immutable plan
+
+Every plan receives an immutable identifier:
 
 ```text
 sha256:<digest>
 ```
 
-The digest covers the complete canonical plan. Repeating planning with unchanged configuration, requested revision, observed state, target identity, authorization policy, and operation definitions returns the same still-valid stored plan. A changed input or expired plan requires a new plan.
+The digest covers the canonical security-relevant plan, including the application, target host identity, current and target revisions, observed-state fingerprint, typed operations, authorization scope, privilege requirements, health checks, rollback strategy, policy version, operation-definition digest, creation time, expiration, and nonce.
+
+For unchanged inputs and still-valid stored state, the same deterministic plan can be reused. A changed application configuration, target identity, current revision, policy, health definition, rollback state, or expiration requires a new plan.
 
 ## Apply the exact plan
 
@@ -171,17 +200,31 @@ Run:
 opshaven deploy apply <plan-id>
 ```
 
-Interactive apply shows the exact release mutation, approved service restart, and prepared rollback, then defaults to `No`. Confirmation creates the existing one-time cryptographic authorization for the exact operation. Non-interactive apply requires an existing signed approval token; there is no casual `--yes` bypass.
+Interactive apply displays the exact release mutation, approved service restart, and prepared rollback, then defaults to No. Confirmation creates the existing one-time cryptographic authorization for that exact stored operation.
 
-Immediately before mutation, OpsHaven revalidates plan integrity and expiration, application and host identity, operator profile and policy version, operation definitions, current revision and observed-state fingerprint, rollback availability, disk, runtime, service identity, health status, and target commit membership. Any difference fails closed and requires a new plan.
+Non-interactive apply requires an existing signed approval token. There is no casual `--yes` bypass and no apply-time override for the application, revision, health check, operation list, or rollback strategy.
 
-Only one apply may hold an application's persistent lock. A started plan cannot be replayed. A rollback failure retains the lock as explicit recovery state.
+Immediately before mutation, OpsHaven revalidates:
+
+```text
+plan integrity and expiration
+application and host identity
+operator authorization and policy
+operation definitions
+current revision and observed state
+rollback availability
+disk and runtime
+service identity and health
+target commit membership
+```
+
+Any difference fails closed and requires a new plan.
 
 ## Activation and recovery
 
-The constrained remote deployment engine verifies the source, creates a separate versioned release, runs only fixed bounded build steps, records the previous release, switches the active symlink atomically, and restarts only the approved systemd service.
+The constrained deployment engine verifies the exact source, creates a separate versioned release, runs only fixed bounded build operations, records the previous release, switches the active release atomically, and restarts only the approved systemd service.
 
-Completion requires all checks:
+Completion requires:
 
 ```text
 approved service active
@@ -190,7 +233,9 @@ expected release selected
 exact target revision active
 ```
 
-If post-activation verification fails, OpsHaven restores the recorded previous release, restarts the approved service, reruns health verification, and confirms the previous revision. It reports one of:
+If post-activation verification fails, OpsHaven restores the recorded previous release, restarts the approved service, reruns health verification, and confirms the previous revision.
+
+Outcomes remain distinct:
 
 ```text
 DEPLOYMENT_SUCCEEDED
@@ -199,7 +244,7 @@ DEPLOYMENT_FAILED_ROLLBACK_FAILED
 DEPLOYMENT_NOT_STARTED
 ```
 
-A successful rollback does not convert a failed rollout into success. A rollback failure is prominent and blocks conflicting deployment until recovery state is resolved.
+A successful rollback does not convert a failed rollout into success. A rollback failure remains prominent and retains recovery lock state.
 
 ## Diagnose and audit
 
@@ -210,57 +255,74 @@ opshaven doctor
 opshaven verify-audit
 ```
 
-`doctor` includes deployment configuration validity, remote release readiness, approved service availability, health reachability, rollback availability, the current blocker, and the next plan command. Normal output hides protected filenames.
+The deployment section distinguishes:
 
-Application registration, plan creation or rejection, apply approval and start, operation results, verification, deployment result, rollback start, and rollback result remain in the existing tamper-evident audit chain. Audit evidence uses bounded structured fields and digests rather than secrets, tokens, environment values, or raw build output.
-
-## Verify and operate
-
-After setup succeeds:
-
-```bash
-opshaven boundary verify
-opshaven authorization-report --mode read-only
-opshaven print-mcp-config
+```text
+no application registered
+application registered but repository unavailable
+application ready for planning
+deployment plan available
+deployment apply blocked
 ```
 
-A normal completed sequence is:
+For a ready bundled sample, the next action is:
+
+```bash
+opshaven deploy plan sample-api
+```
+
+Malformed command syntax is explained by the command that rejected it. `doctor` is reserved for genuine environmental or readiness blockers.
+
+Application registration, plan creation or rejection, approval, apply start, operation results, verification, deployment outcome, rollback start, and rollback result remain in the existing tamper-evident audit chain. Audit evidence uses bounded structured fields and digests rather than secrets, tokens, environment values, or raw build output.
+
+## Normal completed sequence
 
 ```bash
 opshaven init
 opshaven setup remote
 opshaven app add
-opshaven setup remote
-opshaven deploy plan sample-api --revision <full-commit-sha>
+opshaven deploy plan sample-api
 opshaven deploy apply <plan-id>
 opshaven doctor
 opshaven boundary verify
 ```
 
-Rollback and uninstall of the OpsHaven runtime continue to use the protected setup record:
+Run `opshaven setup remote` again after registration only when the CLI specifically reports that the updated application authorization has not yet been installed.
+
+## Terminal and automation behavior
+
+Application registration, deployment planning, apply results, rollback outcomes, stale-plan rejection, replay rejection, authorization rejection, and validation failures use the same terminal presentation layer as initialization, setup, and doctor.
+
+Color is presentation only:
 
 ```bash
-opshaven setup remote --rollback --approve
-opshaven uninstall remote --approve
+NO_COLOR=1 opshaven deploy plan sample-api
+OPSHAVEN_COLOR=never opshaven app add
 ```
+
+Non-TTY output remains readable. JSON output contains no ANSI escape sequences.
 
 ## Unsupported deployment types
 
-This profile does not support database migrations, secret rotation, arbitrary hooks or shell commands, containers, Kubernetes, cloud provisioning, multi-host or multi-service coordination, application discovery, moving Git refs, AI-generated operations, or a web dashboard.
+This profile does not support:
 
-## Terminal and automation modes
-
-Colors and symbols are presentation only. Text, exit codes, checks, and JSON remain authoritative.
-
-```bash
-NO_COLOR=1 opshaven doctor
-OPSHAVEN_COLOR=never opshaven setup remote
+```text
+database migrations
+secret rotation
+arbitrary hooks or arbitrary shell commands
+containers or Kubernetes
+cloud provisioning
+multi-host or multi-service coordination
+application auto-discovery
+moving Git references
+AI-generated deployment operations
+web-dashboard deployment controls
 ```
 
-Use `--json` where supported and `--debug` for lower-level diagnostics. Neither option weakens validation.
+A deployment requiring one of these features must not be forced through the supported profile.
 
 ## Security boundary
 
-Private SSH and authorization material remains on the operator machine. The remote account has no interactive shell. Deployment is constrained to reviewed resource mappings and typed operations, not arbitrary command execution.
+Private SSH and authorization material remains on the operator machine. The remote account has no interactive shell. Deployment is constrained to reviewed resource mappings, complete immutable revisions, and typed operations.
 
-OpsHaven does not claim absolute security or universal deployment safety. The guarantees depend on the host kernel, filesystem ownership, OpenSSH, Git, Node.js, npm, systemd, configured resource mappings, health endpoint correctness, operator-owned keys, and reviewed application build behaving as configured.
+OpsHaven does not claim absolute security or universal deployment safety. Its guarantees still depend on the host kernel, filesystem ownership, OpenSSH, Git, Node.js, npm, systemd, configured resource mappings, health endpoint correctness, operator-owned keys, and the reviewed application build behaving as configured.

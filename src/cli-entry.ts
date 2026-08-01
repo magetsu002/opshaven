@@ -55,7 +55,7 @@ ${section("Start here", color)}
 
 ${section("Deploy", color)}
   app add                  Register one supported application
-  deploy plan <app>        Create an immutable exact-revision plan
+  deploy plan <app>        Choose and plan an immutable revision
   deploy apply <plan-id>   Apply only the stored approved plan
 
 ${section("Operate", color)}
@@ -84,10 +84,13 @@ ${paint("Normal operator workflow", "info", color)}
   opshaven init
   opshaven setup remote
   opshaven app add
-  opshaven deploy plan sample-api --revision <full-commit-sha>
+  opshaven deploy plan sample-api
   opshaven deploy apply <plan-id>
   opshaven doctor
   opshaven boundary verify
+
+Non-interactive planning must supply:
+  opshaven deploy plan sample-api --revision <full-commit-sha>
 
 The opshaven command is for people. MCP clients launch opshaven-mcp.
 `;

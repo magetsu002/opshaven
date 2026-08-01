@@ -3,6 +3,7 @@ export type UiState = "passed" | "warning" | "failed" | "pending" | "skipped" | 
 
 interface StreamLike {
   readonly isTTY?: boolean;
+  readonly write?: unknown;
 }
 
 type Environment = Readonly<Record<string, string | undefined>>;
