@@ -88,7 +88,10 @@ test("clean reinstall preparation preserves evidence before clearing fixed activ
       this.scripts.push(script);
       if (this.scripts.length === 1) return result({ status: "invalid", transaction: null, integrityValid: false, hostBindingValid: false, rollbackAvailable: false, activeGenerationCertain: false, lastCompletedPhase: null, detail: "receipt chain invalid" });
       if (this.scripts.length === 2) {
-        const requestLine = script.split("\n", 1)[0] ?? "";
+        const requestLine = script
+          .split("\n")
+          .map((line) => line.trim())
+          .find((line) => line.startsWith("R=json.loads(")) ?? "";
         const encodedRequest = /^R=json\.loads\((.+)\)$/.exec(requestLine)?.[1];
         if (!encodedRequest) throw new Error("clean reinstall script must embed one canonical request");
         const request = JSON.parse(JSON.parse(encodedRequest)) as { evidenceId?: unknown };
