@@ -1,31 +1,52 @@
 name: Verifiable Release
+
 on:
   workflow_dispatch:
   push:
     tags:
       - "v*"
+
 permissions:
   contents: read
+
 jobs:
   verify-and-build:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
           cache: npm
+
       - name: Verify annotated signed tag
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          test "$(git cat-file -t "$GITHUB_REF_NAME")" = tag
-          tag_object="$(git rev-parse "$GITHUB_REF_NAME^{tag}")"
-          test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" --jq '.verification.verified')" = true
+          ref_json="$(
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME"
+          )"
+
+          tag_object="$(
+            jq -r 'if .object.type == "tag" then .object.sha else empty end' \
+              <<<"$ref_json"
+          )"
+
+          test -n "$tag_object"
+
+          tag_json="$(
+            gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object"
+          )"
+
+          test "$(jq -r '.verification.verified' <<<"$tag_json")" = "true"
+          test "$(jq -r '.object.sha' <<<"$tag_json")" = "$GITHUB_SHA"
+
       - name: Load protected release signing key
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.OPSHAVEN_RELEASE_SIGNING_KEY }}
@@ -34,10 +55,13 @@ jobs:
           install -d -m 700 "$RUNNER_TEMP/opshaven-release"
           printf '%s' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/opshaven-release/private.pem"
           chmod 600 "$RUNNER_TEMP/opshaven-release/private.pem"
+
       - name: Build signed verifiable artifacts
         run: scripts/prepare-verifiable-release.sh "$RUNNER_TEMP/opshaven-release/private.pem"
+
       - name: Verify signed artifacts
         run: scripts/verify-release-artifacts.sh artifacts artifacts/release-public.pem
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: opshaven-verifiable-${{ github.sha }}
