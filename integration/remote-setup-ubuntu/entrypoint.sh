@@ -12,7 +12,7 @@ create_application_fixture() {
   git -C "$repository" config user.name "OpsHaven Synthetic Fixture"
   git -C "$repository" config user.email "fixture@example.invalid"
   cat > "$repository/package.json" <<EOF
-{"name":"$name","version":"1.0.0","private":true,"scripts":{"build":"node -e \"require('node:fs').writeFileSync('build.txt','built\\n')\""}}
+{"name":"$name","version":"1.0.0","private":true,"scripts":{"build":"node -e \"require('node:fs').writeFileSync('build.txt','built')\""}}
 EOF
   cat > "$repository/package-lock.json" <<EOF
 {"name":"$name","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"$name","version":"1.0.0"}}}
