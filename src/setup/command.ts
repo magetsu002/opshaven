@@ -2,6 +2,7 @@ import { OpsHavenError } from "../errors.js";
 import { ensureRemoteSetupState, resolveSetupConfigPath } from "../operator-state.js";
 import { endpointStatus, exposeEndpoint } from "./endpoint.js";
 import { executeRemoteSetup } from "./engine.js";
+import { inspectRemoteSetupRepair, repairRemoteSetup } from "./repair.js";
 import { buildRemoteSetupPlan, formatRemoteSetupPlan, loadRemoteSetupConfig } from "./remote.js";
 import { rollbackRemoteSetup, uninstallRemoteSetup } from "./rollback.js";
 import { prepareRemoteState } from "./state.js";
@@ -48,7 +49,7 @@ export async function runRemoteSetup(args: readonly string[]): Promise<void> {
     return;
   }
   if (plan.changeType === "REPAIR_REQUIRED") {
-    throw new OpsHavenError("POLICY_DENIED", "Remote state cannot be synchronized safely. The installed runtime identity is incomplete or inconsistent. No changes were made.");
+    throw new OpsHavenError("POLICY_DENIED", "Remote state cannot be synchronized safely. Inspect and approve the bounded recovery flow with opshaven setup repair.", false, { safeNextCommand: "opshaven setup repair" });
   }
   const controller = new AbortController();
   process.on("SIGINT", () => controller.abort());
@@ -60,6 +61,62 @@ export async function runRemoteSetup(args: readonly string[]): Promise<void> {
     signal: controller.signal,
     initialTimings: { installedStateInspection: Date.now() - inspectionStarted },
   });
+}
+
+function formatRepairPlan(plan: Awaited<ReturnType<typeof inspectRemoteSetupRepair>>): string {
+  const lines = [
+    "Remote synchronization repair plan",
+    "",
+    "Action",
+    `  ${plan.action}`,
+    "",
+    "Synchronization transaction",
+    `  ${plan.transactionId ?? "none"}`,
+    "",
+    "Last completed phase",
+    `  ${plan.lastCompletedPhase ?? "none"}`,
+    "",
+    "Previous verified generation",
+    `  ${plan.previousGeneration ?? "unavailable"}`,
+    "",
+    "Rollback material",
+    `  ${plan.rollbackAvailable ? "available and integrity-checked" : "unavailable or invalid"}`,
+    "",
+    "Evidence",
+    "  preserved",
+    "",
+    "Changes",
+    ...plan.changes.map((item) => `  ${item}`),
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+export async function runRemoteRepair(args: readonly string[]): Promise<void> {
+  const config = await loadRemoteSetupConfig(await setupPath(args, false));
+  const json = args.includes("--json");
+  const plan = await inspectRemoteSetupRepair(config);
+  if (!args.includes("--approve")) {
+    process.stdout.write(json ? `${JSON.stringify(plan)}\n` : formatRepairPlan(plan));
+    if (plan.action !== "none") process.exitCode = 2;
+    return;
+  }
+  const receipt = await repairRemoteSetup(config, true);
+  if (json) {
+    process.stdout.write(`${JSON.stringify(receipt)}\n`);
+    return;
+  }
+  process.stdout.write("✓ Synchronization recovery complete\n\n");
+  if (receipt.action === "restore-previous") {
+    process.stdout.write("Recovery\n");
+    process.stdout.write("  ✓ Previous verified generation restored\n");
+    process.stdout.write("  ✓ Dispatcher verified\n");
+    process.stdout.write("  ✓ Authorization verified\n");
+    process.stdout.write("  ✓ Security boundary verified\n\n");
+    process.stdout.write("Current state\n");
+    process.stdout.write(`  Generation ${receipt.installedGeneration ?? "unknown"} remains active.\n`);
+  } else {
+    process.stdout.write("No unresolved synchronization transaction required repair.\n");
+  }
 }
 
 export async function runRemoteUninstall(args: readonly string[]): Promise<void> {
