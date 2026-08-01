@@ -131,21 +131,27 @@ RUNTIME_CORE_BEFORE="$(node -e 'process.stdout.write(require(process.argv[1]).ca
 "${CLI[@]}" doctor --json > "$GEN/doctor-after-sync.json"
 node -e 'const x=require(process.argv[1]); if(!x.ok || x.state!=="READY") process.exit(1)' "$GEN/doctor-after-sync.json"
 
-# Deliberately replace the active reviewed dispatcher with the valid legacy artifact.
+# Deliberately replace the active reviewed dispatcher with a different valid artifact.
+# This is installed-artifact tampering, not a legitimate desired dispatcher update, so
+# canonical receipt integrity must fail closed and require the reviewed repair flow.
 docker exec "$CONTAINER" sh -c 'cp /usr/lib/opshaven/src/remote/read-only-dispatcher.js /usr/lib/opshaven/src/remote/dispatcher.js && chmod 755 /usr/lib/opshaven/src/remote/dispatcher.js'
 if "${CLI[@]}" doctor --debug --json > "$GEN/mismatch-doctor.json" 2> "$GEN/mismatch-doctor.err"; then DOCTOR_STATUS=0; else DOCTOR_STATUS=$?; fi
 if "${CLI[@]}" boundary verify --json > "$GEN/mismatch-boundary.json" 2> "$GEN/mismatch-boundary.err"; then BOUNDARY_STATUS=0; else BOUNDARY_STATUS=$?; fi
-[[ "$DOCTOR_STATUS" -ne 0 && "$BOUNDARY_STATUS" -ne 0 ]]
-node -e 'const x=require(process.argv[1]); const d=x.details?.deploymentCompatibility; if(x.ok || !d || d.expectedDispatcherDigest===d.installedDispatcherDigest || d.repair!=="opshaven setup remote") process.exit(1)' "$GEN/mismatch-doctor.json"
-grep -Eq 'Remote boundary certification failed|Authorization setup is incomplete|Security boundary' "$GEN/mismatch-boundary.err"
+if "${CLI[@]}" setup remote --non-interactive --approve --json > "$GEN/mismatch-setup.json" 2> "$GEN/mismatch-setup.err"; then SETUP_STATUS=0; else SETUP_STATUS=$?; fi
+if "${CLI[@]}" setup repair --json > "$GEN/mismatch-repair-plan.json" 2> "$GEN/mismatch-repair-plan.err"; then REPAIR_PLAN_STATUS=0; else REPAIR_PLAN_STATUS=$?; fi
+[[ "$DOCTOR_STATUS" -ne 0 && "$BOUNDARY_STATUS" -ne 0 && "$SETUP_STATUS" -ne 0 && "$REPAIR_PLAN_STATUS" -ne 0 ]]
+node -e 'const x=require(process.argv[1]); if(x.ok || x.primary!=="REMOTE_RECEIPT_INVALID" || x.repairClassification!=="EVIDENCE_PRESERVING_REINSTALL" || x.nextAction!=="opshaven setup repair") process.exit(1)' "$GEN/mismatch-doctor.json"
+node -e 'const x=require(process.argv[1]); if(x.action!=="clean-reinstall-required" || !x.evidencePreserved) process.exit(1)' "$GEN/mismatch-repair-plan.json"
+grep -Eq 'Boundary certification blocked|Remote boundary certification failed|installed generation cannot be verified|receipt' "$GEN/mismatch-boundary.err" "$GEN/mismatch-boundary.json"
+! grep -Eq 'Traceback|RuntimeError|/tmp/' "$GEN/mismatch-doctor.err" "$GEN/mismatch-boundary.err" "$GEN/mismatch-setup.err" "$GEN/mismatch-repair-plan.err"
 
-DISPATCHER_STARTED="$(milliseconds)"
-"${CLI[@]}" setup remote --non-interactive --approve --json > "$GEN/dispatcher-repair.json"
-DISPATCHER_MS="$(elapsed "$DISPATCHER_STARTED")"
-node -e 'const x=require(process.argv[1]); if(!x.certified || x.changeType!=="DISPATCHER_AND_AUTHORIZATION" || x.installation || x.dispatcherInstallation?.dependencyInstall!==false || x.trust?.synchronizationKind!=="authorization-sync" || x.timings?.runtimeInstallation!==undefined || !x.canonicalState?.compatible || !["COMMIT","CLEANUP"].includes(x.transaction?.phase)) process.exit(1)' "$GEN/dispatcher-repair.json"
-RUNTIME_CORE_AFTER="$(node -e 'process.stdout.write(require(process.argv[1]).canonicalState.installed.runtimeSha256)' "$GEN/dispatcher-repair.json")"
+REPAIR_STARTED="$(milliseconds)"
+"${CLI[@]}" setup repair --clean-reinstall --approve --json > "$GEN/dispatcher-repair.json"
+REPAIR_MS="$(elapsed "$REPAIR_STARTED")"
+node -e 'const x=require(process.argv[1]); if(!x.ok || x.action!=="clean-reinstall" || !x.evidence?.evidenceManifestSha256 || !x.setup?.certified) process.exit(1)' "$GEN/dispatcher-repair.json"
+RUNTIME_CORE_AFTER="$(node -e 'process.stdout.write(require(process.argv[1]).setup.canonicalState.installed.runtimeSha256)' "$GEN/dispatcher-repair.json")"
 [[ "$RUNTIME_CORE_AFTER" == "$RUNTIME_CORE_BEFORE" ]]
-[[ "$DISPATCHER_MS" -lt 20000 ]]
+[[ "$REPAIR_MS" -lt 180000 ]]
 
 "${CLI[@]}" doctor --json > "$GEN/repaired-doctor.json"
 "${CLI[@]}" boundary verify --json > "$GEN/repaired-boundary.json"
@@ -158,5 +164,5 @@ node -e 'const x=require(process.argv[1]); if(!x.ok || x.action!=="uninstall" ||
 docker exec "$CONTAINER" test ! -e /usr/lib/opshaven
 docker exec "$CONTAINER" test -d /home/admin
 
-printf 'remote-setup-ubuntu timings_ms full=%s authorization=%s no_change=%s dispatcher=%s\n' "$FULL_MS" "$AUTH_MS" "$NO_CHANGE_MS" "$DISPATCHER_MS"
-printf 'remote-setup-ubuntu: one-pass setup, deployment plan, authorization rollback/resync, no-change verification, dispatcher-only repair without dependency installation, and uninstall passed\n'
+printf 'remote-setup-ubuntu timings_ms full=%s authorization=%s no_change=%s repair=%s\n' "$FULL_MS" "$AUTH_MS" "$NO_CHANGE_MS" "$REPAIR_MS"
+printf 'remote-setup-ubuntu: one-pass setup, deployment plan, authorization rollback/resync, no-change verification, tampered-dispatcher repair with evidence preservation, and uninstall passed\n'
