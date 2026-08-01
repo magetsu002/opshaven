@@ -52,7 +52,7 @@ function installed(overrides: Partial<InstalledRemoteState> = {}): InstalledRemo
   };
 }
 
-test("reproduced read-only dispatcher mismatch is a required dispatcher update", () => {
+test("reproduced read-only dispatcher mismatch requires dispatcher and matching authorization only", () => {
   const comparison = compareRemoteState(desired(), installed({
     dispatcherMode: "read-only",
     dispatcherSha256: "a".repeat(64),
@@ -61,8 +61,9 @@ test("reproduced read-only dispatcher mismatch is a required dispatcher update",
     applicationScopeSha256: "c".repeat(64),
   }));
   assert.equal(comparison.compatible, false);
-  assert.equal(comparison.changeType, "DISPATCHER_UPDATE");
+  assert.equal(comparison.changeType, "DISPATCHER_AND_AUTHORIZATION");
   assert.match(comparison.reasons.join("; "), /dispatcher mode is read-only, expected controlled/);
+  assert.doesNotMatch(comparison.reasons.join("; "), /runtime core artifact identity differs/);
 });
 
 test("identical desired and installed content identity produces no change", () => {
@@ -90,13 +91,14 @@ test("complete canonical-record drift remains repairable from verified installed
     dispatcherSha256: "a".repeat(64),
     detail: "recorded remote state differs from installed dispatcherSha256",
   }));
-  assert.equal(dispatcherDrift.changeType, "DISPATCHER_UPDATE");
+  assert.equal(dispatcherDrift.changeType, "DISPATCHER_AND_AUTHORIZATION");
 });
 
-test("runtime and dispatcher identities take precedence over authorization synchronization", () => {
-  assert.equal(compareRemoteState(desired(), installed({ sourceSha: "a".repeat(40) })).changeType, "RUNTIME_UPDATE");
-  assert.equal(compareRemoteState(desired(), installed({ runtimeSha256: "b".repeat(64), policySha256: "c".repeat(64) })).changeType, "RUNTIME_UPDATE");
-  assert.equal(compareRemoteState(desired(), installed({ dispatcherSha256: "d".repeat(64), declarationSha256: "e".repeat(64) })).changeType, "DISPATCHER_UPDATE");
+test("runtime, dispatcher, and source identities remain independent", () => {
+  assert.equal(compareRemoteState(desired(), installed({ sourceSha: "a".repeat(40) })).changeType, "AUTHORIZATION_ONLY");
+  assert.equal(compareRemoteState(desired(), installed({ runtimeSha256: "b".repeat(64), policySha256: "c".repeat(64) })).changeType, "RUNTIME_ONLY");
+  assert.equal(compareRemoteState(desired(), installed({ runtimeSha256: "b".repeat(64), dispatcherSha256: "d".repeat(64) })).changeType, "RUNTIME_AND_DISPATCHER");
+  assert.equal(compareRemoteState(desired(), installed({ dispatcherSha256: "d".repeat(64), declarationSha256: "e".repeat(64) })).changeType, "DISPATCHER_AND_AUTHORIZATION");
 });
 
 test("inconsistent or unsupported remote identity fails closed instead of being inferred as valid", () => {
