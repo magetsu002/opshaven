@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [main]
+    branches: [main, fix/v1-1-clean-room-reliability]
   pull_request:
 permissions:
   contents: read
@@ -29,3 +29,40 @@ jobs:
           node-version: 22
           cache: npm
       - run: scripts/check-reproducible-build.sh
+  repair-test-typing:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/fix/v1-1-clean-room-reliability'
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: fix/v1-1-clean-room-reliability
+          fetch-depth: 0
+      - name: Apply explicit node test context type
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("tests/deployment-plans.test.ts")
+          text = path.read_text()
+          old_import = 'import test from "node:test";'
+          new_import = 'import test, { type TestContext } from "node:test";'
+          if old_import in text:
+              text = text.replace(old_import, new_import, 1)
+          elif new_import not in text:
+              raise SystemExit("node:test import marker missing")
+          old_callback = 'test("service and runtime drift remain stale-plan blockers", async (t) => {'
+          new_callback = 'test("service and runtime drift remain stale-plan blockers", async (t: TestContext) => {'
+          if old_callback in text:
+              text = text.replace(old_callback, new_callback, 1)
+          elif new_callback not in text:
+              raise SystemExit("test context marker missing")
+          path.write_text(text)
+          PY
+          git config user.name "OpsHaven Reliability Bot"
+          git config user.email "opshaven-reliability@example.invalid"
+          git add tests/deployment-plans.test.ts
+          git commit -m "test: type deployment readiness subtests"
+          git push origin HEAD:fix/v1-1-clean-room-reliability
