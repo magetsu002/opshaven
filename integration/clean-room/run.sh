@@ -106,9 +106,12 @@ TARGET_REVISION="$(docker exec "$CONTAINER" git -C /srv/opshaven-fixtures/sample
 stage "create exact deployment plan"
 opshaven deploy plan sample-api --revision "$TARGET_REVISION" --json > "$WORK/plan.json"
 PLAN_ID="$(node -e 'const x=require(process.argv[1]); if(!x.ok || !x.planId) process.exit(1); process.stdout.write(x.planId)' "$WORK/plan.json")"
+[[ "$PLAN_ID" =~ ^sha256:[a-f0-9]{64}$ ]]
 
 stage "apply exact deployment plan"
-printf 'y\n' | script -qefc "opshaven deploy apply '$PLAN_ID' --json" "$WORK/apply.typescript" > "$WORK/apply.console"
+export OPSHAVEN_CLEAN_ROOM_PLAN_ID="$PLAN_ID"
+printf 'y\n' | script -qefc 'opshaven deploy apply "$OPSHAVEN_CLEAN_ROOM_PLAN_ID" --json' "$WORK/apply.typescript" > "$WORK/apply.console"
+unset OPSHAVEN_CLEAN_ROOM_PLAN_ID
 node -e '
   const fs=require("node:fs");
   const transcript=fs.readFileSync(process.argv[1],"utf8").replace(/\r/g,"");
