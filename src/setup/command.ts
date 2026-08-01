@@ -2,8 +2,9 @@ import { OpsHavenError } from "../errors.js";
 import { ensureRemoteSetupState, resolveSetupConfigPath } from "../operator-state.js";
 import { endpointStatus, exposeEndpoint } from "./endpoint.js";
 import { executeRemoteSetup } from "./engine.js";
+import { inspectInstallationHealth } from "./health.js";
 import { createSetupPresenter, type SetupPresenter } from "./presentation.js";
-import { inspectRemoteSetupRepair, prepareReviewedCleanReinstall, repairRemoteSetup } from "./repair.js";
+import { inspectRemoteSetupRepair, prepareReviewedCleanReinstall, repairRemoteSetup } from "./reliability-repair.js";
 import { buildRemoteSetupPlan, formatRemoteSetupPlan, loadRemoteSetupConfig } from "./remote.js";
 import { rollbackRemoteSetup, uninstallRemoteSetup } from "./rollback.js";
 import { prepareRemoteState } from "./state.js";
@@ -28,6 +29,31 @@ async function setupPath(args: readonly string[], allowGuidedCompletion: boolean
   return configured;
 }
 
+function formatHealthBlockedPlan(health: Awaited<ReturnType<typeof inspectInstallationHealth>>): string {
+  return [
+    "Remote setup plan",
+    "",
+    "Change type",
+    "  Repair required before synchronization",
+    "",
+    "Cause",
+    ...health.reasons.map((reason) => `  ${reason}`),
+    "",
+    "Current state",
+    `  ${health.primary}`,
+    "",
+    "Repair classification",
+    `  ${health.repairClassification}`,
+    "",
+    "Changes",
+    "  No synchronization changes will be attempted.",
+    "",
+    "Next",
+    "  opshaven setup repair",
+    "",
+  ].join("\n");
+}
+
 export async function runRemoteSetup(args: readonly string[]): Promise<void> {
   const config = await loadRemoteSetupConfig(await setupPath(args, true));
   const json = args.includes("--json");
@@ -37,12 +63,39 @@ export async function runRemoteSetup(args: readonly string[]): Promise<void> {
     return;
   }
   const inspectionStarted = Date.now();
-  let comparison;
+  let health: Awaited<ReturnType<typeof inspectInstallationHealth>> | undefined;
+  let comparison: Awaited<ReturnType<typeof prepareRemoteState>> | undefined;
   try {
-    comparison = await prepareRemoteState(config);
+    health = await inspectInstallationHealth(config);
+    comparison = health.comparison ?? undefined;
   } catch (error) {
     if (!args.includes("--dry-run")) throw error;
-    comparison = undefined;
+  }
+  if (health?.repairRequired) {
+    if (args.includes("--dry-run")) {
+      process.stdout.write(json ? `${JSON.stringify({ changeType: "REPAIR_REQUIRED", health })}\n` : formatHealthBlockedPlan(health));
+      return;
+    }
+    throw new OpsHavenError(
+      "POLICY_DENIED",
+      "Remote synchronization is blocked because the installed generation cannot be verified completely.",
+      false,
+      {
+        failedStage: "canonical installation health evaluation",
+        mutationStarted: false,
+        currentKnownState: health.primary,
+        repairClassification: health.repairClassification,
+        reasons: health.reasons,
+        safeNextCommand: "opshaven setup repair",
+      },
+    );
+  }
+  if (!comparison) {
+    try {
+      comparison = await prepareRemoteState(config);
+    } catch (error) {
+      if (!args.includes("--dry-run")) throw error;
+    }
   }
   const plan = buildRemoteSetupPlan(config, comparison);
   if (args.includes("--dry-run")) {
@@ -65,8 +118,12 @@ export async function runRemoteSetup(args: readonly string[]): Promise<void> {
 }
 
 function formatRepairPlan(plan: Awaited<ReturnType<typeof inspectRemoteSetupRepair>>): string {
+  const title = plan.action === "none" ? "Remote installation repair review" : "Repair required";
   const lines = [
-    "Remote synchronization repair plan",
+    title,
+    "",
+    "Reason",
+    `  ${plan.action === "none" ? "No damaged installation evidence was found." : plan.changes[0] ?? "The installed generation cannot be verified completely."}`,
     "",
     "Action",
     `  ${plan.action}`,
@@ -163,7 +220,7 @@ export async function runRemoteRepair(args: readonly string[]): Promise<void> {
     process.stdout.write("Current state\n");
     process.stdout.write(`  Generation ${receipt.installedGeneration ?? "unknown"} remains active.\n`);
   } else {
-    process.stdout.write("No unresolved synchronization transaction required repair.\n");
+    process.stdout.write("No damaged installation evidence or unresolved synchronization transaction required repair.\n");
   }
 }
 
