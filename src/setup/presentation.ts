@@ -103,8 +103,8 @@ function scopeLabel(scope: "local" | "vps"): string {
 function friendlyDetail(id: string, state: SetupStepState, detail: string): string | undefined {
   if (state === "pending") {
     if (id === "preflight") return "checking local tools, SSH access, platform, and permissions";
-    if (id === "runtime-upload") return "uploading the reviewed runtime archive";
-    if (id === "runtime-install") return "verifying and activating the reviewed runtime";
+    if (id === "runtime-upload") return "uploading and verifying the reviewed runtime archive";
+    if (id === "runtime-install") return "activating the reviewed runtime generation";
     if (id === "dispatcher") return "uploading and verifying the dispatcher artifact";
     if (id === "trust") return "applying only changed signed authorization";
     if (id === "boundary") return "running authenticated remote security verification";
@@ -187,6 +187,7 @@ export class PlainSetupPresenter implements SetupPresenter {
   private readonly renderer: ProgressLineRenderer;
   private stages: readonly VisibleSetupStage[] = Object.freeze([]);
   private readonly stageIndex = new Map<string, number>();
+  private runtimeUploadActive = false;
 
   constructor(
     private readonly options: { nonInteractive: boolean; preapproved: boolean; json: boolean },
@@ -197,9 +198,22 @@ export class PlainSetupPresenter implements SetupPresenter {
 
   heartbeatMs(): number { return this.renderer.heartbeatMs(); }
 
+  private numbered(id: string, state: SetupStepState, detail: string): string | null {
+    const index = this.stageIndex.get(id);
+    if (index === undefined) return null;
+    const label = this.stages[index - 1]?.label ?? id;
+    return numberedStatus(index, this.stages.length, state, label, friendlyDetail(id, state, detail), this.color);
+  }
+
+  private writeCompleted(line: string): void {
+    if (this.renderer.hasActiveLine()) this.renderer.complete(line);
+    else process.stdout.write(`${line}\n`);
+  }
+
   plan(value: RemoteSetupPlan): void {
     this.stages = visibleSetupStages(value.changeType);
     this.stageIndex.clear();
+    this.runtimeUploadActive = false;
     this.stages.forEach((stage, index) => this.stageIndex.set(stage.id, index + 1));
     if (this.options.json) return;
     process.stdout.write(`${heading("OpsHaven Remote Setup", this.color)}\n\n`);
@@ -226,26 +240,40 @@ export class PlainSetupPresenter implements SetupPresenter {
 
   step(id: string, scope: "local" | "vps", state: SetupStepState, detail: string): void {
     if (this.options.json) return;
-    const index = this.stageIndex.get(id);
-    if (index !== undefined) {
-      const label = this.stages[index - 1]?.label ?? id;
-      const line = numberedStatus(index, this.stages.length, state, label, friendlyDetail(id, state, detail), this.color);
-      if (this.renderer.hasActiveLine()) this.renderer.complete(line);
-      else process.stdout.write(`${line}\n`);
+    if (id === "runtime-install" && this.stageIndex.has("runtime-upload")) {
+      if (state === "pending") {
+        const upload = this.numbered("runtime-upload", "pending", "uploading and verifying the reviewed runtime archive");
+        if (upload) this.writeCompleted(upload);
+        this.runtimeUploadActive = true;
+        return;
+      }
+      if (this.runtimeUploadActive) {
+        const uploadState: SetupStepState = state === "passed" ? "passed" : state === "failed" ? "failed" : state;
+        const uploadDetail = state === "passed" ? "reviewed runtime archive uploaded and verified" : detail;
+        const upload = this.numbered("runtime-upload", uploadState, uploadDetail);
+        if (upload) this.writeCompleted(upload);
+        this.runtimeUploadActive = false;
+        if (state !== "passed") return;
+      }
+    }
+
+    const numbered = this.numbered(id, state, detail);
+    if (numbered) {
+      this.writeCompleted(numbered);
       return;
     }
     if (state === "skipped") return;
     const label = id === "rollback" ? "Restore the previous remote state" : id;
     const line = statusLine(state, label, `${scopeLabel(scope)} · ${friendlyDetail(id, state, detail) ?? sanitizeOperatorText(detail)}`, this.color);
-    if (this.renderer.hasActiveLine()) this.renderer.complete(line);
-    else process.stdout.write(`${line}\n`);
+    this.writeCompleted(line);
   }
 
   progress(id: string, detail: string, elapsedMs: number): void {
     if (this.options.json) return;
-    const index = this.stageIndex.get(id);
+    const visibleId = id === "runtime-install" && this.runtimeUploadActive ? "runtime-upload" : id;
+    const index = this.stageIndex.get(visibleId);
     if (index === undefined) return;
-    const label = this.stages[index - 1]?.label ?? id;
+    const label = this.stages[index - 1]?.label ?? visibleId;
     const elapsed = Math.max(0, Math.floor(elapsedMs / 1000));
     const safeDetail = stripEmbeddedCounter(sanitizeOperatorText(detail));
     this.renderer.update(`[${index}/${this.stages.length}] ⏳ ${label} — ${safeDetail}, ${elapsed}s elapsed`);
