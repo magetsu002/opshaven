@@ -6,6 +6,12 @@ import { loadConfig } from "../config.js";
 import { OpsHavenError } from "../errors.js";
 import { certifyRemoteBoundary, type RemoteBoundaryReceipt } from "./certify.js";
 import { installRestrictedRuntime, type RemoteInstallResult } from "./install.js";
+import {
+  cleanupLocalSynchronizationState,
+  restoreLocalSynchronizationState,
+  snapshotLocalSynchronizationState,
+  type LocalSynchronizationSnapshot,
+} from "./local-transaction.js";
 import { createSetupPresenter, type SetupPresenter } from "./presentation.js";
 import { assertRemoteSetupPreflight, preflightRemoteSetup, type RemoteSetupPreflightReport } from "./preflight.js";
 import type { RemoteSetupConfig, RemoteSetupPlan, SetupReceipt } from "./remote.js";
@@ -19,6 +25,14 @@ import {
   type RemoteSetupChangeType,
   type RemoteStateComparison,
 } from "./state.js";
+import {
+  advanceRemoteSynchronizationTransaction,
+  beginRemoteSynchronizationTransaction,
+  rollbackRemoteSynchronizationTransaction,
+  type RemoteSynchronizationTransaction,
+  type RemoteTransactionRollbackReceipt,
+  type SynchronizationPhase,
+} from "./transaction.js";
 import { provisionRemoteTrust, synchronizeRemoteTrust, type RemoteTrustReceipt } from "./trust.js";
 
 export type RemoteSetupOutcome =
@@ -40,6 +54,7 @@ export interface RemoteSetupLifecycleReceipt extends SetupReceipt {
   readonly trust?: RemoteTrustReceipt;
   readonly boundary: RemoteBoundaryReceipt;
   readonly canonicalState?: RemoteStateComparison;
+  readonly transaction?: RemoteSynchronizationTransaction;
 }
 export interface RemoteSetupEngineDependencies {
   preflight(config: RemoteSetupConfig): Promise<RemoteSetupPreflightReport>;
@@ -51,6 +66,9 @@ export interface RemoteSetupEngineDependencies {
   desired?(config: RemoteSetupConfig): Promise<DesiredRemoteState>;
   readiness?(config: RemoteSetupConfig, desired: DesiredRemoteState, boundary: RemoteBoundaryReceipt): Promise<RemoteStateComparison>;
   verifyReadiness?(config: RemoteSetupConfig): Promise<RemoteStateComparison>;
+  beginTransaction?(config: RemoteSetupConfig, desired: DesiredRemoteState, changeType: RemoteSetupChangeType): Promise<RemoteSynchronizationTransaction>;
+  advanceTransaction?(config: RemoteSetupConfig, transactionId: string, phase: SynchronizationPhase, lastError?: string): Promise<RemoteSynchronizationTransaction>;
+  rollbackTransaction?(config: RemoteSetupConfig, transactionId: string): Promise<RemoteTransactionRollbackReceipt>;
 }
 export interface RemoteSetupEngineOptions {
   readonly nonInteractive: boolean;
@@ -73,6 +91,9 @@ const DEFAULT_DEPENDENCIES: RemoteSetupEngineDependencies = Object.freeze({
   desired: async (config: RemoteSetupConfig): Promise<DesiredRemoteState> => await buildDesiredRemoteState(config),
   readiness: async (config: RemoteSetupConfig, desired: DesiredRemoteState, boundary: RemoteBoundaryReceipt): Promise<RemoteStateComparison> => compareRemoteState(desired, await recordVerifiedRemoteState(config, desired, boundary.boundarySha256)),
   verifyReadiness: async (config: RemoteSetupConfig): Promise<RemoteStateComparison> => await prepareRemoteState(config),
+  beginTransaction: async (config: RemoteSetupConfig, desired: DesiredRemoteState, changeType: RemoteSetupChangeType): Promise<RemoteSynchronizationTransaction> => await beginRemoteSynchronizationTransaction(config, desired, changeType),
+  advanceTransaction: async (config: RemoteSetupConfig, transactionId: string, phase: SynchronizationPhase, lastError?: string): Promise<RemoteSynchronizationTransaction> => await advanceRemoteSynchronizationTransaction(config, transactionId, phase, lastError),
+  rollbackTransaction: async (config: RemoteSetupConfig, transactionId: string): Promise<RemoteTransactionRollbackReceipt> => await rollbackRemoteSynchronizationTransaction(config, transactionId),
 });
 
 function isMutating(changeType: RemoteSetupChangeType): boolean { return changeType !== "NO_CHANGE" && changeType !== "REPAIR_REQUIRED"; }
@@ -81,17 +102,22 @@ function requiresAuthorizationOnly(changeType: RemoteSetupChangeType): boolean {
   return changeType === "AUTHORIZATION_ONLY" || changeType === "APPLICATION_DECLARATION_ONLY" || changeType === "AUTHORIZATION_AND_DECLARATION";
 }
 function checkCancellation(signal: AbortSignal | undefined, mutationStarted: boolean): void {
-  if (signal?.aborted) throw new OpsHavenError("CANCELLED", mutationStarted ? "Remote setup cancellation was requested after mutation began." : "Remote setup was cancelled before mutation.", false, { mutationStarted });
+  if (signal?.aborted) throw new OpsHavenError("CANCELLED", mutationStarted ? "Remote setup cancellation was requested after activation began." : "Remote setup was cancelled before activation.", false, { mutationStarted });
 }
 function setupFailure(error: unknown, outcome: RemoteSetupOutcome, details: Record<string, unknown> = {}): OpsHavenError {
   const source = error instanceof OpsHavenError ? error : new OpsHavenError("INTERNAL_ERROR", error instanceof Error ? error.message : "The operation failed safely.");
   return new OpsHavenError(source.code, source.message, source.retryable, Object.freeze({ ...(source.safeDetails ?? {}), setupOutcome: outcome, ...details }));
 }
+function lowerLevelDiagnostic(error: unknown): string {
+  const message = error instanceof Error ? error.message : "unknown lower-level failure";
+  return message.replace(/[\r\n\u001b\u009b]/g, " ").slice(0, 500);
+}
 
 async function timed<T>(presenter: SetupPresenter, timings: Record<string, number>, phase: string, progressId: string, detail: string, work: () => Promise<T>): Promise<T> {
   const started = Date.now();
-  let timer: any;
-  if (presenter.progress) timer = setInterval(() => presenter.progress?.(progressId, detail, Date.now() - started), 15000);
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const cadence = presenter.heartbeatMs?.() ?? 15000;
+  if (presenter.progress) timer = setInterval(() => presenter.progress?.(progressId, detail, Date.now() - started), cadence);
   try { return await work(); }
   finally { if (timer) clearInterval(timer); timings[phase] = Date.now() - started; }
 }
@@ -110,6 +136,17 @@ async function writeLocalReceipt(config: RemoteSetupConfig, receipt: RemoteSetup
   finally { await fs.rm(temporary, { force: true }); }
 }
 
+async function advance(
+  dependencies: RemoteSetupEngineDependencies,
+  config: RemoteSetupConfig,
+  transaction: RemoteSynchronizationTransaction | undefined,
+  phase: SynchronizationPhase,
+  lastError?: string,
+): Promise<RemoteSynchronizationTransaction | undefined> {
+  if (!transaction || !dependencies.advanceTransaction) return transaction;
+  return await dependencies.advanceTransaction(config, transaction.transactionId, phase, lastError);
+}
+
 export async function executeRemoteSetup(config: RemoteSetupConfig, plan: RemoteSetupPlan, options: RemoteSetupEngineOptions): Promise<RemoteSetupLifecycleReceipt> {
   const presenter = options.presenter ?? createSetupPresenter({ tui: options.tui, nonInteractive: options.nonInteractive, preapproved: options.approved, json: options.json });
   const dependencies = options.dependencies ?? DEFAULT_DEPENDENCIES;
@@ -117,7 +154,7 @@ export async function executeRemoteSetup(config: RemoteSetupConfig, plan: Remote
   presenter.plan(plan);
   presenter.fingerprint("SSH host key", config.target.expectedHostKeySha256);
   presenter.fingerprint("source head", config.expectedSourceSha);
-  if (plan.changeType === "REPAIR_REQUIRED") throw setupFailure(new OpsHavenError("POLICY_DENIED", "Remote state cannot be synchronized safely. The installed runtime identity is incomplete or inconsistent. No changes were made."), "SETUP_FAILED_NO_MUTATION");
+  if (plan.changeType === "REPAIR_REQUIRED") throw setupFailure(new OpsHavenError("POLICY_DENIED", "Remote state cannot be synchronized safely. Run the reviewed recovery flow before continuing."), "SETUP_FAILED_NO_MUTATION", { safeNextCommand: "opshaven setup repair" });
   if (isMutating(plan.changeType) && !(await presenter.approve("Apply the exact reviewed remote changes above?"))) throw setupFailure(new OpsHavenError("POLICY_DENIED", "Remote setup was not explicitly approved."), "SETUP_FAILED_NO_MUTATION");
 
   const startedAt = new Date().toISOString();
@@ -127,7 +164,10 @@ export async function executeRemoteSetup(config: RemoteSetupConfig, plan: Remote
   let trust: RemoteTrustReceipt | undefined;
   let boundary: RemoteBoundaryReceipt;
   let canonicalState: RemoteStateComparison | undefined;
+  let transaction: RemoteSynchronizationTransaction | undefined;
+  let localSnapshot: LocalSynchronizationSnapshot | undefined;
   const desired = dependencies.desired ? await timed(presenter, timings, "artifactPreparation", "inspection", "building reviewed content identities", async () => await dependencies.desired?.(config) as DesiredRemoteState) : undefined;
+  const transactional = isMutating(plan.changeType) && desired !== undefined && dependencies.beginTransaction !== undefined && dependencies.advanceTransaction !== undefined && dependencies.rollbackTransaction !== undefined;
 
   try {
     checkCancellation(options.signal, false);
@@ -137,9 +177,23 @@ export async function executeRemoteSetup(config: RemoteSetupConfig, plan: Remote
       if (!preflight.ok) { presenter.step("preflight", "local", "failed", preflight.checks.filter((item) => item.state === "failed").map((item) => item.id).join(", ")); assertRemoteSetupPreflight(preflight); }
       presenter.step("preflight", "local", "passed", `${preflight.remote?.distribution} ${preflight.remote?.version}, Node ${preflight.remote?.nodeVersion}`);
       checkCancellation(options.signal, false);
+    }
+
+    if (transactional && desired) {
+      localSnapshot = await snapshotLocalSynchronizationState(config);
+      // RECORD_PREVIOUS is the mandatory commit barrier before ACTIVATE.
+      transaction = await timed(presenter, timings, "recordPreviousGeneration", "preflight", "recording the previous verified generation", async () => await dependencies.beginTransaction?.(config, desired, plan.changeType) as RemoteSynchronizationTransaction);
+      if (transaction.phase !== "RECORD_PREVIOUS") throw new OpsHavenError("POLICY_DENIED", "Remote synchronization did not record a rollback-safe previous generation.");
+      transaction = await advance(dependencies, config, transaction, "STAGE");
+      transaction = await advance(dependencies, config, transaction, "VERIFY_STAGED");
+      checkCancellation(options.signal, false);
+      transaction = await advance(dependencies, config, transaction, "ACTIVATE");
+    }
+
+    if (requiresRuntime(plan.changeType)) {
       mutationStarted = true;
       presenter.step("runtime-install", "vps", "pending", "installing the atomic restricted runtime");
-      installation = await timed(presenter, timings, "runtimeInstallation", "runtime-install", "installing dependencies and verifying installed files", async () => await dependencies.install(config, preflight as RemoteSetupPreflightReport));
+      installation = await timed(presenter, timings, "runtimeInstallation", "runtime-install", "uploading and verifying reviewed runtime artifacts", async () => await dependencies.install(config, preflight as RemoteSetupPreflightReport));
       presenter.step("runtime-install", "vps", "passed", installation.changed.length ? `${installation.changed.length} reviewed paths changed` : "runtime already current");
       presenter.fingerprint("runtime tree", installation.runtimeTreeSha256);
       checkCancellation(options.signal, true);
@@ -162,6 +216,8 @@ export async function executeRemoteSetup(config: RemoteSetupConfig, plan: Remote
       presenter.fingerprint("dispatcher", trust.dispatcherSha256);
       presenter.fingerprint("capability", trust.capabilitySha256);
     }
+
+    transaction = await advance(dependencies, config, transaction, "VERIFY_ACTIVE");
     checkCancellation(options.signal, mutationStarted);
     presenter.step("boundary", "vps", "pending", "executing authenticated deployment boundary certification");
     boundary = await timed(presenter, timings, "boundaryVerification", "boundary", "running signature, replay, denial, and scope checks", async () => await dependencies.certify(config));
@@ -178,33 +234,73 @@ export async function executeRemoteSetup(config: RemoteSetupConfig, plan: Remote
     if (canonicalState && !canonicalState.compatible) throw new OpsHavenError("POLICY_DENIED", "Remote setup postconditions did not reach deployment-ready state.", false, { changeType: canonicalState.changeType, expectedMode: canonicalState.desired.dispatcherMode, observedMode: canonicalState.installed.dispatcherMode ?? "unknown" });
     checkCancellation(options.signal, mutationStarted);
     presenter.step("readiness", "vps", "passed", "runtime, dispatcher, authorization, policy, and application scope match");
+    transaction = await advance(dependencies, config, transaction, "COMMIT");
+    transaction = await advance(dependencies, config, transaction, "CLEANUP");
   } catch (error) {
     const cancelled = error instanceof OpsHavenError && error.code === "CANCELLED";
     if (cancelled) await auditCancellation(config, plan.changeType, mutationStarted);
     let restored = false;
+    let rollbackReceipt: RemoteTransactionRollbackReceipt | RemoteCleanupReceipt | undefined;
     if (mutationStarted) {
       presenter.step("rollback", "vps", "pending", "restoring the previous verified synchronization generation");
       try {
-        const rollback = await dependencies.rollback(config);
+        if (transaction && dependencies.rollbackTransaction) {
+          rollbackReceipt = await dependencies.rollbackTransaction(config, transaction.transactionId);
+          if (localSnapshot) await restoreLocalSynchronizationState(localSnapshot);
+          const restoredBoundary = await dependencies.certify(config);
+          if (!restoredBoundary.ok) throw new OpsHavenError("POLICY_DENIED", "The restored generation did not pass security-boundary verification.");
+        } else {
+          rollbackReceipt = await dependencies.rollback(config);
+        }
         restored = true;
-        presenter.step("rollback", "vps", "rolled-back", `${rollback.restored.length} restored, ${rollback.removed.length} removed`);
+        presenter.step("rollback", "vps", "rolled-back", `${rollbackReceipt.restored.length} restored, ${rollbackReceipt.removed.length} removed`);
       } catch (rollbackError) {
-        presenter.step("rollback", "vps", "failed", "automatic rollback failed; recovery requires operator attention");
+        if (transaction && dependencies.advanceTransaction) {
+          try { transaction = await dependencies.advanceTransaction(config, transaction.transactionId, "ROLLBACK_START", lowerLevelDiagnostic(rollbackError)); } catch { /* retain original recovery failure */ }
+        }
+        presenter.step("rollback", "vps", "failed", "previous generation could not be restored; deployment operations are blocked");
         if (cancelled) presenter.cancellation?.(true, false);
+        await cleanupLocalSynchronizationState(localSnapshot);
         throw setupFailure(
-          new OpsHavenError("POLICY_DENIED", `Remote setup failed and rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : "unknown rollback failure"}.`),
+          new OpsHavenError("POLICY_DENIED", "Remote synchronization failed and the previous verified generation could not be restored. Deployment operations are blocked until the reviewed recovery flow succeeds."),
           "SETUP_FAILED_ROLLBACK_FAILED",
-          { mutationStarted: true, rollbackCompleted: false },
+          {
+            mutationStarted: true,
+            rollbackStarted: true,
+            rollbackCompleted: false,
+            transactionId: transaction?.transactionId,
+            desiredGeneration: transaction?.desiredGenerationIdentity,
+            previousGeneration: transaction?.previousGenerationIdentity,
+            previousGenerationAvailable: transaction?.previousGenerationAvailable ?? false,
+            failedVerificationStage: transaction?.phase ?? "unknown",
+            blockedOperations: Object.freeze(["deployment planning", "deployment apply", "remote setup success certification"]),
+            safeOperations: Object.freeze(["opshaven doctor --debug", "opshaven setup repair"]),
+            safeNextCommand: "opshaven setup repair",
+            rollbackDebug: lowerLevelDiagnostic(rollbackError),
+          },
         );
       }
+    } else if (transaction) {
+      try { transaction = await advance(dependencies, config, transaction, "CLEANUP", lowerLevelDiagnostic(error)); } catch { /* no active generation changed */ }
     }
+    await cleanupLocalSynchronizationState(localSnapshot);
     if (cancelled) presenter.cancellation?.(mutationStarted, restored);
     const outcome: RemoteSetupOutcome = cancelled
       ? mutationStarted ? "SETUP_CANCELLED_ROLLED_BACK" : "SETUP_CANCELLED_NO_MUTATION"
       : mutationStarted ? "SETUP_FAILED_ROLLED_BACK" : "SETUP_FAILED_NO_MUTATION";
-    throw setupFailure(error, outcome, { mutationStarted, rollbackCompleted: restored, rerunSafe: !mutationStarted || restored });
+    throw setupFailure(error, outcome, {
+      mutationStarted,
+      rollbackStarted: mutationStarted,
+      rollbackCompleted: restored,
+      rerunSafe: !mutationStarted || restored,
+      transactionId: transaction?.transactionId,
+      activeGeneration: restored ? transaction?.previousGenerationIdentity : undefined,
+      previousGeneration: transaction?.previousGenerationIdentity,
+      safeNextCommand: restored ? "opshaven doctor" : "opshaven setup repair",
+    });
   }
 
+  await cleanupLocalSynchronizationState(localSnapshot);
   const outcome = plan.changeType === "NO_CHANGE" ? "SETUP_NO_CHANGE" : "SETUP_SUCCEEDED";
   const receipt: RemoteSetupLifecycleReceipt = Object.freeze({
     version: 1,
@@ -226,6 +322,7 @@ export async function executeRemoteSetup(config: RemoteSetupConfig, plan: Remote
     ...(trust ? { trust } : {}),
     boundary,
     ...(canonicalState ? { canonicalState } : {}),
+    ...(transaction ? { transaction } : {}),
   });
   await writeLocalReceipt(config, receipt);
   presenter.receipt(receipt);
