@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [main, fix/v1-1-clean-room-reliability]
+    branches: [main]
   pull_request:
 permissions:
   contents: read
@@ -29,89 +29,3 @@ jobs:
           node-version: 22
           cache: npm
       - run: scripts/check-reproducible-build.sh
-  repair-command-environment:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/fix/v1-1-clean-room-reliability'
-    permissions:
-      contents: write
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: fix/v1-1-clean-room-reliability
-          fetch-depth: 0
-      - name: Apply bounded remote environment repair
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          runner = Path("src/remote/runner.ts")
-          text = runner.read_text()
-          marker = 'export interface CommandRunner { run(executable: string, args: readonly string[], options: RunOptions): Promise<RunResult> }\n'
-          addition = '''export interface CommandRunner { run(executable: string, args: readonly string[], options: RunOptions): Promise<RunResult> }
-          export const FIXED_COMMAND_ENV = Object.freeze({
-            HOME: "/home/opshaven",
-            PATH: "/usr/bin:/bin",
-            LANG: "C",
-            LC_ALL: "C",
-          });
-          '''
-          if marker not in text:
-              raise SystemExit("runner environment insertion marker missing")
-          text = text.replace(marker, addition, 1)
-          old_env = 'env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }'
-          if old_env not in text:
-              raise SystemExit("runner environment replacement marker missing")
-          text = text.replace(old_env, "env: FIXED_COMMAND_ENV", 1)
-          runner.write_text(text)
-
-          deployment = Path("src/remote/deployment.ts")
-          text = deployment.read_text()
-          old_loop = 'for (const step of [...target.buildSteps, ...target.checkSteps]) await requireDeploymentCommand(this.runner, step.executable, replaceArgs(step, target, releasePath, exactCommit), commandOptions(limitsInput, step.cwd === "release" ? releasePath : target.repositoryPath), "Deployment reviewed build or check step");'
-          new_loop = '''const reviewedSteps = [...target.buildSteps, ...target.checkSteps];
-              for (const [index, step] of reviewedSteps.entries()) {
-                await requireDeploymentCommand(
-                  this.runner,
-                  step.executable,
-                  replaceArgs(step, target, releasePath, exactCommit),
-                  commandOptions(limitsInput, step.cwd === "release" ? releasePath : target.repositoryPath),
-                  `Deployment reviewed build or check step ${index + 1}`,
-                );
-              }'''
-          if old_loop not in text:
-              raise SystemExit("deployment reviewed-step marker missing")
-          text = text.replace(old_loop, new_loop, 1)
-          deployment.write_text(text)
-
-          tests = Path("tests/security-assurance.test.ts")
-          text = tests.read_text()
-          text = text.replace(
-              'import { FixedCommandRunner } from "../src/remote/runner.js";',
-              'import { FIXED_COMMAND_ENV, FixedCommandRunner } from "../src/remote/runner.js";',
-              1,
-          )
-          marker = 'test("oversized, slow, binary, and malicious output is bounded or rejected", async () => {'
-          addition = '''test("fixed command environment is complete and does not inherit operator variables", () => {
-            assert.deepEqual(FIXED_COMMAND_ENV, {
-              HOME: "/home/opshaven",
-              PATH: "/usr/bin:/bin",
-              LANG: "C",
-              LC_ALL: "C",
-            });
-            assert.deepEqual(Object.keys(FIXED_COMMAND_ENV).sort(), ["HOME", "LANG", "LC_ALL", "PATH"]);
-            assert.equal("NPM_CONFIG_USERCONFIG" in FIXED_COMMAND_ENV, false);
-            assert.equal("NODE_OPTIONS" in FIXED_COMMAND_ENV, false);
-          });
-
-          '''
-          if marker not in text:
-              raise SystemExit("security assurance insertion marker missing")
-          text = text.replace(marker, addition + marker, 1)
-          tests.write_text(text)
-          PY
-          git config user.name "OpsHaven Reliability Bot"
-          git config user.email "opshaven-reliability@example.invalid"
-          git add src/remote/runner.ts src/remote/deployment.ts tests/security-assurance.test.ts
-          git commit -m "fix: provide fixed home for reviewed remote commands"
-          git push origin HEAD:fix/v1-1-clean-room-reliability
