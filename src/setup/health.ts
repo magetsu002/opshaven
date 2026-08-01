@@ -1,3 +1,4 @@
+import { inspectRemoteManagedFootprint, type RemoteManagedFootprint } from "./footprint.js";
 import type { RemoteSetupConfig } from "./remote.js";
 import { prepareRemoteState, readInstalledRemoteState, type InstalledRemoteState, type RemoteStateComparison } from "./state.js";
 import { inspectRemoteSynchronizationTransaction, type SynchronizationTransactionInspection } from "./transaction-inspection.js";
@@ -42,6 +43,7 @@ export interface InstallationHealthReport {
   readonly safeNextCommand: string | null;
   readonly installed: InstalledRemoteState;
   readonly transaction: SynchronizationTransactionInspection;
+  readonly footprint: RemoteManagedFootprint | null;
   readonly comparison: RemoteStateComparison | null;
   readonly activeGeneration: number | null;
   readonly previousGenerationIdentity: string | null;
@@ -100,6 +102,7 @@ export function evaluateInstallationHealth(
   installed: InstalledRemoteState,
   transaction: SynchronizationTransactionInspection,
   comparison: RemoteStateComparison | null = null,
+  footprint: RemoteManagedFootprint | null = null,
 ): InstallationHealthReport {
   const states: InstallationHealthState[] = [];
   const reasons: string[] = [];
@@ -124,19 +127,35 @@ export function evaluateInstallationHealth(
   if (transaction.rollbackAvailable) states.push("REMOTE_ROLLBACK_AVAILABLE");
   else if (transactionIncomplete || transactionUncertain) states.push("REMOTE_ROLLBACK_UNAVAILABLE");
 
+  if (footprint?.kind === "unsafe") {
+    states.push("REMOTE_STATE_UNCERTAIN", "REMOTE_REPAIR_REQUIRED");
+    reasons.push(footprint.detail);
+    repairClassification = "MANUAL_RECOVERY_REQUIRED";
+    migrationStatus = "unknown";
+  }
+
   if (installed.status === "absent") {
-    if (!transactionIncomplete && !transactionUncertain) {
+    if (footprint?.kind === "partial") {
+      states.push("REMOTE_GENERATION_PARTIAL", "REMOTE_REPAIR_REQUIRED", "REMOTE_ROLLBACK_UNAVAILABLE");
+      reasons.push("installed generation history contains incomplete identity evidence");
+      repairClassification = "EVIDENCE_PRESERVING_REINSTALL";
+    } else if (footprint?.kind === "legacy") {
+      states.push("REMOTE_LEGACY", "REMOTE_REPAIR_REQUIRED", "REMOTE_ROLLBACK_UNAVAILABLE");
+      reasons.push("managed runtime artifacts exist without canonical generation records");
+      repairClassification = "MIGRATE_LEGACY_STATE";
+      migrationStatus = "required";
+    } else if (!transactionIncomplete && !transactionUncertain && footprint?.kind !== "unsafe") {
       states.push("REMOTE_ABSENT");
       reasons.push("no installed OpsHaven generation was found");
     }
   } else if (installed.status === "inconsistent") {
     states.push("REMOTE_REPAIR_REQUIRED");
     reasons.push(installed.detail ?? "installed generation evidence is inconsistent");
-    if (legacyDetail(installed)) {
+    if (legacyDetail(installed) || footprint?.kind === "legacy") {
       states.push("REMOTE_LEGACY");
       migrationStatus = "required";
       repairClassification = repairClassification === "NO_REPAIR_NEEDED" ? "MIGRATE_LEGACY_STATE" : repairClassification;
-    } else if (partialDetail(installed)) {
+    } else if (partialDetail(installed) || footprint?.kind === "partial") {
       states.push("REMOTE_GENERATION_PARTIAL");
       repairClassification = transaction.rollbackAvailable ? "RESTORE_PREVIOUS_GENERATION" : "EVIDENCE_PRESERVING_REINSTALL";
     } else if (receiptDetail(installed)) {
@@ -148,6 +167,11 @@ export function evaluateInstallationHealth(
       repairClassification = "MANUAL_RECOVERY_REQUIRED";
     }
   } else {
+    if (footprint && footprint.kind !== "canonical-pair") {
+      states.push("REMOTE_GENERATION_PARTIAL", "REMOTE_REPAIR_REQUIRED");
+      reasons.push("canonical receipt and installed-state evidence are not both present");
+      repairClassification = "EVIDENCE_PRESERVING_REINSTALL";
+    }
     if (legacyDetail(installed)) {
       states.push("REMOTE_LEGACY", "REMOTE_SYNC_REQUIRED");
       reasons.push(`installed state schema ${installed.schemaVersion ?? "unknown"} requires explicit migration`);
@@ -166,7 +190,7 @@ export function evaluateInstallationHealth(
     } else if (comparison && !comparison.compatible) {
       states.push("REMOTE_SYNC_REQUIRED");
       reasons.push(...comparison.reasons);
-    } else if (!states.some((state) => state.startsWith("REMOTE_REPAIR") || state === "REMOTE_RECEIPT_INVALID" || state === "REMOTE_LEGACY")) {
+    } else if (!states.some((state) => state === "REMOTE_REPAIR_REQUIRED" || state === "REMOTE_RECEIPT_INVALID" || state === "REMOTE_GENERATION_PARTIAL" || state === "REMOTE_LEGACY")) {
       states.push(installed.dispatcherMode === "read-only" ? "REMOTE_HEALTHY_READ_ONLY" : "REMOTE_HEALTHY_DEPLOYMENT");
     }
   }
@@ -203,12 +227,13 @@ export function evaluateInstallationHealth(
     safeNextCommand,
     installed,
     transaction,
+    footprint,
     comparison,
     activeGeneration: installed.generation,
     previousGenerationIdentity: transaction.transaction?.previousGenerationIdentity ?? null,
-    receiptValidity: installed.status === "complete" && installed.recordedIdentityMatches === true
+    receiptValidity: installed.status === "complete" && installed.recordedIdentityMatches === true && footprint?.kind !== "partial"
       ? "valid"
-      : installed.status === "absent"
+      : installed.status === "absent" && footprint?.kind === "empty"
         ? "unavailable"
         : "invalid",
     migrationStatus,
@@ -221,15 +246,17 @@ export async function inspectInstallationHealth(
   includeDesiredComparison = true,
 ): Promise<InstallationHealthReport> {
   if (includeDesiredComparison) {
-    const [comparison, transaction] = await Promise.all([
+    const [comparison, transaction, footprint] = await Promise.all([
       prepareRemoteState(config, transport),
       inspectRemoteSynchronizationTransaction(config, transport),
+      inspectRemoteManagedFootprint(config, transport),
     ]);
-    return evaluateInstallationHealth(comparison.installed, transaction, comparison);
+    return evaluateInstallationHealth(comparison.installed, transaction, comparison, footprint);
   }
-  const [installed, transaction] = await Promise.all([
+  const [installed, transaction, footprint] = await Promise.all([
     readInstalledRemoteState(config, transport),
     inspectRemoteSynchronizationTransaction(config, transport),
+    inspectRemoteManagedFootprint(config, transport),
   ]);
-  return evaluateInstallationHealth(installed, transaction, null);
+  return evaluateInstallationHealth(installed, transaction, null, footprint);
 }
