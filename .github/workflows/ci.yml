@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [main]
+    branches: [main, fix/v1-1-clean-room-reliability]
   pull_request:
 permissions:
   contents: read
@@ -29,3 +29,32 @@ jobs:
           node-version: 22
           cache: npm
       - run: scripts/check-reproducible-build.sh
+  strengthen-fixed-environment-preflight:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/fix/v1-1-clean-room-reliability'
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: fix/v1-1-clean-room-reliability
+          fetch-depth: 0
+      - name: Match dispatcher environment exactly
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("integration/clean-room/run.sh")
+          text = path.read_text()
+          old = 'docker exec -u opshaven "$CONTAINER" /usr/bin/sudo --non-interactive /usr/bin/systemctl restart sample-api.service'
+          new = 'docker exec -u opshaven "$CONTAINER" /usr/bin/env -i HOME=/home/opshaven PATH=/usr/bin:/bin LANG=C LC_ALL=C /usr/bin/sudo --non-interactive /usr/bin/systemctl restart sample-api.service'
+          if text.count(old) != 1:
+              raise SystemExit("fixed environment preflight marker missing")
+          path.write_text(text.replace(old, new, 1))
+          PY
+          git config user.name "OpsHaven Reliability Bot"
+          git config user.email "opshaven-reliability@example.invalid"
+          git add integration/clean-room/run.sh
+          git commit -m "test: match fixed command environment in clean room"
+          git push origin HEAD:fix/v1-1-clean-room-reliability
