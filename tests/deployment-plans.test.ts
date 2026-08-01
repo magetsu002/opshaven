@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 import { parseConfig, type OpsHavenConfig } from "../src/config.js";
 import {
+  DEPLOYMENT_MINIMUM_DISK_BYTES,
   DeploymentCoordinator,
   DeploymentPlanStore,
   validateExactRevision,
@@ -60,6 +61,9 @@ class SyntheticDeploymentClient implements OperationClient {
   currentRevision = CURRENT;
   activeReleaseId = "release-current";
   healthy = true;
+  availableDiskBytes = 10 * 1024 * 1024 * 1024;
+  serviceIdentifier = "sample-api.service";
+  runtimeAvailable = true;
   mutationCalls = 0;
   rollbackCalls = 0;
   mode: "success" | "build-failure" | "health-failure" | "rollback-failure" = "success";
@@ -76,7 +80,7 @@ class SyntheticDeploymentClient implements OperationClient {
     }
     if (operationName === "get_service_status") {
       return success(operationName, {
-        unit: "sample-api.service",
+        unit: this.serviceIdentifier,
         activeState: "active",
         subState: "running",
         exitStatus: 0,
@@ -91,8 +95,8 @@ class SyntheticDeploymentClient implements OperationClient {
     }
     if (operationName === "get_host_summary") {
       return success(operationName, {
-        uname: "Linux synthetic 6.0 x86_64 GNU/Linux",
-        rootFilesystem: "/dev/synthetic 1000000 1000 999000 1% /",
+        uname: this.runtimeAvailable ? "Linux synthetic 6.0 x86_64 GNU/Linux" : "",
+        rootFilesystem: `/dev/synthetic 20000000 1000 ${Math.floor(this.availableDiskBytes / 1024)} 1% /`,
       });
     }
     if (operationName === "deploy_commit" && args.dryRun === true) {
@@ -249,6 +253,47 @@ test("planning is read-only and returns the same immutable digest for unchanged 
   assert.equal(first.plan.operations[0]?.kind, "verify_revision");
   assert.equal(first.plan.operations.at(-1)?.kind, "confirm_revision");
   assert.equal(value.client.mutationCalls, 0);
+});
+
+test("volatile disk drift preserves exact-plan identity and apply succeeds", async () => {
+  const value = await registeredFixture();
+  value.client.availableDiskBytes = 10 * 1024 * 1024 * 1024;
+  const stored = await value.coordinator.createPlan("sample-api", TARGET);
+  value.client.availableDiskBytes -= 100 * 1024 * 1024;
+  const repeated = await value.coordinator.createPlan("sample-api", TARGET);
+  assert.equal(repeated.planId, stored.planId);
+  assert.equal(repeated.plan.observedStateFingerprint, stored.plan.observedStateFingerprint);
+  const result = await value.coordinator.applyPlan(stored.planId, { approved: true });
+  assert.equal(result.outcome, "DEPLOYMENT_SUCCEEDED");
+  assert.equal(value.client.mutationCalls, 1);
+});
+
+test("insufficient apply-time disk fails before deployment mutation", async () => {
+  const value = await registeredFixture();
+  const stored = await value.coordinator.createPlan("sample-api", TARGET);
+  value.client.availableDiskBytes = DEPLOYMENT_MINIMUM_DISK_BYTES - 1;
+  await assert.rejects(
+    value.coordinator.applyPlan(stored.planId, { approved: true }),
+    (error: unknown) => error instanceof OpsHavenError && error.code === "POLICY_DENIED" && /disk space/i.test(error.message),
+  );
+  assert.equal(value.client.mutationCalls, 0);
+});
+
+test("service and runtime drift remain stale-plan blockers", async (t) => {
+  await t.test("service identity", async () => {
+    const value = await registeredFixture();
+    const stored = await value.coordinator.createPlan("sample-api", TARGET);
+    value.client.serviceIdentifier = "other.service";
+    await assert.rejects(value.coordinator.applyPlan(stored.planId, { approved: true }), OpsHavenError);
+    assert.equal(value.client.mutationCalls, 0);
+  });
+  await t.test("runtime readiness", async () => {
+    const value = await registeredFixture();
+    const stored = await value.coordinator.createPlan("sample-api", TARGET);
+    value.client.runtimeAvailable = false;
+    await assert.rejects(value.coordinator.applyPlan(stored.planId, { approved: true }), OpsHavenError);
+    assert.equal(value.client.mutationCalls, 0);
+  });
 });
 
 test("changed observed state produces a different plan identity", async () => {

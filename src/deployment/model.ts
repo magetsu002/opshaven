@@ -461,7 +461,24 @@ export function dataOf(result: ResultEnvelope, operation: string): Record<string
   return result.data;
 }
 
-export function observedFingerprint(value: ObservedDeploymentState): string { return sha256(value); }
+export function observedFingerprint(value: ObservedDeploymentState): string {
+  return sha256({
+    currentRevision: value.currentRevision,
+    activeReleaseId: value.activeReleaseId,
+    sourceRepositoryRevision: value.sourceRepositoryRevision,
+    sourceRepositoryDirty: value.sourceRepositoryDirty,
+    serviceIdentifier: value.serviceIdentifier,
+    serviceActiveState: value.serviceActiveState,
+    serviceSubState: value.serviceSubState,
+    serviceExitStatus: value.serviceExitStatus,
+    healthReachable: value.healthReachable,
+    healthExpected: value.healthExpected,
+    healthStatusCode: value.healthStatusCode,
+    runtimeAvailable: value.runtimeAvailable,
+    rollbackAvailable: value.rollbackAvailable,
+    targetRevisionVerified: value.targetRevisionVerified,
+  });
+}
 
 export function deploymentOperations(config: OpsHavenConfig, app: DeploymentApplication, revision: string): DeploymentOperation[] {
   const outputBound = { maxBytes: config.limits.maxBytes, maxLines: config.limits.maxLines };

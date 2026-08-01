@@ -84,3 +84,9 @@ A healthy no-change rerun still measures the active installation and verifies ca
 - The local operator machine protects owner-only keys and configuration from a hostile local administrator.
 - Node.js and Python executables selected through fixed reviewed paths behave according to their platform contracts.
 - Filesystem durability follows successful `fsync` and atomic rename semantics on supported Linux filesystems.
+
+## Deployment plan identity and volatile readiness
+
+Exact stale-plan identity binds the registered application and release layout, pinned host identity, current revision, active release and rollback target, service state, runtime readiness, policy and authorization profile, operation definitions, and health-check definition. Dispatcher, capability, declaration, receipt, and application-scope identities are verified by the canonical installation-health preflight before planning or apply.
+
+The plan records observed free disk space for operator review and audit, but exact free-byte counts are volatile and are not part of the observed-state fingerprint. At apply time OpsHaven re-inspects the host and requires `availableDiskBytes >= DEPLOYMENT_MINIMUM_DISK_BYTES` before any deployment mutation. Clock time, latency, temporary load, transient response timing, and temporary paths are likewise not deployment identity.
