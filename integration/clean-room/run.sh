@@ -110,7 +110,7 @@ docker exec "$CONTAINER" test -f /run/opshaven-fixtures-owned
 docker exec -u opshaven "$CONTAINER" test -w /srv/opshaven-fixtures/sample-api/repository
 docker exec -u opshaven "$CONTAINER" test -w /srv/opshaven-fixtures/sample-api/releases
 docker exec -u opshaven "$CONTAINER" /usr/bin/npm --version >/dev/null
-docker exec -u opshaven "$CONTAINER" /usr/bin/sudo --non-interactive /usr/bin/systemctl restart sample-api.service
+docker exec -u opshaven "$CONTAINER" /usr/bin/env -i HOME=/home/opshaven PATH=/usr/bin:/bin LANG=C LC_ALL=C /usr/bin/sudo --non-interactive /usr/bin/systemctl restart sample-api.service
 
 stage "verify initial health"
 opshaven doctor --json > "$WORK/doctor.json"
