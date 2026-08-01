@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import pathlib
+import platform
 import pwd
 import shutil
 import stat
@@ -142,10 +143,32 @@ def valid_digest(value):
     return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
+def valid_policy_version(value):
+    return isinstance(value, str) and 1 <= len(value) <= 64 and all(char.isalnum() or char in "._-" for char in value)
+
+
 def validate_desired(value):
-    expected = {"schemaVersion", "sourceSha", "dispatcherMode", "runtimeSha256", "dispatcherSha256", "policySha256", "capabilityIdentitySha256", "declarationSha256", "operatorVerificationIdentity", "applicationScope", "applicationScopeSha256"}
-    if not isinstance(value, dict) or set(value.keys()) != expected or value.get("schemaVersion") != 2 or value.get("dispatcherMode") != "controlled":
+    expected = {
+        "schemaVersion",
+        "sourceSha",
+        "dispatcherMode",
+        "runtimeSha256",
+        "dispatcherSha256",
+        "policyVersion",
+        "policySha256",
+        "capabilityIdentitySha256",
+        "declarationSha256",
+        "operatorVerificationIdentity",
+        "applicationScope",
+        "applicationScopeSha256",
+        "minimumNodeMajor",
+    }
+    if not isinstance(value, dict) or set(value.keys()) != expected or value.get("schemaVersion") != 3 or value.get("dispatcherMode") != "controlled":
         fail("desired remote state schema is invalid")
+    if value.get("minimumNodeMajor") != 22:
+        fail("desired Node.js compatibility requirement is invalid")
+    if not valid_policy_version(value.get("policyVersion")):
+        fail("desired policy version is invalid")
     if not isinstance(value.get("sourceSha"), str) or len(value["sourceSha"]) != 40 or any(char not in "0123456789abcdef" for char in value["sourceSha"]):
         fail("desired source identity is invalid")
     for key in ("runtimeSha256", "dispatcherSha256", "policySha256", "capabilityIdentitySha256", "declarationSha256", "operatorVerificationIdentity", "applicationScopeSha256"):
@@ -196,9 +219,33 @@ def prepare_receipt(plan, backup_root):
     with open(RECEIPT, "r", encoding="utf-8") as handle:
         previous = json.load(handle)
     runtime_hash = previous.get("runtimeTreeSha256")
+    node_path = previous.get("nodePath")
     if not valid_digest(runtime_hash):
         fail("existing verified runtime receipt is unavailable")
-    return {"version": 1, "receiptId": plan["receiptId"], "sourceSha": plan["sourceSha"], "runtimeTreeSha256": runtime_hash, "changed": [], "backupRoot": plan["backupRoot"], "certified": False, "synchronizationKind": "authorization-sync"}
+    if not isinstance(node_path, str) or not node_path.startswith("/"):
+        fail("existing verified Node.js path is unavailable")
+    return {
+        "version": 1,
+        "receiptId": plan["receiptId"],
+        "sourceSha": plan["sourceSha"],
+        "nodePath": node_path,
+        "runtimeTreeSha256": runtime_hash,
+        "changed": [],
+        "backupRoot": plan["backupRoot"],
+        "certified": False,
+        "synchronizationKind": "authorization-sync",
+    }
+
+
+def verified_node_version(receipt, minimum_major):
+    node_path = pathlib.Path(receipt.get("nodePath", ""))
+    if not node_path.is_absolute() or node_path.is_symlink() or not node_path.is_file() or not os.access(node_path, os.X_OK) or os.path.realpath(node_path) != str(node_path):
+        fail("verified Node.js executable is unavailable")
+    result = subprocess.run([str(node_path), "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10, check=False)
+    value = result.stdout.strip()
+    if result.returncode != 0 or not value.startswith("v") or not value[1:].split(".")[0].isdigit() or int(value[1:].split(".")[0]) < minimum_major:
+        fail("installed Node.js version is incompatible")
+    return value
 
 
 def generate_response_pair(stage):
@@ -247,6 +294,9 @@ def main():
             except (ValueError, TypeError, AttributeError):
                 fail("existing remote state generation is invalid")
         state = dict(plan["desiredState"])
+        state["platform"] = platform.system()
+        state["architecture"] = platform.machine()
+        state["nodeVersion"] = verified_node_version(receipt, state["minimumNodeMajor"])
         state["generation"] = previous_generation + 1
         state["recordedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
         install_json_changed(state, REMOTE_STATE, 0o600, backup_root, journal, changed, stage)
