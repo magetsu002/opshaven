@@ -6,6 +6,10 @@ COPY --from=node /usr/local /usr/local
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates git openssh-server openssl python3 sudo util-linux procps \
   && rm -rf /var/lib/apt/lists/* \
+  && ln -s /usr/local/bin/node /usr/bin/node \
+  && ln -s /usr/local/bin/npm /usr/bin/npm \
+  && test -x /usr/bin/node \
+  && test -x /usr/bin/npm \
   && useradd --create-home --shell /bin/bash admin \
   && passwd -d admin \
   && install -d -m 700 -o admin -g admin /home/admin/.ssh \
