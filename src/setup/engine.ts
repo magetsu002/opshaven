@@ -5,6 +5,7 @@ import { sha256 } from "../canonical.js";
 import { loadConfig } from "../config.js";
 import { OpsHavenError } from "../errors.js";
 import { certifyRemoteBoundary, type RemoteBoundaryReceipt } from "./certify.js";
+import { installRestrictedDispatcher, type RemoteDispatcherInstallResult } from "./dispatcher.js";
 import { installRestrictedRuntime, type RemoteInstallResult } from "./install.js";
 import {
   cleanupLocalSynchronizationState,
@@ -51,6 +52,7 @@ export interface RemoteSetupLifecycleReceipt extends SetupReceipt {
   readonly timings?: SetupTimings;
   readonly preflight?: RemoteSetupPreflightReport;
   readonly installation?: RemoteInstallResult;
+  readonly dispatcherInstallation?: RemoteDispatcherInstallResult;
   readonly trust?: RemoteTrustReceipt;
   readonly boundary: RemoteBoundaryReceipt;
   readonly canonicalState?: RemoteStateComparison;
@@ -59,6 +61,7 @@ export interface RemoteSetupLifecycleReceipt extends SetupReceipt {
 export interface RemoteSetupEngineDependencies {
   preflight(config: RemoteSetupConfig): Promise<RemoteSetupPreflightReport>;
   install(config: RemoteSetupConfig, preflight: RemoteSetupPreflightReport): Promise<RemoteInstallResult>;
+  installDispatcher?(config: RemoteSetupConfig, desired: DesiredRemoteState, installedDispatcherSha256: string, transactionId: string): Promise<RemoteDispatcherInstallResult>;
   trust(config: RemoteSetupConfig, installation: RemoteInstallResult, desired?: DesiredRemoteState): Promise<RemoteTrustReceipt>;
   synchronize?(config: RemoteSetupConfig, desired?: DesiredRemoteState): Promise<RemoteTrustReceipt>;
   certify(config: RemoteSetupConfig): Promise<RemoteBoundaryReceipt>;
@@ -84,6 +87,7 @@ export interface RemoteSetupEngineOptions {
 const DEFAULT_DEPENDENCIES: RemoteSetupEngineDependencies = Object.freeze({
   preflight: async (config: RemoteSetupConfig): Promise<RemoteSetupPreflightReport> => await preflightRemoteSetup(config),
   install: async (config: RemoteSetupConfig, report: RemoteSetupPreflightReport): Promise<RemoteInstallResult> => await installRestrictedRuntime(config, report),
+  installDispatcher: async (config: RemoteSetupConfig, desired: DesiredRemoteState, installedDispatcherSha256: string, transactionId: string): Promise<RemoteDispatcherInstallResult> => await installRestrictedDispatcher(config, desired, installedDispatcherSha256, transactionId),
   trust: async (config: RemoteSetupConfig, installation: RemoteInstallResult, desired?: DesiredRemoteState): Promise<RemoteTrustReceipt> => await provisionRemoteTrust(config, installation, undefined, desired),
   synchronize: async (config: RemoteSetupConfig, desired?: DesiredRemoteState): Promise<RemoteTrustReceipt> => await synchronizeRemoteTrust(config, desired),
   certify: async (config: RemoteSetupConfig): Promise<RemoteBoundaryReceipt> => await certifyRemoteBoundary(config),
@@ -97,9 +101,13 @@ const DEFAULT_DEPENDENCIES: RemoteSetupEngineDependencies = Object.freeze({
 });
 
 function isMutating(changeType: RemoteSetupChangeType): boolean { return changeType !== "NO_CHANGE" && changeType !== "REPAIR_REQUIRED"; }
-function requiresRuntime(changeType: RemoteSetupChangeType): boolean { return changeType === "FULL_INSTALL" || changeType === "RUNTIME_UPDATE" || changeType === "DISPATCHER_UPDATE"; }
+function requiresRuntime(changeType: RemoteSetupChangeType): boolean { return ["FULL_INSTALL", "RUNTIME_UPDATE", "RUNTIME_ONLY", "RUNTIME_AND_DISPATCHER"].includes(changeType); }
+function requiresDispatcherOnly(changeType: RemoteSetupChangeType): boolean { return ["DISPATCHER_UPDATE", "DISPATCHER_ONLY", "DISPATCHER_AND_AUTHORIZATION"].includes(changeType); }
 function requiresAuthorizationOnly(changeType: RemoteSetupChangeType): boolean {
   return changeType === "AUTHORIZATION_ONLY" || changeType === "APPLICATION_DECLARATION_ONLY" || changeType === "AUTHORIZATION_AND_DECLARATION";
+}
+function dispatcherNeedsAuthorization(changeType: RemoteSetupChangeType): boolean {
+  return changeType === "DISPATCHER_UPDATE" || changeType === "DISPATCHER_AND_AUTHORIZATION";
 }
 function checkCancellation(signal: AbortSignal | undefined, mutationStarted: boolean): void {
   if (signal?.aborted) throw new OpsHavenError("CANCELLED", mutationStarted ? "Remote setup cancellation was requested after activation began." : "Remote setup was cancelled before activation.", false, { mutationStarted });
@@ -161,6 +169,7 @@ export async function executeRemoteSetup(config: RemoteSetupConfig, plan: Remote
   let mutationStarted = false;
   let preflight: RemoteSetupPreflightReport | undefined;
   let installation: RemoteInstallResult | undefined;
+  let dispatcherInstallation: RemoteDispatcherInstallResult | undefined;
   let trust: RemoteTrustReceipt | undefined;
   let boundary: RemoteBoundaryReceipt;
   let canonicalState: RemoteStateComparison | undefined;
@@ -171,7 +180,7 @@ export async function executeRemoteSetup(config: RemoteSetupConfig, plan: Remote
 
   try {
     checkCancellation(options.signal, false);
-    if (requiresRuntime(plan.changeType)) {
+    if (requiresRuntime(plan.changeType) || requiresDispatcherOnly(plan.changeType)) {
       presenter.step("preflight", "local", "pending", "verifying local identity and remote prerequisites");
       preflight = await timed(presenter, timings, "remotePlatformInspection", "preflight", "checking remote platform and permissions", async () => await dependencies.preflight(config));
       if (!preflight.ok) { presenter.step("preflight", "local", "failed", preflight.checks.filter((item) => item.state === "failed").map((item) => item.id).join(", ")); assertRemoteSetupPreflight(preflight); }
@@ -181,7 +190,6 @@ export async function executeRemoteSetup(config: RemoteSetupConfig, plan: Remote
 
     if (transactional && desired) {
       localSnapshot = await snapshotLocalSynchronizationState(config);
-      // RECORD_PREVIOUS is the mandatory commit barrier before ACTIVATE.
       transaction = await timed(presenter, timings, "recordPreviousGeneration", "preflight", "recording the previous verified generation", async () => await dependencies.beginTransaction?.(config, desired, plan.changeType) as RemoteSynchronizationTransaction);
       if (transaction.phase !== "RECORD_PREVIOUS") throw new OpsHavenError("POLICY_DENIED", "Remote synchronization did not record a rollback-safe previous generation.");
       transaction = await advance(dependencies, config, transaction, "STAGE");
@@ -199,16 +207,25 @@ export async function executeRemoteSetup(config: RemoteSetupConfig, plan: Remote
       checkCancellation(options.signal, true);
       presenter.step("trust", "local", "pending", "signing and applying controlled authorization material");
       trust = await timed(presenter, timings, "authorizationSynchronization", "trust", "uploading verified signed authorization", async () => await dependencies.trust(config, installation as RemoteInstallResult, desired));
+    } else if (requiresDispatcherOnly(plan.changeType)) {
+      if (!desired || !transaction || !dependencies.installDispatcher) throw new OpsHavenError("INTERNAL_ERROR", "Transactional dispatcher synchronization is unavailable.");
+      if (!plan.installedDispatcherSha256) throw new OpsHavenError("POLICY_DENIED", "The inspected dispatcher identity is unavailable. No activation was attempted.");
+      mutationStarted = true;
+      presenter.step("dispatcher", "vps", "pending", "uploading the reviewed dispatcher artifact");
+      dispatcherInstallation = await timed(presenter, timings, "dispatcherInstallation", "dispatcher", "uploading artifact", async () => await dependencies.installDispatcher?.(config, desired, plan.installedDispatcherSha256 as string, transaction?.transactionId as string) as RemoteDispatcherInstallResult);
+      if (dispatcherInstallation.dependencyInstall !== false) throw new OpsHavenError("POLICY_DENIED", "Dispatcher-only synchronization unexpectedly requested dependency installation.");
+      presenter.step("dispatcher", "vps", "passed", "dispatcher artifact activated; runtime core and dependencies unchanged");
+      presenter.fingerprint("dispatcher", dispatcherInstallation.dispatcherSha256);
+      if (dispatcherNeedsAuthorization(plan.changeType)) {
+        if (!dependencies.synchronize) throw new OpsHavenError("INTERNAL_ERROR", "Authorization synchronization is unavailable.");
+        presenter.step("trust", "local", "pending", "synchronizing authorization bound to the new dispatcher identity");
+        trust = await timed(presenter, timings, "authorizationSynchronization", "trust", "uploading verified signed authorization", async () => await dependencies.synchronize?.(config, desired) as RemoteTrustReceipt);
+      }
     } else if (requiresAuthorizationOnly(plan.changeType)) {
       if (!dependencies.synchronize) throw new OpsHavenError("INTERNAL_ERROR", "Authorization synchronization is unavailable.");
       mutationStarted = true;
-      presenter.step("runtime-install", "vps", "skipped", "existing runtime verified and reused");
       presenter.step("trust", "local", "pending", plan.changeType === "APPLICATION_DECLARATION_ONLY" ? "updating only reviewed application declaration state" : "updating only changed signed authorization state");
       trust = await timed(presenter, timings, "authorizationSynchronization", "trust", "uploading one authorization generation", async () => await dependencies.synchronize?.(config, desired) as RemoteTrustReceipt);
-    } else {
-      presenter.step("preflight", "local", "skipped", "verified installed state already available");
-      presenter.step("runtime-install", "vps", "skipped", "runtime content identity matches");
-      presenter.step("trust", "vps", "skipped", "authorization content identity matches");
     }
     if (trust) {
       if (desired && trust.mode !== "controlled") throw new OpsHavenError("POLICY_DENIED", "Remote authorization was generated for an incompatible dispatcher mode.");
@@ -305,7 +322,7 @@ export async function executeRemoteSetup(config: RemoteSetupConfig, plan: Remote
   const receipt: RemoteSetupLifecycleReceipt = Object.freeze({
     version: 1,
     outcome,
-    receiptId: trust?.receiptId ?? installation?.receiptId ?? `verify${randomBytes(8).toString("hex")}`,
+    receiptId: trust?.receiptId ?? installation?.receiptId ?? dispatcherInstallation?.transactionId ?? `verify${randomBytes(8).toString("hex")}`,
     sourceSha: config.expectedSourceSha,
     target: plan.target,
     dryRun: false,
@@ -319,6 +336,7 @@ export async function executeRemoteSetup(config: RemoteSetupConfig, plan: Remote
     rollback: Object.freeze({ required: false, attempted: false, completed: false, restored: Object.freeze([]) }),
     ...(preflight ? { preflight } : {}),
     ...(installation ? { installation } : {}),
+    ...(dispatcherInstallation ? { dispatcherInstallation } : {}),
     ...(trust ? { trust } : {}),
     boundary,
     ...(canonicalState ? { canonicalState } : {}),
