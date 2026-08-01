@@ -35,6 +35,7 @@ function installed(expected: DesiredRemoteState): InstalledRemoteState {
     source: "installed remote state",
     schemaVersion: 3,
     generation: 1,
+    recordedIdentityMatches: true,
     sourceSha: expected.sourceSha,
     dispatcherMode: expected.dispatcherMode,
     runtimeSha256: expected.runtimeSha256,
