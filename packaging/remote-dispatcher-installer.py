@@ -166,22 +166,24 @@ def main():
         fail("installed runtime root is unsafe")
     controlled = RUNTIME_ROOT / CONTROLLED_RELATIVE
     read_only = RUNTIME_ROOT / READ_ONLY_RELATIVE
-    candidates = [item for item in (controlled, read_only) if item.exists()]
-    if len(candidates) != 1 or sha256_file(candidates[0]) != plan["expectedDispatcherSha256"]:
-        fail("installed dispatcher changed after inspection")
+    if not controlled.exists() or sha256_file(controlled) != plan["expectedDispatcherSha256"]:
+        fail("active dispatcher changed after inspection")
+    if read_only.exists():
+        sha256_file(read_only)
     manifest = read_json(MANIFEST_PATH)
     files = verify_manifest(manifest)
+    if not any(item["path"] == CONTROLLED_RELATIVE for item in files):
+        fail("active dispatcher is missing from the reviewed runtime manifest")
     destination = controlled
-    destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.parent.is_symlink() or not destination.parent.is_dir():
         fail("dispatcher destination directory is unsafe")
     atomic_dispatcher(staged, destination)
-    if read_only.exists():
-        if read_only.is_symlink() or not read_only.is_file():
-            fail("legacy dispatcher path is unsafe")
-        read_only.unlink()
-    updated = [item for item in files if item["path"] not in (CONTROLLED_RELATIVE, READ_ONLY_RELATIVE)]
-    updated.append({"path": CONTROLLED_RELATIVE, "sha256": plan["desiredDispatcherSha256"], "executable": True})
+    updated = []
+    for item in files:
+        if item["path"] == CONTROLLED_RELATIVE:
+            updated.append({"path": CONTROLLED_RELATIVE, "sha256": plan["desiredDispatcherSha256"], "executable": True})
+        else:
+            updated.append(item)
     updated.sort(key=lambda item: item["path"])
     canonical_files = [{"executable": item["executable"], "path": item["path"], "sha256": item["sha256"]} for item in updated]
     manifest = {"version": 1, "files": updated, "treeSha256": hashlib.sha256(json.dumps(canonical_files, separators=(",", ":")).encode("utf-8")).hexdigest()}
