@@ -1,3 +1,5 @@
+> [!NOTE]
+> **OpsHaven is still under active development.** It is best tested on disposable infrastructure before production use. Feedback, bug reports, documentation improvements, and focused contributions are welcome.
 # OpsHaven
 
 **Let AI troubleshoot and deploy to a Linux VPS without giving it a shell.**
