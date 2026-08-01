@@ -93,16 +93,17 @@ function formatRepairPlan(plan: Awaited<ReturnType<typeof inspectRemoteSetupRepa
 }
 
 function suppressReceipt(base: SetupPresenter): SetupPresenter {
-  return {
+  const presenter: SetupPresenter = {
     plan: (value) => base.plan(value),
     step: (id, scope, state, detail) => base.step(id, scope, state, detail),
-    progress: base.progress ? (id, detail, elapsedMs) => base.progress?.(id, detail, elapsedMs) : undefined,
-    heartbeatMs: base.heartbeatMs ? () => base.heartbeatMs?.() ?? 15000 : undefined,
-    cancellation: base.cancellation ? (mutationStarted, restored) => base.cancellation?.(mutationStarted, restored) : undefined,
     fingerprint: (label, value) => base.fingerprint(label, value),
     approve: async (message) => await base.approve(message),
     receipt: () => undefined,
   };
+  if (base.progress) presenter.progress = (id, detail, elapsedMs) => base.progress?.(id, detail, elapsedMs);
+  if (base.heartbeatMs) presenter.heartbeatMs = () => base.heartbeatMs?.() ?? 15000;
+  if (base.cancellation) presenter.cancellation = (mutationStarted, restored) => base.cancellation?.(mutationStarted, restored);
+  return presenter;
 }
 
 export async function runRemoteRepair(args: readonly string[]): Promise<void> {
