@@ -87,6 +87,7 @@ ${paint("Normal operator workflow", "info", color)}
   opshaven deploy plan sample-api --revision <full-commit-sha>
   opshaven deploy apply <plan-id>
   opshaven doctor
+  opshaven boundary verify
 
 The opshaven command is for people. MCP clients launch opshaven-mcp.
 `;
