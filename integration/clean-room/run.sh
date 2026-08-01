@@ -101,6 +101,17 @@ stage "install remote generation"
 opshaven setup remote --non-interactive --approve --json > "$WORK/setup.json"
 node -e 'const x=require(process.argv[1]); if(!x.certified || x.changeType!=="FULL_INSTALL" || !x.canonicalState?.compatible) process.exit(1)' "$WORK/setup.json"
 
+stage "verify synthetic deployment boundary"
+for _ in $(seq 1 100); do
+  if docker exec "$CONTAINER" test -f /run/opshaven-fixtures-owned; then break; fi
+  sleep 0.1
+done
+docker exec "$CONTAINER" test -f /run/opshaven-fixtures-owned
+docker exec -u opshaven "$CONTAINER" test -w /srv/opshaven-fixtures/sample-api/repository
+docker exec -u opshaven "$CONTAINER" test -w /srv/opshaven-fixtures/sample-api/releases
+docker exec -u opshaven "$CONTAINER" /usr/bin/npm --version >/dev/null
+docker exec -u opshaven "$CONTAINER" /usr/bin/sudo --non-interactive /usr/bin/systemctl restart sample-api.service
+
 stage "verify initial health"
 opshaven doctor --json > "$WORK/doctor.json"
 node -e 'const x=require(process.argv[1]); if(!x.ok || x.state!=="READY") process.exit(1)' "$WORK/doctor.json"
@@ -108,7 +119,7 @@ opshaven boundary verify --json > "$WORK/boundary.json"
 node -e 'const x=require(process.argv[1]); if(!x.ok || !x.assertions.every(v=>v.passed)) process.exit(1)' "$WORK/boundary.json"
 
 stage "create allowed application revision"
-docker exec "$CONTAINER" sh -ceu '
+docker exec -u opshaven "$CONTAINER" sh -ceu '
   git -C /srv/opshaven-fixtures/sample-api/repository config user.name "OpsHaven Synthetic Fixture"
   git -C /srv/opshaven-fixtures/sample-api/repository config user.email "fixture@example.invalid"
   printf "healthy revision\n" > /srv/opshaven-fixtures/sample-api/repository/REVISION.txt
