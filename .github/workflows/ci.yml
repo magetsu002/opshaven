@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [main]
+    branches: [main, fix/v1-1-clean-room-reliability]
   pull_request:
 permissions:
   contents: read
@@ -29,3 +29,49 @@ jobs:
           node-version: 22
           cache: npm
       - run: scripts/check-reproducible-build.sh
+  trace-synthetic-restart:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/fix/v1-1-clean-room-reliability'
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: fix/v1-1-clean-room-reliability
+          fetch-depth: 0
+      - name: Add synthetic restart trace
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          fixture = Path("integration/remote-setup-ubuntu/fixture-systemctl")
+          text = fixture.read_text()
+          marker = 'unit="${2:-}"\n'
+          addition = '''unit="${2:-}"
+          printf 'uid=%s command=%s unit=%s\\n' "$(/usr/bin/id -u)" "$command" "$unit" >> /tmp/opshaven-fixture-systemctl.log
+          '''
+          if text.count(marker) != 1:
+              raise SystemExit("systemctl trace marker missing")
+          fixture.write_text(text.replace(marker, addition, 1))
+
+          clean = Path("integration/clean-room/run.sh")
+          text = clean.read_text()
+          marker = '''    ' "$WORK/apply.console" "$WORK" "$HOME" || true
+            fi
+            exit "$status"'''
+          addition = '''    ' "$WORK/apply.console" "$WORK" "$HOME" || true
+              printf '%s\\n' 'clean-room synthetic restart trace:' >&2
+              docker exec "$CONTAINER" sh -c 'test ! -f /tmp/opshaven-fixture-systemctl.log || tail -n 10 /tmp/opshaven-fixture-systemctl.log' >&2 || true
+            fi
+            exit "$status"'''
+          if text.count(marker) != 1:
+              raise SystemExit("clean-room trace marker missing")
+          clean.write_text(text.replace(marker, addition, 1))
+          PY
+          git config user.name "OpsHaven Reliability Bot"
+          git config user.email "opshaven-reliability@example.invalid"
+          git add integration/remote-setup-ubuntu/fixture-systemctl integration/clean-room/run.sh
+          git commit -m "test: trace synthetic service restart boundary"
+          git push origin HEAD:fix/v1-1-clean-room-reliability
