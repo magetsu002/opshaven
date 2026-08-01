@@ -17,6 +17,12 @@ interface LocalSnapshotEntry {
   readonly mode: number;
 }
 
+function errorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const value = (error as { readonly code?: unknown }).code;
+  return typeof value === "string" ? value : undefined;
+}
+
 function localManagedPaths(config: RemoteSetupConfig): readonly string[] {
   return Object.freeze([
     `${config.policyConfigPath}.capability.json`,
@@ -53,7 +59,7 @@ export async function snapshotLocalSynchronizationState(config: RemoteSetupConfi
         await fs.writeFile(backup, bytes, { mode: 0o600 });
         entries.push(Object.freeze({ source, backup, present: true, mode: stat.mode & 0o777 }));
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        if (errorCode(error) !== "ENOENT") throw error;
         entries.push(Object.freeze({ source, backup, present: false, mode: 0o600 }));
       }
     }
@@ -72,7 +78,7 @@ export async function restoreLocalSynchronizationState(snapshot: LocalSynchroniz
         if (stat.isSymbolicLink() || !stat.isFile()) throw new OpsHavenError("POLICY_DENIED", "Local rollback destination is unsafe.");
         await fs.rm(entry.source, { force: true });
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        if (errorCode(error) !== "ENOENT") throw error;
       }
       continue;
     }
