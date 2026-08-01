@@ -105,6 +105,22 @@ async function main(): Promise<void> {
 
   if (requested === "doctor" || requested === "diagnostics") {
     const deployment = await import("./deployment.js");
+    const setupPath = await resolveSetupConfigPath(commandArgs);
+    if (setupPath) {
+      try {
+        const [{ loadRemoteSetupConfig }, { runCanonicalHealthDoctor }] = await Promise.all([
+          import("./setup/remote.js"),
+          import("./operator-health-report.js"),
+        ]);
+        const handled = await runCanonicalHealthDoctor(await loadRemoteSetupConfig(setupPath), commandArgs);
+        if (handled) {
+          if (!commandArgs.includes("--json")) await deployment.runDeploymentDoctor(path, commandArgs);
+          return;
+        }
+      } catch {
+        // The full doctor below reports connection, configuration, and local-state failures safely.
+      }
+    }
     const { runDoctor } = await import("./operator-doctor.js");
     await runDoctor(path, commandArgs);
     await deployment.runDeploymentDoctor(path, commandArgs);
