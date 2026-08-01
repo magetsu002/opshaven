@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { OpsHavenError } from "./errors.js";
 import { formatOperatorError } from "./operator-errors.js";
 import { colorEnabled, heading, paint, section } from "./operator-ui.js";
 
@@ -64,8 +65,8 @@ ${paint("Recommended deployment onboarding", "info", color)}
   opshaven app add
   opshaven setup remote
   opshaven doctor
-  opshaven deploy plan sample-api
   opshaven boundary verify
+  opshaven deploy plan sample-api
 
 Later setup runs compare verified content identities. Unchanged state is verified without mutation, and authorization-only changes reuse the installed runtime.
 
@@ -119,6 +120,21 @@ async function main(): Promise<void> {
     return;
   }
   if (requested === "deploy") {
+    const setupPath = await resolveSetupConfigPath(commandArgs);
+    if (!setupPath) throw new OpsHavenError("POLICY_DENIED", "Deployment is blocked until remote setup is configured and verified.");
+    const [{ loadRemoteSetupConfig }, { compatibilityDetails, prepareRemoteState }] = await Promise.all([
+      import("./setup/remote.js"),
+      import("./setup/state.js"),
+    ]);
+    const comparison = await prepareRemoteState(await loadRemoteSetupConfig(setupPath));
+    if (!comparison.compatible) {
+      throw new OpsHavenError(
+        "POLICY_DENIED",
+        "Deployment is blocked because the canonical remote state is not ready. Run opshaven setup remote before planning or applying a deployment.",
+        false,
+        compatibilityDetails(comparison),
+      );
+    }
     const { runDeployCommand } = await import("./deployment.js");
     await runDeployCommand(path, commandArgs);
     return;
