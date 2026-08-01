@@ -34,7 +34,7 @@ async function regularFile(path: string, ownerOnly: boolean): Promise<boolean> {
 }
 function safeDetail(error: unknown): string {
   const sanitized = sanitizeOperatorText(error instanceof Error ? error.message : "verification did not complete");
-  return /^[A-Za-z0-9 .,:;()'"_<>-]{1,240}$/.test(sanitized) ? sanitized : "verification did not complete";
+  return /^[A-Za-z0-9 .,:;()'"_<>/-]{1,240}$/.test(sanitized) ? sanitized : "verification did not complete";
 }
 function check(label: string, passed: boolean, detail?: string): DoctorCheck { return detail === undefined ? { label, passed } : { label, passed, detail }; }
 function assertionPassed(report: BoundaryReport | null, name: string): boolean { return report?.assertions.find((item) => item.name === name)?.passed === true; }
@@ -44,15 +44,44 @@ function renderChecks(title: string, checks: readonly DoctorCheck[], color: bool
   else for (const item of checks) lines.push(statusLine(item.passed ? "passed" : "failed", item.label, item.detail, color));
   return lines;
 }
-function scalar(value: unknown): string { if (Array.isArray(value)) return value.length ? value.join(", ") : "none"; return typeof value === "string" ? value : JSON.stringify(value); }
+function scalar(value: unknown): string {
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "none";
+  if (value === null || value === undefined) return "unavailable";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
 function renderCompatibility(value: Record<string, unknown>, color: boolean): string[] {
   const lines = [section("Deployment compatibility", color)];
   const fields: Array<[string, string]> = [
-    ["Expected dispatcher mode", "expectedDispatcherMode"], ["Installed dispatcher mode", "installedDispatcherMode"],
-    ["Expected capability digest", "expectedCapabilityDigest"], ["Installed capability digest", "installedCapabilityDigest"],
-    ["Expected policy identity", "expectedPolicyIdentity"], ["Installed policy identity", "installedPolicyIdentity"],
-    ["Expected application scope", "expectedApplicationScope"], ["Installed application scope", "installedApplicationScope"],
-    ["Expected value source", "expectedSource"], ["Installed value source", "installedSource"], ["Diagnosis", "diagnosis"],
+    ["Expected runtime version", "expectedRuntimeVersion"],
+    ["Installed runtime version", "installedRuntimeVersion"],
+    ["Expected runtime digest", "expectedRuntimeDigest"],
+    ["Installed runtime digest", "installedRuntimeDigest"],
+    ["Expected dispatcher", "expectedDispatcher"],
+    ["Installed dispatcher", "installedDispatcher"],
+    ["Expected dispatcher mode", "expectedDispatcherMode"],
+    ["Installed dispatcher mode", "installedDispatcherMode"],
+    ["Expected dispatcher digest", "expectedDispatcherDigest"],
+    ["Installed dispatcher digest", "installedDispatcherDigest"],
+    ["Expected policy version", "expectedPolicyVersion"],
+    ["Installed policy version", "installedPolicyVersion"],
+    ["Expected policy identity", "expectedPolicyIdentity"],
+    ["Installed policy identity", "installedPolicyIdentity"],
+    ["Expected capability digest", "expectedCapabilityDigest"],
+    ["Installed capability digest", "installedCapabilityDigest"],
+    ["Expected declaration digest", "expectedDeclarationDigest"],
+    ["Installed declaration digest", "installedDeclarationDigest"],
+    ["Expected application scope", "expectedApplicationScope"],
+    ["Installed application scope", "installedApplicationScope"],
+    ["Installed platform", "installedPlatform"],
+    ["Installed architecture", "installedArchitecture"],
+    ["Installed Node.js", "installedNodeVersion"],
+    ["Installation generation", "installationGeneration"],
+    ["Expected value source", "expectedSource"],
+    ["Installed value source", "installedSource"],
+    ["Result", "result"],
+    ["Diagnosis", "diagnosis"],
+    ["Repair", "repair"],
   ];
   for (const [label, key] of fields) lines.push(`${label}\n  ${sanitizeOperatorText(scalar(value[key]))}`);
   return lines;
@@ -100,16 +129,42 @@ async function buildDoctorReport(configPath: string, args: string[], setupPath: 
   const canonical = await canonicalComparison(setupPath);
   const canonicalOk = canonical.comparison?.compatible === true;
   const canonicalDetail = canonical.comparison?.reasons.join("; ") || canonical.error || undefined;
+  const runtimeCurrent = canonical.comparison?.installed.sourceSha === canonical.comparison?.desired.sourceSha
+    && canonical.comparison?.installed.runtimeSha256 === canonical.comparison?.desired.runtimeSha256;
+  const authorizationCurrent = canonical.comparison?.installed.policyVersion === canonical.comparison?.desired.policyVersion
+    && canonical.comparison?.installed.policySha256 === canonical.comparison?.desired.policySha256
+    && canonical.comparison?.installed.capabilityIdentitySha256 === canonical.comparison?.desired.capabilityIdentitySha256
+    && canonical.comparison?.installed.operatorVerificationIdentity === canonical.comparison?.desired.operatorVerificationIdentity;
+  const declarationCurrent = canonical.comparison?.installed.declarationSha256 === canonical.comparison?.desired.declarationSha256;
+  const scopeCurrent = canonical.comparison?.installed.applicationScopeSha256 === canonical.comparison?.desired.applicationScopeSha256;
   let boundary: BoundaryReport | null = null; let boundaryError = "";
   if (localOk) { try { boundary = await verifyBoundary(config, configPath, mode); } catch (error) { boundaryError = safeDetail(error); } }
   else boundaryError = "local prerequisites are incomplete";
   const authenticatedInspection = assertionPassed(boundary, "artifact and capability hashes valid");
   const dispatcherCompatible = assertionPassed(boundary, "dispatcher mode matches expected") && canonicalOk;
-  const deploymentScopeValid = [...config.resources.values()].some((item) => item.kind === "deployment") ? assertionPassed(boundary, "registered application resources authorized") : dispatcherCompatible;
+  const deploymentScopeValid = [...config.resources.values()].some((item) => item.kind === "deployment") ? assertionPassed(boundary, "registered application resources authorized") && scopeCurrent : dispatcherCompatible;
   const auditValid = assertionPassed(boundary, "audit chain valid");
   const boundaryValid = boundary?.ok === true;
-  const ok = localOk && authenticatedInspection && endpointConfigurationValid && boundaryValid && dispatcherCompatible && deploymentScopeValid;
-  return { ok, mode, localOperatorEnvironment: localChecks, remoteDeploymentState: [check("Remote connection available", authenticatedInspection, boundaryError || undefined), check("Remote runtime identity current", canonical.comparison?.installed.runtimeSha256 === canonical.comparison?.desired.runtimeSha256, canonicalDetail), check("Dispatcher compatible", dispatcherCompatible, canonicalDetail || boundaryError || undefined)], authorizationArtifacts: [check("Authorization valid", authenticatedInspection, boundaryError || undefined), check("Deployment authorization valid", canonicalOk && deploymentScopeValid, canonicalDetail || boundaryError || undefined)], endpointReadiness: [check("Endpoint configuration valid", endpointConfigurationValid, endpointError || undefined), check(endpointEnabled ? "Remote endpoint is read-only" : "Local connection mode selected", endpointEnabled ? endpointReadOnly : true)], securityBoundaryStatus: [check("Security boundary verified", boundaryValid, boundaryError || undefined), check("Audit history valid", auditValid, boundaryError || undefined)], endpoint: ok ? "READY" : "BLOCKED", ...(args.includes("--debug") && canonical.comparison ? { deploymentCompatibility: compatibilityDetails(canonical.comparison) } : {}) };
+  const ok = localOk && authenticatedInspection && endpointConfigurationValid && boundaryValid && dispatcherCompatible && runtimeCurrent && authorizationCurrent && declarationCurrent && deploymentScopeValid;
+  return {
+    ok,
+    mode,
+    localOperatorEnvironment: localChecks,
+    remoteDeploymentState: [
+      check("Remote connection available", authenticatedInspection, boundaryError || undefined),
+      check("Remote runtime identity current", runtimeCurrent, canonicalDetail),
+      check("Dispatcher compatible", dispatcherCompatible, canonicalDetail || boundaryError || undefined),
+    ],
+    authorizationArtifacts: [
+      check("Authorization valid", authenticatedInspection && authorizationCurrent, canonicalDetail || boundaryError || undefined),
+      check("Application declaration valid", declarationCurrent, canonicalDetail),
+      check("Deployment authorization valid", canonicalOk && deploymentScopeValid, canonicalDetail || boundaryError || undefined),
+    ],
+    endpointReadiness: [check("Endpoint configuration valid", endpointConfigurationValid, endpointError || undefined), check(endpointEnabled ? "Remote endpoint is read-only" : "Local connection mode selected", endpointEnabled ? endpointReadOnly : true)],
+    securityBoundaryStatus: [check("Security boundary verified", boundaryValid, boundaryError || undefined), check("Audit history valid", auditValid, boundaryError || undefined)],
+    endpoint: ok ? "READY" : "BLOCKED",
+    ...(args.includes("--debug") && canonical.comparison ? { deploymentCompatibility: compatibilityDetails(canonical.comparison) } : {}),
+  };
 }
 function initialReport(initialized: boolean, keysReady: boolean, localReady: boolean): OperatorWorkflowReport {
   if (!initialized) return { ok: false, state: "NOT_INITIALIZED", completed: [], blocked: ["Local operator setup has not been initialized"], nextAction: "opshaven init" };
