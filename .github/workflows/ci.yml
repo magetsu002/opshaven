@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [main, fix/v1-1-clean-room-reliability]
+    branches: [main]
   pull_request:
 permissions:
   contents: read
@@ -29,56 +29,3 @@ jobs:
           node-version: 22
           cache: npm
       - run: scripts/check-reproducible-build.sh
-  repair-subtests:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/fix/v1-1-clean-room-reliability'
-    permissions:
-      contents: write
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: fix/v1-1-clean-room-reliability
-          fetch-depth: 0
-      - name: Replace unsupported nested test context
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path("tests/deployment-plans.test.ts")
-          text = path.read_text()
-          text = text.replace(
-              'import test, { type TestContext } from "node:test";',
-              'import test from "node:test";',
-              1,
-          )
-          start = 'test("service and runtime drift remain stale-plan blockers", async (t: TestContext) => {'
-          end = 'test("changed observed state produces a different plan identity", async () => {'
-          if start not in text or end not in text:
-              raise SystemExit("deployment subtest markers missing")
-          before, remainder = text.split(start, 1)
-          _, after = remainder.split(end, 1)
-          replacement = '''test("service identity drift remains a stale-plan blocker", async () => {
-            const value = await registeredFixture();
-            const stored = await value.coordinator.createPlan("sample-api", TARGET);
-            value.client.serviceIdentifier = "other.service";
-            await assert.rejects(value.coordinator.applyPlan(stored.planId, { approved: true }), OpsHavenError);
-            assert.equal(value.client.mutationCalls, 0);
-          });
-
-          test("runtime readiness drift remains a stale-plan blocker", async () => {
-            const value = await registeredFixture();
-            const stored = await value.coordinator.createPlan("sample-api", TARGET);
-            value.client.runtimeAvailable = false;
-            await assert.rejects(value.coordinator.applyPlan(stored.planId, { approved: true }), OpsHavenError);
-            assert.equal(value.client.mutationCalls, 0);
-          });
-
-          '''
-          path.write_text(before + replacement + end + after)
-          PY
-          git config user.name "OpsHaven Reliability Bot"
-          git config user.email "opshaven-reliability@example.invalid"
-          git add tests/deployment-plans.test.ts
-          git commit -m "test: use compatible deployment readiness cases"
-          git push origin HEAD:fix/v1-1-clean-room-reliability
