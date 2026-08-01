@@ -11,7 +11,7 @@ import {
   type DeploymentOperationKind,
   type StoredDeploymentPlan,
 } from "./model.js";
-import { DeploymentPlanner } from "./planning.js";
+import { DeploymentPlanner, type DeploymentRevisionChoice } from "./planning.js";
 
 function flag(args: readonly string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -142,6 +142,90 @@ interface FailurePresentation {
   run?: string;
 }
 
+export interface DeploymentFailureContext {
+  operation?: "plan" | "apply";
+  applicationId?: string;
+  revisionInput?: string;
+}
+
+function revisionFailure(error: unknown, context: DeploymentFailureContext, color: boolean): string | null {
+  if (context.operation !== "plan") return null;
+  const safe = asOpsHavenError(error);
+  const applicationId = context.applicationId || "sample-api";
+  const entered = context.revisionInput ?? "";
+  const missing = entered.length === 0;
+  const fingerprint = /^SHA256:/i.test(entered) || (entered.length >= 35 && /[^a-f0-9]/i.test(entered) && /^[A-Za-z0-9+/=]+$/.test(entered));
+  const abbreviated = /^[a-f0-9]{4,39}$/i.test(entered);
+  const branch = /^(?:main|master|head|latest|refs\/heads\/.+)$/i.test(entered);
+  const tag = /^(?:refs\/tags\/.+|v?\d+\.\d+(?:\.\d+)?(?:[-+].*)?)$/i.test(entered);
+  const absent = /not verified in the configured repository|revision.*not.*repository|unknown revision/i.test(safe.message);
+  const unavailable = /repository.*unavailable|repository.*missing|not a git repository|current release inspection|remote operation failed/i.test(safe.message);
+
+  if (!missing && !fingerprint && !abbreviated && !branch && !tag && !absent && !unavailable && safe.code !== "INVALID_ARGUMENTS") return null;
+
+  const lines = [
+    statusLine("failed", "Deployment plan blocked", undefined, color),
+    "",
+    section("Cause", color),
+    missing
+      ? "No application revision was supplied."
+      : fingerprint
+        ? "The supplied value looks like a server identity fingerprint, not an application revision."
+        : abbreviated
+          ? "The supplied revision is abbreviated. OpsHaven requires the complete immutable commit ID."
+          : branch
+            ? "The supplied value is a moving branch or special Git reference."
+            : tag
+              ? "The supplied value is a tag, not a verified immutable commit ID."
+              : absent
+                ? "The supplied revision does not belong to the application's configured repository."
+                : unavailable
+                  ? "The configured application repository could not provide a verified revision."
+                  : "The supplied revision is not a complete Git commit SHA.",
+  ];
+
+  if (!missing) {
+    lines.push("", section("You entered", color), `  ${entered}`);
+  }
+  lines.push(
+    "",
+    section("Expected", color),
+    "  One complete 40-character Git commit SHA.",
+    "  It must contain only 0-9 and a-f and belong to this application's configured repository.",
+    "",
+    section("Example", color),
+    "  0123456789abcdef0123456789abcdef01234567",
+    "",
+    section("What this means", color),
+    "  A revision identifies one exact saved version of the application code.",
+    "  OpsHaven uses immutable revisions so approved code cannot change later.",
+  );
+  if (fingerprint) {
+    lines.push(
+      "",
+      section("Note", color),
+      "  Values beginning with SHA256: are commonly server identity fingerprints.",
+      "  They identify a server, not application code.",
+    );
+  }
+  lines.push(
+    "",
+    section("Changes", color),
+    "  No changes were made.",
+    "",
+    section("Rollback", color),
+    "  Not required.",
+    "",
+    section("Next", color),
+    unavailable
+      ? "  Check that the registered remote repository is available, then choose a verified revision."
+      : "  Choose a verified application revision:",
+    "",
+    command(unavailable ? "opshaven doctor" : `opshaven deploy plan ${applicationId}`, color),
+  );
+  return `${lines.join("\n")}\n`;
+}
+
 function genericFailure(error: unknown): FailurePresentation {
   const safe = asOpsHavenError(error);
   const unchanged = /stale|expired|digest mismatch|not explicitly approved|already applied|another deployment|revision must|not verified|audit chain|configuration changed/i.test(safe.message);
@@ -163,17 +247,32 @@ function genericFailure(error: unknown): FailurePresentation {
       next: "Create a new deployment plan for any further deployment.",
     };
   }
+  if (safe.code === "APPROVAL_REQUIRED" || safe.code === "APPROVAL_INVALID") {
+    return {
+      title: "Deployment approval rejected",
+      cause: safe.message,
+      changes: "No changes were made.",
+      rollback: "Not required.",
+      next: "Review and approve the exact stored deployment plan.",
+    };
+  }
   return {
     title: "Deployment operation blocked",
     cause: safe.message,
     changes: unchanged ? "No changes were made." : "The final remote state could not be confirmed. Recovery state remains authoritative.",
     rollback: unchanged ? "Not required." : "Inspect recovery state before another deployment.",
     next: /stale|expired/i.test(safe.message) ? "Create a new deployment plan." : "Check deployment readiness and correct the reported blocker.",
-    run: /stale|expired/i.test(safe.message) ? undefined : "opshaven doctor",
+    ...(/stale|expired/i.test(safe.message) ? {} : { run: "opshaven doctor" }),
   };
 }
 
-export function renderDeploymentFailure(error: unknown, color = colorEnabled(process.env, process.stderr)): string {
+export function renderDeploymentFailure(
+  error: unknown,
+  context: DeploymentFailureContext = {},
+  color = colorEnabled(process.env, process.stderr),
+): string {
+  const revision = revisionFailure(error, context, color);
+  if (revision) return revision;
   const value = genericFailure(error);
   const lines = [
     statusLine("failed", value.title, undefined, color),
@@ -194,26 +293,57 @@ export function renderDeploymentFailure(error: unknown, color = colorEnabled(pro
   return `${lines.join("\n")}\n`;
 }
 
-interface RegistrationNext {
+async function chooseRevision(
+  planner: DeploymentPlanner,
+  applicationId: string,
+  color: boolean,
+): Promise<string> {
+  const choices = await planner.discoverRevisions(applicationId);
+  process.stderr.write(`${heading("Choose an application revision", color)}\n\n`);
+  process.stderr.write("A revision identifies one exact saved version of the application code.\n");
+  process.stderr.write("OpsHaven requires a full Git commit SHA so approved code cannot later change because a branch or tag moved.\n\n");
+  process.stderr.write(`${section("Available revisions", color)}\n\n`);
+  choices.forEach((choice: DeploymentRevisionChoice, index: number) => {
+    process.stderr.write(`${index + 1}. ${choice.revision}\n   ${choice.label}\n\n`);
+  });
+  const answer = await ask("Select revision", "1");
+  if (!/^[1-9][0-9]*$/.test(answer)) {
+    throw new OpsHavenError("INVALID_ARGUMENTS", "Revision selection must be one displayed number.");
+  }
+  const selected = choices[Number(answer) - 1];
+  if (!selected) throw new OpsHavenError("INVALID_ARGUMENTS", "Revision selection is outside the displayed choices.");
+  return selected.revision;
+}
+
+export interface RegistrationNext {
   kind: "plan" | "setup" | "doctor";
   command: string;
+  revision?: string;
+  revisionLabel?: string;
 }
 
 async function registrationNext(planner: DeploymentPlanner, app: DeploymentApplication): Promise<RegistrationNext> {
   try {
-    const report = await planner.deploymentDoctor();
-    const checks = report.checks.filter((item) => item.label.startsWith(`${app.name}:`));
-    if (checks.length > 0 && checks.every((item) => item.passed)) {
-      return { kind: "plan", command: `opshaven deploy plan ${app.id}` };
+    const choices = await planner.discoverRevisions(app.id);
+    const recommended = choices.find((choice) => choice.recommended) ?? choices[0];
+    if (recommended) {
+      return {
+        kind: "plan",
+        command: `opshaven deploy plan ${app.id} --revision ${recommended.revision}`,
+        revision: recommended.revision,
+        revisionLabel: recommended.label,
+      };
     }
-    const details = checks.filter((item) => !item.passed).map((item) => item.detail ?? item.label).join(" ");
-    if (/unknown resource|operator capability|policy version|authorization|remote configuration|incompatible remote resource/i.test(details)) {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (/unknown resource|operator capability|policy version|authorization|remote configuration|incompatible remote resource/i.test(message)) {
       return { kind: "setup", command: "opshaven setup remote" };
     }
-    return { kind: "doctor", command: "opshaven doctor" };
-  } catch {
-    return { kind: "doctor", command: "opshaven doctor" };
+    if (/repository|revision|git/i.test(message)) {
+      return { kind: "plan", command: `opshaven deploy plan ${app.id}` };
+    }
   }
+  return { kind: "doctor", command: "opshaven doctor" };
 }
 
 export function renderApplicationRegistration(
@@ -246,13 +376,21 @@ export function renderApplicationRegistration(
     "",
     section("Recovery", color),
     "  Automatic previous-release restoration",
+    ...(next.revision ? [
+      "",
+      section("Sample revision", color),
+      `  ${next.revisionLabel ?? "Verified revision"}:`,
+      `  ${next.revision}`,
+    ] : []),
     "",
     section("Next", color),
     next.kind === "setup"
       ? "  Complete remote setup so the new application authorization is installed:"
-      : next.kind === "plan"
-        ? "  Create a deployment plan:"
-        : "  Check deployment readiness:",
+      : next.kind === "plan" && next.revision
+        ? "  Create a deployment plan for the verified sample revision:"
+        : next.kind === "plan"
+          ? "  Choose a verified application revision:"
+          : "  Check deployment readiness:",
     "",
     command(next.command, color),
   ];
@@ -353,7 +491,18 @@ export async function runDeployCommand(configPath: string, args: string[]): Prom
   try {
     const planner = await DeploymentPlanner.load(configPath);
     if (args[0] === "plan") {
-      const stored = await planner.createPlan(args[1] ?? "", flag(args, "--revision") ?? "");
+      const applicationId = args[1] ?? "";
+      let revision = flag(args, "--revision") ?? "";
+      if (!revision) {
+        if (!interactive(args) || args.includes("--json")) {
+          throw new OpsHavenError(
+            "INVALID_ARGUMENTS",
+            "A complete revision is required for non-interactive and JSON deployment planning.",
+          );
+        }
+        revision = await chooseRevision(planner, applicationId, colorEnabled(process.env, process.stderr));
+      }
+      const stored = await planner.createPlan(applicationId, revision);
       process.stdout.write(args.includes("--json") ? `${JSON.stringify({ ok: true, ...stored })}\n` : renderPlan(stored));
       return;
     }
@@ -388,7 +537,12 @@ export async function runDeployCommand(configPath: string, args: string[]): Prom
       const safe = asOpsHavenError(error);
       process.stderr.write(`${JSON.stringify({ ok: false, error: { code: safe.code, message: safe.message }, changed: false })}\n`);
     } else {
-      process.stderr.write(renderDeploymentFailure(error));
+      const context: DeploymentFailureContext = {
+        ...(args[0] === "plan" ? { operation: "plan" as const } : args[0] === "apply" ? { operation: "apply" as const } : {}),
+        ...(args[1] ? { applicationId: args[1] } : {}),
+        revisionInput: flag(args, "--revision") ?? "",
+      };
+      process.stderr.write(renderDeploymentFailure(error, context));
     }
     process.exitCode = 1;
   }
