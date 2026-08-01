@@ -47,9 +47,7 @@ class TrustTransport implements RemoteAdminTransport {
   receiptId = "";
   backupRoot = "";
 
-  async run(): Promise<SetupCommandResult> {
-    return { code: 0, stdout: "", stderr: "" };
-  }
+  async run(): Promise<SetupCommandResult> { return { code: 0, stdout: "", stderr: "" }; }
 
   async runPrivileged(): Promise<SetupCommandResult> {
     return {
@@ -83,9 +81,7 @@ class TrustTransport implements RemoteAdminTransport {
     return { code: 0, stdout: "", stderr: "" };
   }
 
-  async runPython(): Promise<SetupCommandResult> {
-    return { code: 1, stdout: "", stderr: "unexpected embedded installer" };
-  }
+  async runPython(): Promise<SetupCommandResult> { return { code: 1, stdout: "", stderr: "unexpected embedded installer" }; }
 
   async download(_remotePath: string, localPath: string): Promise<SetupCommandResult> {
     await fs.writeFile(localPath, String(this.response.publicKey.export({ type: "spki", format: "pem" })), { mode: 0o644 });
@@ -95,17 +91,19 @@ class TrustTransport implements RemoteAdminTransport {
 
 async function desired(dispatcherPath: string, declarationPath: string): Promise<DesiredRemoteState> {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     sourceSha: "0123456789abcdef0123456789abcdef01234567",
     dispatcherMode: "controlled",
     runtimeSha256: "a".repeat(64),
     dispatcherSha256: hash(await fs.readFile(dispatcherPath)),
+    policyVersion: "setup-trust-v1",
     policySha256: "b".repeat(64),
     capabilityIdentitySha256: "c".repeat(64),
     declarationSha256: capabilityDeclarationHash(await loadCapabilityDeclaration(declarationPath)),
     operatorVerificationIdentity: "d".repeat(64),
     applicationScope: ["app.main"],
     applicationScopeSha256: "e".repeat(64),
+    minimumNodeMajor: 22,
   };
 }
 
