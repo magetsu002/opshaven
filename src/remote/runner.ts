@@ -4,6 +4,12 @@ import { OpsHavenError } from "../errors.js";
 export interface RunOptions { cwd?: string; timeoutMs: number; maxBytes: number; maxLines: number; stdin?: string }
 export interface RunResult { stdout: string; exitCode: number }
 export interface CommandRunner { run(executable: string, args: readonly string[], options: RunOptions): Promise<RunResult> }
+export const FIXED_COMMAND_ENV = Object.freeze({
+  HOME: "/home/opshaven",
+  PATH: "/usr/bin:/bin",
+  LANG: "C",
+  LC_ALL: "C",
+});
 export interface RunnerSpawnLike {
   (command: string, args: readonly string[], options: Record<string, unknown>): {
     stdin: { end(data: string): void; on?(event: string, listener: (...args: any[]) => void): void };
@@ -31,7 +37,7 @@ export class FixedCommandRunner implements CommandRunner {
   async run(executable: string, args: readonly string[], options: RunOptions): Promise<RunResult> {
     if (!executable.startsWith("/") || args.some((arg) => arg.includes("\u0000"))) throw new OpsHavenError("POLICY_DENIED", "Unsafe command specification rejected.");
     return await new Promise<RunResult>((resolve, reject) => {
-      const child = this.spawnProcess(executable, args, { shell: false, cwd: options.cwd, stdio: ["pipe", "pipe", "pipe"], env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" } });
+      const child = this.spawnProcess(executable, args, { shell: false, cwd: options.cwd, stdio: ["pipe", "pipe", "pipe"], env: FIXED_COMMAND_ENV });
       const stdoutChunks: Uint8Array[] = [];
       const stderrChunks: Uint8Array[] = [];
       let bytes = 0;

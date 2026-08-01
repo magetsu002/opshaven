@@ -154,7 +154,16 @@ export class DeploymentManager {
     await requireDeploymentCommand(this.runner, GIT, ["-C", target.repositoryPath, "worktree", "add", "--detach", releasePath, exactCommit], limits, "Deployment release preparation");
     await validateReleaseDirectory(target, releasePath);
     try {
-      for (const step of [...target.buildSteps, ...target.checkSteps]) await requireDeploymentCommand(this.runner, step.executable, replaceArgs(step, target, releasePath, exactCommit), commandOptions(limitsInput, step.cwd === "release" ? releasePath : target.repositoryPath), "Deployment reviewed build or check step");
+      const reviewedSteps = [...target.buildSteps, ...target.checkSteps];
+    for (const [index, step] of reviewedSteps.entries()) {
+      await requireDeploymentCommand(
+        this.runner,
+        step.executable,
+        replaceArgs(step, target, releasePath, exactCommit),
+        commandOptions(limitsInput, step.cwd === "release" ? releasePath : target.repositoryPath),
+        `Deployment reviewed build or check step ${index + 1}`,
+      );
+    }
       await this.switchSymlink(target, releasePath);
       await this.activate(target, releasePath, limits);
       await this.verifyHealth(target);
