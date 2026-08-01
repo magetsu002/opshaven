@@ -57,6 +57,10 @@ function applicationId(value: unknown): string | null {
   return /^[a-z][a-z0-9-]{0,63}$/.test(selected) ? selected : null;
 }
 
+function applicationLabel(id: string): string {
+  return id.split("-").filter(Boolean).map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`).join(" ");
+}
+
 export class PlainSetupPresenter implements SetupPresenter {
   private readonly color = colorEnabled();
   private readonly debug = process.argv.includes("--debug");
@@ -69,7 +73,15 @@ export class PlainSetupPresenter implements SetupPresenter {
     process.stdout.write(`${heading("OpsHaven Remote Setup", this.color)}\n\n`);
     process.stdout.write(formatRemoteSetupPlan(value));
     if (["FULL_INSTALL", "RUNTIME_UPDATE", "DISPATCHER_UPDATE"].includes(value.changeType)) {
-      process.stdout.write("\nThe first remote installation usually takes 1–3 minutes.\nLater authorization-only updates are usually much faster.\nDo not close this terminal while a step is active.\n");
+      process.stdout.write("\nThe first remote installation usually takes 1–3 minutes.\nLater synchronization runs are normally much faster.\nDo not close this terminal while a step is active.\n");
+    } else if (value.changeType === "NO_CHANGE") {
+      process.stdout.write("\nThis target is already installed.\nOpsHaven will verify the existing state without reinstalling it.\n");
+    } else if (value.changeType === "AUTHORIZATION_ONLY") {
+      process.stdout.write("\nOnly signed authorization state needs updating.\nThe installed runtime and dispatcher will be reused.\n");
+    } else if (value.changeType === "APPLICATION_DECLARATION_ONLY") {
+      process.stdout.write("\nOnly the reviewed deployment application declaration needs updating.\nThe installed runtime and dispatcher will be reused.\n");
+    } else if (value.changeType === "AUTHORIZATION_AND_DECLARATION") {
+      process.stdout.write("\nOnly signed authorization and reviewed declaration state need updating.\nThe installed runtime and dispatcher will be reused.\n");
     }
     if (this.debug) {
       process.stdout.write(`\n${section("Debug plan", this.color)}\n\n`);
@@ -109,12 +121,16 @@ export class PlainSetupPresenter implements SetupPresenter {
   cancellation(mutationStarted: boolean, restored: boolean): void {
     if (this.options.json) return;
     process.stdout.write(`\n${paint("Cancellation requested.", "warning", this.color)}\n\n`);
-    if (!mutationStarted) process.stdout.write("No remote changes were made.\n\n");
-    else {
-      process.stdout.write("OpsHaven returned to a verified checkpoint.\n\n");
-      process.stdout.write(`${section("Current state", this.color)}\n${restored ? "  Previous verified installation remains active" : "  Recovery requires operator attention"}\n\n`);
-    }
-    process.stdout.write(`${section("Next", this.color)}\n${command("opshaven setup remote", this.color)}\n`);
+    process.stdout.write("OpsHaven is returning to the last verified checkpoint.\n\n");
+    process.stdout.write(`${section("Changes made", this.color)}\n`);
+    process.stdout.write(mutationStarted ? "  A controlled synchronization generation had started.\n" : "  No remote changes were made.\n");
+    process.stdout.write(`\n${section("Rollback result", this.color)}\n`);
+    if (!mutationStarted) process.stdout.write("  Rollback was not required.\n");
+    else if (restored) process.stdout.write("  Previous verified installation restored and active.\n");
+    else process.stdout.write("  Recovery requires operator attention.\n");
+    process.stdout.write(`\n${section("Rerun safety", this.color)}\n`);
+    process.stdout.write(!mutationStarted || restored ? "  Safe to rerun the same setup command.\n" : "  Inspect recovery state before rerunning.\n");
+    process.stdout.write(`\n${section("Next", this.color)}\n${command(restored || !mutationStarted ? "opshaven setup remote" : "opshaven doctor --debug", this.color)}\n`);
   }
 
   fingerprint(label: string, value: string): void {
@@ -142,15 +158,16 @@ export class PlainSetupPresenter implements SetupPresenter {
     const record = value as Record<string, any>;
     const app = applicationId(record.canonicalState?.desired?.applicationScope);
     process.stdout.write(`\n${statusLine("passed", "Remote setup complete", undefined, this.color)}\n`);
-    if (record.changeType === "NO_CHANGE") process.stdout.write("No remote changes were required.\n");
+    process.stdout.write(`${statusLine("passed", "Deployment capability synchronized", undefined, this.color)}\n`);
+    process.stdout.write(`${statusLine("passed", "Security boundary verified", undefined, this.color)}\n`);
+    if (app) process.stdout.write(`${statusLine("passed", `${applicationLabel(app)} ready for planning`, undefined, this.color)}\n`);
+    if (record.changeType === "NO_CHANGE") process.stdout.write("\nNo remote changes were required.\n");
     process.stdout.write(`\n${section("Next", this.color)}\n`);
     if (!app) {
       process.stdout.write("Register a deployment application:\n\n");
       process.stdout.write(`${command("opshaven app add", this.color)}\n`);
       return;
     }
-    process.stdout.write("Check readiness:\n\n");
-    process.stdout.write(`${command("opshaven doctor", this.color)}\n\n`);
     process.stdout.write("Create a deployment plan:\n\n");
     process.stdout.write(`${command(`opshaven deploy plan ${app}`, this.color)}\n`);
   }
