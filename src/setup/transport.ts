@@ -77,6 +77,28 @@ function validatePath(filePath: string, label: string): void {
   if (!SAFE_PATH.test(filePath) || filePath.includes("..")) throw new OpsHavenError("CONFIG_INVALID", `${label} is not a safe absolute path.`);
 }
 
+function sanitizeEmbeddedLanguageStderr(value: string): string {
+  const flattened = value
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0
+      && !/^Traceback \(most recent call last\):/i.test(line)
+      && !/^File ["'].*["'], line \d+/i.test(line))
+    .join(" ")
+    .replace(/(?:\/[A-Za-z0-9._@+-]+){2,}/g, "<protected path>")
+    .replace(/\b(?:RuntimeError|ValueError|KeyError|TypeError|OSError|Exception)\b:?/g, "internal failure")
+    .replace(/[\u001b\u009b]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (/previous generation identity is partial/i.test(flattened)) return "previous generation identity is partial";
+  if (/transaction integrity mismatch/i.test(flattened)) return "transaction integrity verification failed";
+  if (/transaction binding mismatch/i.test(flattened)) return "transaction host binding verification failed";
+  if (/receipt.*integrity|integrity.*receipt/i.test(flattened)) return "generation receipt integrity verification failed";
+  if (/symbolic link|symlink/i.test(flattened)) return "managed state contains an unsafe symbolic link";
+  return flattened.slice(0, 240) || "remote embedded operation failed safely";
+}
+
 export async function runSetupProcess(command: string, args: readonly string[], options: SetupProcessOptions = {}): Promise<SetupCommandResult> {
   if (!command.startsWith("/")) throw new OpsHavenError("CONFIG_INVALID", "Setup executables must use fixed absolute paths.");
   const maximumBytes = options.maximumBytes ?? 1048576;
@@ -136,7 +158,8 @@ export class PinnedSshAdminTransport implements RemoteAdminTransport {
   async runPython(script: string, privileged = false): Promise<SetupCommandResult> {
     if (Buffer.byteLength(script, "utf8") > 262144 || script.includes("\u0000")) throw new OpsHavenError("CONFIG_INVALID", "Remote setup Python input is invalid or oversized.");
     const command = ["/usr/bin/python3", "-"];
-    return await (privileged ? this.runPrivileged(command, { stdin: script, timeoutMs: 30000 }) : this.run(command, { stdin: script, timeoutMs: 30000 }));
+    const result = await (privileged ? this.runPrivileged(command, { stdin: script, timeoutMs: 30000 }) : this.run(command, { stdin: script, timeoutMs: 30000 }));
+    return Object.freeze({ ...result, stderr: sanitizeEmbeddedLanguageStderr(result.stderr) });
   }
 
   async upload(localPath: string, remotePath: string, recursive = false): Promise<SetupCommandResult> {
