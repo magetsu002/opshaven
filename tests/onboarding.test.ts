@@ -41,6 +41,8 @@ async function runCli(args: string[], home: string): Promise<Result> {
 async function generateSshKey(filePath: string): Promise<void> {
   const result = await run("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", filePath]);
   assert.equal(result.code, 0, result.stderr);
+  await fs.chmod(filePath, 0o600);
+  await fs.chmod(`${filePath}.pub`, 0o644);
 }
 
 async function writeKnownHost(keyPath: string, knownHosts: string, host: string, port: number): Promise<string> {

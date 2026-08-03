@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { formatDoctorReport, formatWorkflowReport, type DoctorReport, type OperatorWorkflowReport } from "../src/operator-doctor.js";
 
+process.env.NO_COLOR = "";
+
 function report(ok: boolean): DoctorReport {
   const passed = ok;
   return {

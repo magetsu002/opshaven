@@ -21,6 +21,8 @@ async function fixture(): Promise<{ root: string; identity: string; knownHosts: 
   const identity = path.join(root, "admin_id");
   const knownHosts = path.join(root, "known_hosts");
   await command("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", identity]);
+  await fs.chmod(identity, 0o600);
+  await fs.chmod(`${identity}.pub`, 0o644);
   const publicKey = (await fs.readFile(`${identity}.pub`, "utf8")).trim();
   await fs.writeFile(knownHosts, `example.test ${publicKey}\n`, { mode: 0o644 });
   return { root, identity, knownHosts };
