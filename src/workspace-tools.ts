@@ -5,6 +5,7 @@ import path from "node:path";
 import { asOpsHavenError, OpsHavenError } from "./errors.js";
 import type { ResultEnvelope } from "./operations.js";
 import { detectWorkspaceProject, WorkspaceStore, type WorkspaceRecord } from "./workspace.js";
+import { VerificationStore, sameSourceState, type TaskCategory, type WorkspaceSourceState } from "./workspace-verification.js";
 
 const DEFAULT_MAX_BYTES = 128 * 1024;
 const MAX_TOOL_BYTES = 1024 * 1024;
@@ -70,6 +71,8 @@ export interface DiscoveredTask {
   label: string;
   argv: string[];
   source: string;
+  category: TaskCategory;
+  rank: number;
 }
 
 interface ProcessResult {
@@ -349,6 +352,23 @@ async function git(workspace: WorkspaceRecord, argv: string[], maximumBytes = DE
   return await runProcess(["git", "-C", workspace.root, ...argv], workspace.root, 30_000, maximumBytes, signal);
 }
 
+export async function inspectWorkspaceSourceState(workspace: WorkspaceRecord, signal?: AbortSignal): Promise<WorkspaceSourceState> {
+  const head = await git(workspace, ["rev-parse", "HEAD"], DEFAULT_MAX_BYTES, signal);
+  const revision = head.stdout.trim().toLowerCase();
+  if (head.exitCode !== 0 || !/^[a-f0-9]{40}$/.test(revision)) throw new OpsHavenError("INVALID_ARGUMENTS", "Workspace HEAD is not an exact Git commit.");
+  const status = await git(workspace, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], DEFAULT_MAX_BYTES, signal);
+  if (status.exitCode !== 0) throw new OpsHavenError("INVALID_ARGUMENTS", "Workspace Git status could not be inspected.");
+  return { head: revision, clean: status.stdout.length === 0, statusDigest: digest(status.stdout) };
+}
+
+function taskClassification(name: string): { category: TaskCategory; rank: number } {
+  const value = name.toLowerCase();
+  if (/^(test(?::|$)|typecheck$|lint$|build$)/.test(value)) return { category: "primary_verification", rank: value.startsWith("test") ? 10 : value === "typecheck" ? 20 : value === "lint" ? 30 : 40 };
+  if (/^(dev(?::|$)|start(?::|$)|serve(?::|$)|watch(?::|$))/.test(value)) return { category: "development", rank: 100 };
+  if (/(release|security|certif|integration|install|package|docs|lockfile|workflow|wrapper|reproducible|clean)/.test(value)) return { category: "advanced_maintenance", rank: 200 };
+  return { category: "other", rank: 300 };
+}
+
 async function detectPytest(workspace: WorkspaceRecord): Promise<boolean> {
   if (workspace.project.manifests.includes("pytest.ini")) return true;
   for (const candidate of ["pyproject.toml", "requirements.txt"] as const) {
@@ -380,19 +400,20 @@ export async function discoverWorkspaceTasks(workspace: WorkspaceRecord): Promis
             : "npm";
       for (const script of Object.keys(scripts).sort()) {
         if (typeof scripts[script] !== "string") continue;
-        tasks.push({ id: `${manager}:${script}`, label: `${manager} run ${script}`, argv: [manager, "run", script], source: "package.json#scripts" });
+        const classification = taskClassification(script);
+        tasks.push({ id: `${manager}:${script}`, label: `${manager} run ${script}`, argv: [manager, "run", script], source: "package.json#scripts", ...classification });
       }
     } catch {
       // Malformed package metadata yields no JavaScript tasks rather than invented commands.
     }
   }
   if (workspace.project.manifests.includes("Cargo.toml")) {
-    tasks.push({ id: "cargo:check", label: "cargo check", argv: ["cargo", "check"], source: "Cargo.toml" });
-    tasks.push({ id: "cargo:test", label: "cargo test", argv: ["cargo", "test"], source: "Cargo.toml" });
+    tasks.push({ id: "cargo:check", label: "cargo check", argv: ["cargo", "check"], source: "Cargo.toml", category: "primary_verification", rank: 20 });
+    tasks.push({ id: "cargo:test", label: "cargo test", argv: ["cargo", "test"], source: "Cargo.toml", category: "primary_verification", rank: 10 });
   }
-  if (await detectPytest(workspace)) tasks.push({ id: "python:pytest", label: "pytest", argv: ["pytest"], source: "pytest project metadata" });
-  if (workspace.project.manifests.includes("go.mod")) tasks.push({ id: "go:test", label: "go test ./...", argv: ["go", "test", "./..."], source: "go.mod" });
-  return tasks;
+  if (await detectPytest(workspace)) tasks.push({ id: "python:pytest", label: "pytest", argv: ["pytest"], source: "pytest project metadata", category: "primary_verification", rank: 10 });
+  if (workspace.project.manifests.includes("go.mod")) tasks.push({ id: "go:test", label: "go test ./...", argv: ["go", "test", "./..."], source: "go.mod", category: "primary_verification", rank: 10 });
+  return tasks.sort((a, b) => a.rank - b.rank || a.label.localeCompare(b.label));
 }
 
 function resultEnvelope(operation: string, startedAt: string, data: Record<string, unknown>, mutation = false, truncated = false): ResultEnvelope {
@@ -429,7 +450,7 @@ function checkExpectedHash(file: TextFile, expected: unknown): void {
 }
 
 export class WorkspaceToolExecutor {
-  constructor(readonly store = new WorkspaceStore()) {}
+  constructor(readonly store = new WorkspaceStore(), readonly verification = new VerificationStore(store.stateRoot)) {}
 
   static handles(name: string): boolean {
     return LOCAL_TOOL_NAMES.has(name);
@@ -618,8 +639,22 @@ export class WorkspaceToolExecutor {
           const cwd = args.cwd === undefined ? workspace.root : (await existingPath(workspace, relative(args.cwd), "directory")).absolute;
           const timeoutMs = executionTimeout(args.timeoutMs);
           const maximum = integerValue(args.maxBytes, DEFAULT_MAX_BYTES, 1024, MAX_TOOL_BYTES, "maxBytes");
+          const sourceBefore = workspace.project.git ? await inspectWorkspaceSourceState(workspace, signal) : null;
           const output = await runProcess([...task.argv, ...safeExtra], cwd, timeoutMs, maximum, signal);
-          return resultEnvelope(operation, startedAt, { task, ...output }, false, output.truncated);
+          const sourceAfter = workspace.project.git ? await inspectWorkspaceSourceState(workspace, signal) : null;
+          let verificationEvidenceRecorded = false;
+          if (sourceBefore && sourceAfter) {
+            const sourceUnchanged = sameSourceState(sourceBefore, sourceAfter);
+            try {
+              await this.verification.record({
+                schemaVersion: 1, workspaceId: workspace.id, taskId: task.id, taskLabel: task.label, category: task.category, source: sourceBefore,
+                sourceUnchanged, startedAt, finishedAt: new Date().toISOString(), exitCode: output.exitCode, timedOut: output.timedOut, cancelled: output.cancelled,
+                passed: output.exitCode === 0 && !output.timedOut && !output.cancelled && sourceUnchanged,
+              });
+              verificationEvidenceRecorded = true;
+            } catch { verificationEvidenceRecorded = false; }
+          }
+          return resultEnvelope(operation, startedAt, { task, ...output, sourceState: sourceBefore, verificationEvidenceRecorded }, false, output.truncated);
         }
         case "run_command": {
           if (!Array.isArray(args.argv) || args.argv.length < 1 || args.argv.length > 64) throw new OpsHavenError("INVALID_ARGUMENTS", "argv must contain 1-64 strings.");

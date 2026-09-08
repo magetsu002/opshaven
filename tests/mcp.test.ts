@@ -5,10 +5,14 @@ import { getPackageVersion } from "../src/version.js";
 
 const executor: ToolExecutor = { async execute(operation) { return { ok: true, requestId: "req", operation, data: { safe: true }, meta: { startedAt: "start", finishedAt: "end", dryRun: false, mutation: false, truncated: false, redactions: 0, auditRecorded: true } }; } };
 
-test("MCP exposes one stable compiled V1.2 tool catalogue", () => {
-  assert.equal(getToolDefinitions().length, 34);
+test("MCP exposes one stable compiled V1.3 tool catalogue", () => {
+  assert.equal(getToolDefinitions().length, 38);
   assert.equal(getToolDefinitions().some((tool) => tool.name === "run_command"), true);
   assert.equal(getToolDefinitions().some((tool) => tool.name === "workspace_info"), true);
+  assert.equal(getToolDefinitions().some((tool) => tool.name === "project_state"), true);
+  assert.equal(getToolDefinitions().some((tool) => tool.name === "verify_workspace"), true);
+  assert.equal(getToolDefinitions().some((tool) => tool.name === "source_runtime_state"), true);
+  assert.equal(getToolDefinitions().some((tool) => tool.name === "prepare_verified_deployment"), true);
   assert.equal(getToolDefinitions().some((tool) => tool.name === "run_shell" || tool.name === "exec"), false);
   for (const tool of getToolDefinitions()) assert.equal(tool.inputSchema.additionalProperties, false);
 });
@@ -23,11 +27,11 @@ test("stdio initialization uses package version and stable discovery", async () 
       protocolVersion: "2025-03-26",
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: "opshaven", version: await getPackageVersion() },
-      instructions: "Use registered workspaces for bounded project context, Git inspection, edits, project tasks, and commands explicitly enabled by the user. Remote operations remain available when configured.",
+      instructions: "Use registered workspaces for bounded project context, exact source and verification evidence, source-to-runtime comparison, edits, and explicitly enabled project execution. Prepare deployment only from a clean committed revision with current passing verification evidence. Remote operations remain bounded by configured applications and environments.",
     },
   });
   const listed = await server.handle({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, STDIO_PRINCIPAL);
-  assert.equal(((listed?.result as Record<string, unknown>).tools as unknown[]).length, 34);
+  assert.equal(((listed?.result as Record<string, unknown>).tools as unknown[]).length, 38);
   const called = await server.handle({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "get_host_summary", arguments: { resourceId: "host.main" } } }, STDIO_PRINCIPAL);
   assert.equal(((called?.result as Record<string, unknown>).structuredContent as Record<string, unknown>).ok, true);
   assert.equal((await server.handle({ jsonrpc: "2.0", id: 4, method: "missing" }, STDIO_PRINCIPAL))?.error && true, true);
