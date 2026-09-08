@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
-import { executeFirstRunWizard, runFirstRunWizard } from "./operator-init.js";
+import { executeFirstRunWizard } from "./operator-init.js";
 import { resolveSetupConfigPath, runInit } from "./operator-state.js";
 import { parseRemoteSetupConfig } from "./setup/remote.js";
 
@@ -11,6 +11,10 @@ function onePassOutput(raw: string): string {
     .replace(/reviewed read-only runtime/g, "reviewed controlled runtime")
     .replace(/\nNext:\s*\nopshaven setup remote\s*$/s, "");
   return `${revised.trimEnd()}\n\nNext:\nRegister a deployment application:\n\n  opshaven app add\n\nThen install the complete reviewed remote runtime:\n\n  opshaven setup remote\n`;
+}
+
+function localOutput(): string {
+  return "OpsHaven initialized\n\n✓ Local state is ready\n\nNext:\n  opshaven workspace add ~/Projects/example\n  opshaven connect\n";
 }
 
 function packageRoot(): string {
@@ -46,12 +50,7 @@ async function normalizeGeneratedSetup(args: readonly string[]): Promise<void> {
   }
 }
 
-async function initializeWithOnePassGuidance(args: readonly string[]): Promise<void> {
-  if (args.includes("--json")) {
-    await runInit(args);
-    await normalizeGeneratedSetup(args);
-    return;
-  }
+async function captureInitialization(args: readonly string[]): Promise<string> {
   const output = process.stdout;
   const original = output.write.bind(output);
   let captured = "";
@@ -65,12 +64,26 @@ async function initializeWithOnePassGuidance(args: readonly string[]): Promise<v
   } finally {
     output.write = original as typeof output.write;
   }
-  original(onePassOutput(captured));
+  return captured;
+}
+
+async function initializeWithOnePassGuidance(args: readonly string[]): Promise<void> {
+  if (args.includes("--json")) {
+    await runInit(args);
+    await normalizeGeneratedSetup(args);
+    return;
+  }
+  const captured = await captureInitialization(args);
+  process.stdout.write(onePassOutput(captured));
 }
 
 export async function runOnePassFirstRunWizard(args: readonly string[]): Promise<void> {
   if (args.includes("--local-only")) {
-    await runFirstRunWizard(args);
+    if (args.includes("--json")) await runInit(args);
+    else {
+      await captureInitialization(args);
+      process.stdout.write(localOutput());
+    }
     return;
   }
   if ((process.stdin as { isTTY?: boolean }).isTTY !== true || args.includes("--non-interactive")) {

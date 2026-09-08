@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline";
+import { AgentToolExecutor } from "./agent-executor.js";
 import { loadConfig } from "./config.js";
 import { McpServer } from "./mcp.js";
 import { OperationService } from "./operations.js";
+import { resolveLocalConfigPath } from "./operator-state.js";
+import { WorkspaceToolExecutor } from "./workspace-tools.js";
 
-function configuredPath(): string {
+function explicitConfigPath(): string {
   const index = process.argv.indexOf("--config");
   return (index >= 0 ? process.argv[index + 1] : process.env.OPSHAVEN_CONFIG) ?? "";
 }
@@ -24,19 +27,20 @@ function safeReason(error: unknown): string {
 }
 
 function startupMessage(error: unknown): string {
-  const path = configuredPath();
-  if (!path) {
-    return `Startup blocked.\n\nReason:\nMissing local configuration path.\n\nChecked:\n--config\nOPSHAVEN_CONFIG\n\nAction:\nRun:\nopshaven-mcp --config <path>\n`;
+  const explicit = explicitConfigPath();
+  if (explicit) {
+    const checked = displayPath(explicit);
+    return `Startup blocked.\n\nReason:\n${safeReason(error)}\n\nChecked remote configuration:\n${checked}\n\nAction:\nRun:\nopshaven doctor --config ${checked}\n`;
   }
-  const checked = displayPath(path);
-  return `Startup blocked.\n\nReason:\n${safeReason(error)}\n\nChecked:\n${checked}\n\nAction:\nRun:\nopshaven doctor --config ${checked}\n`;
+  return `Startup blocked.\n\nReason:\n${safeReason(error)}\n\nAction:\nRun:\nopshaven workspace list\n`;
 }
 
 async function main(): Promise<void> {
-  const path = configuredPath();
-  if (!path) throw new Error("Missing local configuration path.");
-  const config = await loadConfig(path);
-  const server = new McpServer(new OperationService(config, undefined, path));
+  const explicit = explicitConfigPath();
+  const configPath = explicit || await resolveLocalConfigPath(process.argv.slice(2)) || "";
+  let remote: OperationService | undefined;
+  if (configPath) remote = new OperationService(await loadConfig(configPath), undefined, configPath);
+  const server = new McpServer(new AgentToolExecutor(new WorkspaceToolExecutor(), remote));
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity, terminal: false });
   for await (const line of lines) {
     if (typeof line !== "string" || line.trim().length === 0) continue;

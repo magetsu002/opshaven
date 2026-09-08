@@ -1,4 +1,5 @@
 import type { McpPrincipal, McpServer } from "../mcp.js";
+import { getPackageVersion } from "../version.js";
 import { validateJsonComplexity } from "./limits.js";
 import { RemoteSessionError, type RemoteSessionManager, type SessionLease } from "./sessions.js";
 
@@ -59,12 +60,12 @@ function protocolForRequest(message: unknown, headers: Readonly<Record<string, s
   const initialized = method === "initialize" && plain(message) && plain(message.params) && typeof message.params.protocolVersion === "string" ? message.params.protocolVersion : undefined;
   return supplied ?? initialized;
 }
-function modernDiscovery(id: string | number | null): Record<string, unknown> {
-  return { jsonrpc: "2.0", id, result: { resultType: "complete", protocolVersion: CURRENT_MCP_PROTOCOL, capabilities: { tools: {} }, serverInfo: { name: "opshaven", version: "1.0.0" }, _meta: { "io.modelcontextprotocol/serverInfo": { name: "opshaven", version: "1.0.0" } } } };
+function modernDiscovery(id: string | number | null, version: string): Record<string, unknown> {
+  return { jsonrpc: "2.0", id, result: { resultType: "complete", protocolVersion: CURRENT_MCP_PROTOCOL, capabilities: { tools: {} }, serverInfo: { name: "opshaven", version }, _meta: { "io.modelcontextprotocol/serverInfo": { name: "opshaven", version } } } };
 }
-function decorateCurrentResponse(value: Record<string, unknown> | null): Record<string, unknown> | null {
+function decorateCurrentResponse(value: Record<string, unknown> | null, version: string): Record<string, unknown> | null {
   if (!value || !plain(value.result)) return value;
-  return { ...value, result: { resultType: "complete", ...value.result, _meta: { "io.modelcontextprotocol/serverInfo": { name: "opshaven", version: "1.0.0" } } } };
+  return { ...value, result: { resultType: "complete", ...value.result, _meta: { "io.modelcontextprotocol/serverInfo": { name: "opshaven", version } } } };
 }
 function result(status: number, value: unknown | undefined, limits: ProcessorLimits, headers: Record<string, string> = {}): RemoteHttpResult {
   if (value === undefined) return Object.freeze({ status, headers: Object.freeze({ ...headers }) });
@@ -116,11 +117,16 @@ export class RemoteMcpProcessor {
           principal = lease.principal;
         }
       }
-      if (protocol === CURRENT_MCP_PROTOCOL && method === "server/discover") return result(200, modernDiscovery(requestId(message)), this.limits);
+      if (protocol === CURRENT_MCP_PROTOCOL) {
+        const version = await getPackageVersion();
+        if (method === "server/discover") return result(200, modernDiscovery(requestId(message), version), this.limits);
+        const handled = await this.mcp.handle(stripTransportMeta(message), principal, signal);
+        if (notification(message)) return result(202, undefined, this.limits, responseHeaders);
+        return result(200, decorateCurrentResponse(handled, version), this.limits, responseHeaders);
+      }
       const handled = await this.mcp.handle(stripTransportMeta(message), principal, signal);
       if (notification(message)) return result(202, undefined, this.limits, responseHeaders);
-      const response = protocol === CURRENT_MCP_PROTOCOL ? decorateCurrentResponse(handled) : handled ?? rpcError(-32603, "Internal error", requestId(message));
-      return result(200, response, this.limits, responseHeaders);
+      return result(200, handled ?? rpcError(-32603, "Internal error", requestId(message)), this.limits, responseHeaders);
     } finally { lease?.release(); }
   }
 

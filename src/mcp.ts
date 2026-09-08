@@ -1,4 +1,6 @@
 import type { OperationService, ResultEnvelope } from "./operations.js";
+import { getPackageVersion } from "./version.js";
+import { WORKSPACE_TOOL_DEFINITIONS } from "./workspace-tools.js";
 
 interface JsonRpcRequest { jsonrpc: "2.0"; id?: string | number | null; method: string; params?: unknown }
 export interface ToolDefinition { name: string; description: string; inputSchema: Record<string, unknown> }
@@ -19,7 +21,7 @@ const resource = { type: "string", pattern: "^[a-z][a-z0-9._-]{0,63}$", descript
 const dryRun = { type: "boolean", default: false };
 const approval = { type: "string", minLength: 32, description: "Expiring single-use human approval token." };
 function schema(properties: Record<string, unknown>, required: string[]): Record<string, unknown> { return { type: "object", additionalProperties: false, properties, required }; }
-const TOOLS: readonly ToolDefinition[] = [
+const REMOTE_TOOLS: readonly ToolDefinition[] = [
   { name: "get_host_summary", description: "Return a bounded safe host summary.", inputSchema: schema({ resourceId: resource }, ["resourceId"]) },
   { name: "get_deployed_commit", description: "Return the exact deployed Git commit and dirty-state evidence.", inputSchema: schema({ resourceId: resource }, ["resourceId"]) },
   { name: "get_service_status", description: "Return structured status for a configured system service.", inputSchema: schema({ resourceId: resource }, ["resourceId"]) },
@@ -36,7 +38,9 @@ const TOOLS: readonly ToolDefinition[] = [
   { name: "deploy_commit", description: "Dry-run or deploy one exact allowlisted Git commit using configured trusted steps.", inputSchema: schema({ resourceId: resource, commit: { type: "string", pattern: "^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$" }, expectedCurrentCommit: { type: "string", pattern: "^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$" }, dryRun, approvalToken: approval }, ["resourceId", "commit", "dryRun"]) },
   { name: "rollback_deployment", description: "Dry-run or activate a known recorded release with exact human approval.", inputSchema: schema({ resourceId: resource, releaseId: { type: "string", pattern: "^[A-Za-z0-9._-]{1,128}$" }, dryRun, approvalToken: approval }, ["resourceId", "releaseId", "dryRun"]) },
 ];
+const TOOLS: readonly ToolDefinition[] = Object.freeze([...REMOTE_TOOLS, ...WORKSPACE_TOOL_DEFINITIONS]);
 const TOOL_NAMES = new Set(TOOLS.map((tool) => tool.name));
+const REMOTE_TOOL_NAMES = new Set(REMOTE_TOOLS.map((tool) => tool.name));
 export const MUTATION_TOOL_NAMES: ReadonlySet<string> = new Set(["restart_service", "deploy_commit", "rollback_deployment"]);
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean { return Object.keys(value).every((key) => allowed.includes(key)); }
@@ -54,11 +58,8 @@ function actor(principal: McpPrincipal): string {
   const session = principal.sessionId ? `:${principal.sessionId}` : "";
   return `${principal.transport}:${principal.id}${profile}${session}`;
 }
-function visibleTools(principal: McpPrincipal): readonly ToolDefinition[] {
-  if (!principal.allowedTools) return TOOLS;
-  return TOOLS.filter((tool) => principal.allowedTools?.has(tool.name));
-}
 function resourceAllowed(principal: McpPrincipal, tool: string, args: Record<string, unknown>): boolean {
+  if (!REMOTE_TOOL_NAMES.has(tool)) return true;
   const resourceId = typeof args.resourceId === "string" ? args.resourceId : undefined;
   if (!resourceId) return false;
   const toolResources = principal.allowedResourcesByTool?.get(tool);
@@ -78,8 +79,8 @@ export class McpServer {
       return failure(message.id, -32602, "Invalid params");
     }
     if (message.method === "ping") return emptyParams(message.params) ? success(message.id, {}) : failure(message.id, -32602, "Invalid params");
-    if (message.method === "initialize") return success(message.id, { protocolVersion: "2025-03-26", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "opshaven", version: "1.0.0" }, instructions: "Use configured logical resource IDs only. Mutations require an external human approval token." });
-    if (message.method === "tools/list") return emptyParams(message.params) ? success(message.id, { tools: visibleTools(principal) }) : failure(message.id, -32602, "Invalid params");
+    if (message.method === "initialize") return success(message.id, { protocolVersion: "2025-03-26", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "opshaven", version: await getPackageVersion() }, instructions: "Use registered workspaces for bounded project context, Git inspection, edits, project tasks, and commands explicitly enabled by the user. Remote operations remain available when configured." });
+    if (message.method === "tools/list") return emptyParams(message.params) ? success(message.id, { tools: TOOLS }) : failure(message.id, -32602, "Invalid params");
     if (message.method === "tools/call") {
       if (!message.params || typeof message.params !== "object" || Array.isArray(message.params)) return failure(message.id, -32602, "Invalid params");
       const params = message.params as Record<string, unknown>;
@@ -99,4 +100,5 @@ export class McpServer {
 }
 
 export function getToolDefinitions(): readonly ToolDefinition[] { return TOOLS; }
+export function getRemoteToolDefinitions(): readonly ToolDefinition[] { return REMOTE_TOOLS; }
 export type { OperationService };

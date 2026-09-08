@@ -31,25 +31,21 @@ async function runMcp(args: string[], env: Record<string, string | undefined>): 
   });
 }
 
-test("MCP startup explains a missing configuration path", async () => {
+test("MCP starts for local workspaces without remote configuration", async () => {
   const result = await runMcp([], { HOME: "/home/operator" });
-  assert.equal(result.code, 1);
+  assert.equal(result.code, 0);
   assert.equal(result.stdout, "");
-  assert.match(result.stderr, /^Startup blocked\./);
-  assert.match(result.stderr, /Reason:\nMissing local configuration path\./);
-  assert.match(result.stderr, /Checked:\n--config\nOPSHAVEN_CONFIG/);
-  assert.match(result.stderr, /opshaven-mcp --config <path>/);
-  assert.doesNotMatch(result.stderr, /failed to start safely/i);
+  assert.equal(result.stderr, "");
 });
 
-test("MCP startup reports the failed validation without exposing a full home path", async () => {
+test("MCP startup reports explicit remote-config validation without exposing a full home path", async () => {
   const home = "/home/operator";
   const config = `${home}/.config/opshaven/config.json`;
   const result = await runMcp(["--config", config], { HOME: home });
   assert.equal(result.code, 1);
   assert.equal(result.stdout, "");
   assert.match(result.stderr, /Reason:\nConfiguration must be a safe regular non-symlink file\./i);
-  assert.match(result.stderr, /Checked:\n~\/\.config\/opshaven\/config\.json/);
+  assert.match(result.stderr, /Checked remote configuration:\n~\/\.config\/opshaven\/config\.json/);
   assert.match(result.stderr, /opshaven doctor --config ~\/\.config\/opshaven\/config\.json/);
   assert.doesNotMatch(result.stderr, /\/home\/operator/);
   assert.doesNotMatch(result.stderr, /PRIVATE KEY|BEGIN [A-Z ]+ KEY/);

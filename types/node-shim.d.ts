@@ -13,10 +13,15 @@ declare const process: {
   umask(mask?: number): number;
   on(event: string, listener: (...args: unknown[]) => void): void;
 };
+interface NodeBufferLike extends Uint8Array {
+  toString(encoding?: string): string;
+  readonly length: number;
+  subarray(begin?: number, end?: number): NodeBufferLike;
+}
 declare const Buffer: {
-  from(input: string | Uint8Array, encoding?: string): Uint8Array & { toString(encoding?: string): string; length: number };
+  from(input: string | Uint8Array, encoding?: string): NodeBufferLike;
   byteLength(input: string, encoding?: string): number;
-  concat(chunks: readonly Uint8Array[]): Uint8Array & { toString(encoding?: string): string; length: number };
+  concat(chunks: readonly Uint8Array[]): NodeBufferLike;
   isBuffer(value: unknown): value is Uint8Array;
 };
 declare const URL: { new(input: string, base?: string): { protocol: string; username: string; password: string; hostname: string; port: string; pathname: string; search: string; searchParams: { has(name: string): boolean }; hash: string; origin: string; toString(): string } };

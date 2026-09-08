@@ -55,15 +55,14 @@ async function writeKnownHost(keyPath: string, knownHosts: string, host: string,
   return fingerprint;
 }
 
-test("empty environment initializes local state and reports the next action", async () => {
+test("empty environment initializes local workspace state and reports the local-first next action", async () => {
   const home = await fs.mkdtemp(path.join(tmpdir(), "opshaven-onboarding-local-"));
   try {
     const initialized = await runCli(["init", "--local-only"], home);
     assert.equal(initialized.code, 0);
-    assert.match(initialized.stdout, /OpsHaven first-time setup/);
-    assert.match(initialized.stdout, /✓ Operator environment detected/);
-    assert.match(initialized.stdout, /✓ Local authorization keys prepared/);
-    assert.match(initialized.stdout, /Next:\nopshaven setup remote/);
+    assert.match(initialized.stdout, /OpsHaven initialized/);
+    assert.match(initialized.stdout, /✓ Local state is ready/);
+    assert.match(initialized.stdout, /Next:\n  opshaven workspace add ~\/Projects\/example\n  opshaven connect/);
     assert.equal(initialized.stderr, "");
     assert.doesNotMatch(initialized.stdout, /PRIVATE KEY|BEGIN [A-Z ]+ KEY|approval-secret|operator-private/);
 
