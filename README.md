@@ -2,7 +2,7 @@
 > **OpsHaven is still under active development.** It is best tested on disposable infrastructure before production use. Feedback, bug reports, documentation improvements, and focused contributions are welcome.
 # OpsHaven
 
-**Let AI troubleshoot and deploy to a Linux VPS without giving it a shell.**
+**Give AI continuity from local source code to a running Linux service without giving it an arbitrary shell.**
 
 OpsHaven is an operator CLI and MCP server for approved Linux inspection and narrowly controlled operations over restricted SSH. Generated configuration, keys, signed authorization, receipts, plans, runtime identities, and rollback evidence remain behind the CLI.
 
@@ -344,6 +344,27 @@ Debug output includes transaction status, last completed phase, desired, active,
 
 Boundary certification includes the existing shell, command, forwarding, sudo, write, Docker socket, replay, request mutation, response mutation, host-key, malformed-input, output-bound, and audit checks. With registered applications it also requires canonical dispatcher, capability, declaration, resource-scope, receipt-chain, and transaction compatibility. Boundary verification fails whenever canonical doctor readiness would fail or the active generation is uncertain.
 
+## Source-to-runtime continuity
+
+V1.3 connects registered local workspaces to the existing application/deployment model. An MCP client can ask OpsHaven for the exact workspace `HEAD`, dirty/clean state, ranked project verification tasks, current verification evidence, configured application environment, deployed revision, service health, rollback availability, and Git relationship between local and deployed source.
+
+The focused operations are `project_state`, `verify_workspace`, `source_runtime_state`, and `prepare_verified_deployment`. Verification evidence is valid only for the exact commit and working-tree status against which it ran. Deployment preparation rejects dirty source and delegates to the existing immutable V1.1 planner; it does not auto-commit user work or create a parallel deployment path.
+
+The intended flow is:
+
+```text
+local workspace
+→ exact source state
+→ primary verification
+→ configured application/environment
+→ deployed revision and health
+→ source/deployed comparison
+→ immutable exact deployment plan
+→ existing approved apply and rollback path
+```
+
+The disposable integration suite exercises this path with an OpsHaven-owned temporary Git repository and synthetic remote operation client. It never connects to a production VPS.
+
 ## Exact deployment planning
 
 Interactive planning discovers only verified immutable revisions from the configured repository:
@@ -405,4 +426,4 @@ Disposable integrations use only OpsHaven-owned synthetic fixtures. They do not 
 
 ## Documentation
 
-Read the [operator workflow](docs/operator-workflow.md), [setup guide](docs/setup.md), [security guide](docs/security.md), and [architecture guide](docs/architecture.md). Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md). OpsHaven is provided under the [MIT License](LICENSE).
+Read the [operator workflow](docs/operator-workflow.md), [local workspace guide](docs/local-workspaces.md), [setup guide](docs/setup.md), [security guide](docs/security.md), and [architecture guide](docs/architecture.md). Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md). OpsHaven is provided under the [MIT License](LICENSE).
