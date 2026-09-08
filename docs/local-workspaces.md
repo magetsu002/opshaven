@@ -40,7 +40,7 @@ opshaven workspace permissions example
 opshaven workspace permissions example --edit on --tasks on
 ```
 
-Workspace state is stored privately under `~/.config/opshaven/`. Existing V1.1 remote configuration is kept separately and is not replaced when a workspace is added.
+Workspace state is stored privately under `~/.config/opshaven/`. Existing V1.1 remote configuration is kept separately and is not replaced when a workspace is added. Registry and manifest reads use descriptor-safe non-symlink file access rather than check-then-read paths.
 
 ## Agent tools
 
@@ -79,7 +79,7 @@ Execution tools:
 
 Reads, trees, searches, logs, diffs, and process output are bounded. Common generated/vendor directories are skipped during recursive context collection. Project paths remain inside the registered workspace and symlink traversal is rejected.
 
-`replace_file`, `edit_file`, and `edit_files` use the SHA-256 file identity returned by read/hash operations. If the file changed after the agent read it, the edit reports a conflict instead of overwriting newer content.
+`replace_file`, `edit_file`, and `edit_files` use the SHA-256 file identity returned by read/hash operations. If the file changed after the agent read it, the edit reports a conflict instead of overwriting newer content. `create_file` uses exclusive creation so it cannot overwrite a file that appeared concurrently.
 
 ## Project tasks
 
@@ -90,7 +90,19 @@ Reads, trees, searches, logs, diffs, and process output are bounded. Common gene
 - `pytest` when Python project metadata indicates pytest;
 - `go test ./...` for Go modules.
 
-`run_task` requires the workspace's project-task permission. `run_command` is separate and requires broader command execution to be enabled. Both use argv-based subprocess execution without a shell. V1.2 blocks direct privilege-escalation commands such as `sudo`, `su`, `doas`, and `pkexec`.
+`run_task` requires the workspace's project-task permission. `run_command` is separate and requires broader command execution to be enabled. Both use argv-based subprocess execution without a shell.
+
+Broader command execution is deliberately not an arbitrary executable-path primitive. V1.2 accepts these developer command names:
+
+```text
+node npm npx pnpm yarn git python python3 pytest cargo rustc go make cmake ninja
+```
+
+Absolute executable paths are denied except for the currently running Node executable, which is normalized to `node`. Shell launchers and direct privilege-escalation commands are not in the supported command set. RPC-supplied command arguments use a narrow non-shell character grammar. Process timeouts are selected from fixed bounded values of 1, 5, 30, 120, or 600 seconds.
+
+Child processes receive only a minimal environment: `PATH`, `LANG`, `LC_ALL`, and, when present, `HOME` and `TMPDIR`. Arbitrary operator environment variables and secrets are not inherited by project tasks or broader commands.
+
+Project tasks may themselves execute commands declared by the project's own build metadata. That is why task execution remains a separate permission from read/edit access.
 
 ## MCP connection
 

@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { OpsHavenError } from "./errors.js";
 import { operatorStateRoot } from "./operator-state.js";
+import { readRegularTextFile } from "./safe-fs.js";
 
 export interface WorkspacePermissions {
   read: boolean;
@@ -40,6 +41,7 @@ export interface RegisterWorkspaceOptions {
 
 const WORKSPACE_ID = /^[a-z][a-z0-9._-]{0,63}$/;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
+const MAX_REGISTRY_BYTES = 4 * 1024 * 1024;
 const PROJECT_MANIFESTS = [
   "package.json",
   "pnpm-lock.yaml",
@@ -146,9 +148,8 @@ async function gitMetadataPresent(root: string): Promise<boolean> {
 async function packageName(root: string): Promise<string | undefined> {
   const file = path.join(root, "package.json");
   try {
-    const stat = await fs.lstat(file);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_MANIFEST_BYTES) return undefined;
-    const parsed = JSON.parse(await fs.readFile(file, "utf8")) as Record<string, unknown>;
+    const source = await readRegularTextFile(file, "Workspace package manifest", { maxBytes: MAX_MANIFEST_BYTES, code: "CONFIG_INVALID" });
+    const parsed = JSON.parse(source) as Record<string, unknown>;
     return typeof parsed.name === "string" && parsed.name.length > 0 && parsed.name.length <= 214 ? parsed.name : undefined;
   } catch {
     return undefined;
@@ -208,19 +209,24 @@ export class WorkspaceStore {
 
   async load(): Promise<WorkspaceDocument> {
     try {
-      const stat = await fs.lstat(this.file);
-      if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) throw new OpsHavenError("CONFIG_INVALID", "Workspace registry is unsafe.");
-      const parsed = JSON.parse(await fs.readFile(this.file, "utf8")) as Record<string, unknown>;
-      if (parsed.version !== 1 || !Array.isArray(parsed.workspaces) || !parsed.workspaces.every(validRecord)) throw new OpsHavenError("CONFIG_INVALID", "Workspace registry is invalid.");
-      const records = parsed.workspaces as WorkspaceRecord[];
-      if (new Set(records.map((item) => item.id)).size !== records.length || new Set(records.map((item) => item.root)).size !== records.length) {
-        throw new OpsHavenError("CONFIG_INVALID", "Workspace registry contains duplicate identities.");
-      }
-      return { version: 1, workspaces: records };
+      await fs.lstat(this.file);
     } catch (error) {
-      if ((error as any)?.code === "ENOENT") return { version: 1, workspaces: [] };
+      if ((error as { code?: string }).code === "ENOENT") return { version: 1, workspaces: [] };
       throw error;
     }
+    const source = await readRegularTextFile(this.file, "Workspace registry", { ownerOnly: true, maxBytes: MAX_REGISTRY_BYTES, code: "CONFIG_INVALID" });
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(source) as Record<string, unknown>;
+    } catch {
+      throw new OpsHavenError("CONFIG_INVALID", "Workspace registry is invalid.");
+    }
+    if (parsed.version !== 1 || !Array.isArray(parsed.workspaces) || !parsed.workspaces.every(validRecord)) throw new OpsHavenError("CONFIG_INVALID", "Workspace registry is invalid.");
+    const records = parsed.workspaces as WorkspaceRecord[];
+    if (new Set(records.map((item) => item.id)).size !== records.length || new Set(records.map((item) => item.root)).size !== records.length) {
+      throw new OpsHavenError("CONFIG_INVALID", "Workspace registry contains duplicate identities.");
+    }
+    return { version: 1, workspaces: records };
   }
 
   private async save(document: WorkspaceDocument): Promise<void> {

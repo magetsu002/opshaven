@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { constants, promises as fs } from "node:fs";
 import path from "node:path";
 import { asOpsHavenError, OpsHavenError } from "./errors.js";
 import type { ResultEnvelope } from "./operations.js";
@@ -10,9 +10,12 @@ const DEFAULT_MAX_BYTES = 128 * 1024;
 const MAX_TOOL_BYTES = 1024 * 1024;
 const MAX_EDIT_BYTES = 2 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 120_000;
-const MAX_TIMEOUT_MS = 600_000;
+const EXECUTION_TIMEOUTS = [1_000, 5_000, 30_000, 120_000, 600_000] as const;
+type ExecutionTimeout = typeof EXECUTION_TIMEOUTS[number];
 const MAX_SEARCH_FILES = 5000;
 const SKIP_DIRECTORIES = new Set([".git", "node_modules", "vendor", "dist", "build", "target", ".next", "coverage", ".venv", "venv", "__pycache__", ".cache"]);
+const SUPPORTED_COMMANDS = new Set(["node", "npm", "npx", "pnpm", "yarn", "git", "python", "python3", "pytest", "cargo", "rustc", "go", "make", "cmake", "ninja"]);
+const SAFE_COMMAND_ARGUMENT = /^[-A-Za-z0-9_./:@=+,%~]+$/;
 const LOCAL_TOOL_NAMES = new Set([
   "workspace_info", "workspace_tree", "list_files", "read_file", "read_files", "search_files", "file_hash", "code_context",
   "git_status", "git_diff", "git_log", "project_info", "discover_tasks",
@@ -26,7 +29,7 @@ function schema(properties: Record<string, unknown>, required: string[] = []): R
 const workspaceIdSchema = { type: "string", pattern: "^[a-z][a-z0-9._-]{0,63}$" };
 const relativePathSchema = { type: "string", minLength: 1, maxLength: 4096, description: "Path relative to the workspace root." };
 const expectedHashSchema = { type: "string", pattern: "^[a-f0-9]{64}$", description: "SHA-256 identity returned by a prior read/hash." };
-const timeoutSchema = { type: "integer", minimum: 100, maximum: MAX_TIMEOUT_MS, default: DEFAULT_TIMEOUT_MS };
+const timeoutSchema = { type: "integer", enum: [...EXECUTION_TIMEOUTS], default: DEFAULT_TIMEOUT_MS };
 const maxBytesSchema = { type: "integer", minimum: 1024, maximum: MAX_TOOL_BYTES, default: DEFAULT_MAX_BYTES };
 const editItemSchema = {
   type: "object",
@@ -59,7 +62,7 @@ export const WORKSPACE_TOOL_DEFINITIONS = [
   { name: "edit_file", description: "Apply one exact targeted text replacement with optimistic concurrency.", inputSchema: schema({ workspaceId: workspaceIdSchema, path: relativePathSchema, oldText: { type: "string", minLength: 1, maxLength: MAX_EDIT_BYTES }, newText: { type: "string", maxLength: MAX_EDIT_BYTES }, expectedHash: expectedHashSchema }, ["workspaceId", "path", "oldText", "newText", "expectedHash"]) },
   { name: "edit_files", description: "Preflight and apply exact optimistic-concurrency edits across multiple files.", inputSchema: schema({ workspaceId: workspaceIdSchema, edits: { type: "array", minItems: 1, maxItems: 20, items: editItemSchema } }, ["workspaceId", "edits"]) },
   { name: "run_task", description: "Run one task discovered from project metadata when task execution is enabled.", inputSchema: schema({ workspaceId: workspaceIdSchema, taskId: { type: "string", minLength: 1, maxLength: 256 }, args: { type: "array", maxItems: 32, items: { type: "string", maxLength: 512 } }, cwd: relativePathSchema, timeoutMs: timeoutSchema, maxBytes: maxBytesSchema }, ["workspaceId", "taskId"]) },
-  { name: "run_command", description: "Run one argv-based local command in the workspace when broader command execution is enabled. Privilege escalation is blocked.", inputSchema: schema({ workspaceId: workspaceIdSchema, argv: { type: "array", minItems: 1, maxItems: 64, items: { type: "string", maxLength: 4096 } }, cwd: relativePathSchema, timeoutMs: timeoutSchema, maxBytes: maxBytesSchema }, ["workspaceId", "argv"]) },
+  { name: "run_command", description: "Run one supported argv-based developer command in the workspace when broader command execution is enabled. Shell and privilege-escalation launchers are not available.", inputSchema: schema({ workspaceId: workspaceIdSchema, argv: { type: "array", minItems: 1, maxItems: 64, items: { type: "string", maxLength: 4096 } }, cwd: relativePathSchema, timeoutMs: timeoutSchema, maxBytes: maxBytesSchema }, ["workspaceId", "argv"]) },
 ] as const;
 
 export interface DiscoveredTask {
@@ -106,10 +109,47 @@ function integerValue(value: unknown, fallback: number, minimum: number, maximum
   return value as number;
 }
 
+function executionTimeout(value: unknown): ExecutionTimeout {
+  if (value === undefined) return 120_000;
+  switch (value) {
+    case 1_000: return 1_000;
+    case 5_000: return 5_000;
+    case 30_000: return 30_000;
+    case 120_000: return 120_000;
+    case 600_000: return 600_000;
+    default: throw new OpsHavenError("INVALID_ARGUMENTS", "timeoutMs must use a supported bounded timeout.");
+  }
+}
+
 function booleanValue(value: unknown, fallback: boolean, label: string): boolean {
   if (value === undefined) return fallback;
   if (typeof value !== "boolean") throw new OpsHavenError("INVALID_ARGUMENTS", `${label} is invalid.`);
   return value;
+}
+
+function safeCommandArgument(value: unknown, label: string, maximum = 4096): string {
+  const result = stringValue(value, label, maximum);
+  if (!SAFE_COMMAND_ARGUMENT.test(result)) throw new OpsHavenError("INVALID_ARGUMENTS", `${label} contains unsupported command characters.`);
+  return result;
+}
+
+function normalizeCommandExecutable(value: unknown): string {
+  const raw = stringValue(value, "argv[0]", 4096);
+  if (raw === process.execPath) return "node";
+  if (path.isAbsolute(raw) || raw.includes("/") || raw.includes("\\")) throw new OpsHavenError("POLICY_DENIED", "Only supported developer command names may be executed.");
+  if (!SUPPORTED_COMMANDS.has(raw)) throw new OpsHavenError("POLICY_DENIED", "The requested developer command is not available in V1.2.");
+  return raw;
+}
+
+function childEnvironment(): Record<string, string> {
+  const environment: Record<string, string> = {
+    PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+    LANG: "C",
+    LC_ALL: "C",
+  };
+  if (process.env.HOME) environment.HOME = process.env.HOME;
+  if (process.env.TMPDIR) environment.TMPDIR = process.env.TMPDIR;
+  return environment;
 }
 
 function workspaceArg(args: Record<string, unknown>): string {
@@ -187,10 +227,21 @@ function requirePermission(workspace: WorkspaceRecord, permission: keyof Workspa
 
 async function readText(workspace: WorkspaceRecord, file: unknown, maximum: number): Promise<TextFile> {
   const target = await existingPath(workspace, file, "file");
-  if (target.stat.size > maximum) throw new OpsHavenError("OUTPUT_LIMIT", "Project file exceeds the requested read bound.", false, { bytes: target.stat.size, maxBytes: maximum });
-  const text = await fs.readFile(target.absolute, "utf8");
-  if (text.includes("\0")) throw new OpsHavenError("BINARY_OUTPUT", "Binary project files are not returned as text.");
-  return { path: target.relative, text, hash: digest(text), bytes: Buffer.byteLength(text, "utf8"), mode: target.stat.mode & 0o777 };
+  let handle: any;
+  try {
+    handle = await fs.open(target.absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch {
+    throw new OpsHavenError("POLICY_DENIED", "Project file could not be opened safely.");
+  }
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > maximum) throw new OpsHavenError("OUTPUT_LIMIT", "Project file exceeds the requested read bound.", false, { bytes: stat.size, maxBytes: maximum });
+    const text = await handle.readFile("utf8");
+    if (text.includes("\0")) throw new OpsHavenError("BINARY_OUTPUT", "Binary project files are not returned as text.");
+    return { path: target.relative, text, hash: digest(text), bytes: Buffer.byteLength(text, "utf8"), mode: stat.mode & 0o777 };
+  } finally {
+    await handle.close();
+  }
 }
 
 async function atomicReplace(target: string, content: string, mode: number): Promise<void> {
@@ -202,6 +253,16 @@ async function atomicReplace(target: string, content: string, mode: number): Pro
     await fs.rename(temporary, target);
   } finally {
     await fs.rm(temporary, { force: true });
+  }
+}
+
+async function exclusiveCreate(target: string, content: string): Promise<void> {
+  if (Buffer.byteLength(content, "utf8") > MAX_EDIT_BYTES) throw new OpsHavenError("OUTPUT_LIMIT", "Created file exceeds the V1.2 edit bound.");
+  try {
+    await fs.writeFile(target, content, { mode: 0o644, flag: "wx" });
+  } catch (error) {
+    if ((error as { code?: string }).code === "EEXIST") throw new OpsHavenError("INVALID_ARGUMENTS", "Project file already exists.");
+    throw error;
   }
 }
 
@@ -229,14 +290,14 @@ async function walk(root: string, start: string, maximumEntries: number, maximum
   return output;
 }
 
-async function runProcess(argv: string[], cwd: string, timeoutMs: number, maximumBytes: number, signal?: AbortSignal): Promise<ProcessResult> {
+async function runProcess(argv: string[], cwd: string, timeoutMs: ExecutionTimeout, maximumBytes: number, signal?: AbortSignal): Promise<ProcessResult> {
   if (argv.length === 0 || argv.length > 64 || argv.some((item) => typeof item !== "string" || item.length === 0 || item.length > 4096 || item.includes("\0"))) throw new OpsHavenError("INVALID_ARGUMENTS", "Command argv is invalid.");
   const started = Date.now();
-  const child = spawn(argv[0] as string, argv.slice(1), {
+  const child = spawn("/usr/bin/env", argv, {
     cwd,
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, LANG: "C", LC_ALL: "C" },
+    env: childEnvironment(),
   });
   return await new Promise((resolve, reject) => {
     let stdout = "";
@@ -506,13 +567,7 @@ export class WorkspaceToolExecutor {
         case "create_file": {
           const target = await writeTarget(workspace, args.path);
           if (typeof args.content !== "string" || Buffer.byteLength(args.content, "utf8") > MAX_EDIT_BYTES) throw new OpsHavenError("INVALID_ARGUMENTS", "content is invalid or too large.");
-          try {
-            await fs.lstat(target.absolute);
-            throw new OpsHavenError("INVALID_ARGUMENTS", "Project file already exists.");
-          } catch (error) {
-            if ((error as { code?: string }).code !== "ENOENT") throw error;
-          }
-          await atomicReplace(target.absolute, args.content, 0o644);
+          await exclusiveCreate(target.absolute, args.content);
           return resultEnvelope(operation, startedAt, { path: target.relative, hash: digest(args.content), bytes: Buffer.byteLength(args.content, "utf8") }, true);
         }
         case "replace_file": {
@@ -558,22 +613,22 @@ export class WorkspaceToolExecutor {
           const task = (await discoverWorkspaceTasks(workspace)).find((candidate) => candidate.id === taskId);
           if (!task) throw new OpsHavenError("INVALID_ARGUMENTS", "Task is not present in current project metadata.");
           const extra = args.args === undefined ? [] : args.args;
-          if (!Array.isArray(extra) || extra.length > 32 || extra.some((item) => typeof item !== "string" || item.length > 512 || item.includes("\0"))) throw new OpsHavenError("INVALID_ARGUMENTS", "Task args are invalid.");
+          if (!Array.isArray(extra) || extra.length > 32) throw new OpsHavenError("INVALID_ARGUMENTS", "Task args are invalid.");
+          const safeExtra = extra.map((item, index) => safeCommandArgument(item, `args[${index}]`, 512));
           const cwd = args.cwd === undefined ? workspace.root : (await existingPath(workspace, relative(args.cwd), "directory")).absolute;
-          const timeoutMs = integerValue(args.timeoutMs, DEFAULT_TIMEOUT_MS, 100, MAX_TIMEOUT_MS, "timeoutMs");
+          const timeoutMs = executionTimeout(args.timeoutMs);
           const maximum = integerValue(args.maxBytes, DEFAULT_MAX_BYTES, 1024, MAX_TOOL_BYTES, "maxBytes");
-          const output = await runProcess([...task.argv, ...(extra as string[])], cwd, timeoutMs, maximum, signal);
+          const output = await runProcess([...task.argv, ...safeExtra], cwd, timeoutMs, maximum, signal);
           return resultEnvelope(operation, startedAt, { task, ...output }, false, output.truncated);
         }
         case "run_command": {
           if (!Array.isArray(args.argv) || args.argv.length < 1 || args.argv.length > 64) throw new OpsHavenError("INVALID_ARGUMENTS", "argv must contain 1-64 strings.");
-          const argv = args.argv.map((item, index) => stringValue(item, `argv[${index}]`, 4096));
-          const executable = path.basename(argv[0] as string).toLowerCase();
-          if (["sudo", "su", "doas", "pkexec"].includes(executable)) throw new OpsHavenError("POLICY_DENIED", "Privilege-escalation commands are not available in V1.2.");
+          const executable = normalizeCommandExecutable(args.argv[0]);
+          const commandArgs = args.argv.slice(1).map((item, index) => safeCommandArgument(item, `argv[${index + 1}]`));
           const cwd = args.cwd === undefined ? workspace.root : (await existingPath(workspace, relative(args.cwd), "directory")).absolute;
-          const timeoutMs = integerValue(args.timeoutMs, DEFAULT_TIMEOUT_MS, 100, MAX_TIMEOUT_MS, "timeoutMs");
+          const timeoutMs = executionTimeout(args.timeoutMs);
           const maximum = integerValue(args.maxBytes, DEFAULT_MAX_BYTES, 1024, MAX_TOOL_BYTES, "maxBytes");
-          const output = await runProcess(argv, cwd, timeoutMs, maximum, signal);
+          const output = await runProcess([executable, ...commandArgs], cwd, timeoutMs, maximum, signal);
           return resultEnvelope(operation, startedAt, { ...output }, false, output.truncated);
         }
         default:

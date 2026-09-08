@@ -55,6 +55,19 @@ test("workspace registry rejects duplicate and symlink roots while preserving si
   } finally { await cleanup(value); }
 });
 
+test("workspace registry rejects symlink substitution instead of following attacker-controlled state", async () => {
+  const state = await fs.mkdtemp(path.join(tmpdir(), "opshaven-agent-state-link-"));
+  const outside = await fs.mkdtemp(path.join(tmpdir(), "opshaven-agent-state-outside-"));
+  try {
+    const external = path.join(outside, "workspaces.json");
+    await fs.writeFile(external, '{"version":1,"workspaces":[]}\n', { mode: 0o600 });
+    await fs.symlink(external, path.join(state, "workspaces.json"));
+    await assert.rejects(new WorkspaceStore(state).list(), /safe regular non-symlink file/);
+  } finally {
+    await Promise.all([fs.rm(state, { recursive: true, force: true }), fs.rm(outside, { recursive: true, force: true })]);
+  }
+});
+
 test("agent engineering loop can inspect failure, edit with a hash, inspect diff, and rerun verification", async () => {
   const value = await fixture();
   try {
@@ -101,15 +114,39 @@ test("agent engineering loop can inspect failure, edit with a hash, inspect diff
   } finally { await cleanup(value); }
 });
 
-test("broader command execution is separate from editing and blocks privilege escalation", async () => {
+test("broader command execution remains explicit, bounded, allowlisted, and minimally isolated", async () => {
   const value = await fixture();
+  const previousSecret = process.env.OPSHAVEN_TEST_SECRET;
   try {
     await value.store.updatePermissions(value.id, { commands: true });
     const version = data(await value.executor.execute("run_command", { workspaceId: value.id, argv: [process.execPath, "--version"] }));
     assert.equal(version.exitCode, 0);
     assert.match(version.stdout, /^v\d+/);
+
+    const shell = await value.executor.execute("run_command", { workspaceId: value.id, argv: ["bash", "-c", "id"] });
+    assert.equal(shell.ok, false);
+    assert.equal(shell.error?.code, "POLICY_DENIED");
+
     const denied = await value.executor.execute("run_command", { workspaceId: value.id, argv: ["sudo", "id"] });
     assert.equal(denied.ok, false);
     assert.equal(denied.error?.code, "POLICY_DENIED");
-  } finally { await cleanup(value); }
+
+    const unsafeArgument = await value.executor.execute("run_command", { workspaceId: value.id, argv: ["node", "--eval", "process.exit(0)"] });
+    assert.equal(unsafeArgument.ok, false);
+    assert.equal(unsafeArgument.error?.code, "INVALID_ARGUMENTS");
+
+    const unsupportedTimeout = await value.executor.execute("run_command", { workspaceId: value.id, argv: ["node", "--version"], timeoutMs: 2_000 });
+    assert.equal(unsupportedTimeout.ok, false);
+    assert.equal(unsupportedTimeout.error?.code, "INVALID_ARGUMENTS");
+
+    process.env.OPSHAVEN_TEST_SECRET = "must-not-leak";
+    await fs.writeFile(path.join(value.root, "print-env.mjs"), "process.stdout.write(process.env.OPSHAVEN_TEST_SECRET ?? '')\n");
+    const environment = data(await value.executor.execute("run_command", { workspaceId: value.id, argv: ["node", "print-env.mjs"] }));
+    assert.equal(environment.exitCode, 0);
+    assert.equal(environment.stdout, "");
+  } finally {
+    if (previousSecret === undefined) delete process.env.OPSHAVEN_TEST_SECRET;
+    else process.env.OPSHAVEN_TEST_SECRET = previousSecret;
+    await cleanup(value);
+  }
 });
