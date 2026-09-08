@@ -3,15 +3,17 @@
 import { OpsHavenError } from "./errors.js";
 import { formatOperatorError } from "./operator-error-boundary.js";
 import { colorEnabled, heading, paint, section } from "./operator-ui.js";
+import { getPackageVersion } from "./version.js";
 
 const HELP_COMMANDS = new Set(["help", "--help", "-h"]);
 const VERSION_COMMANDS = new Set(["version", "--version", "-V"]);
 const KNOWN_COMMANDS = new Set([
-  "init", "setup", "uninstall", "endpoint", "doctor", "diagnostics", "boundary", "verify-boundary",
+  "init", "workspace", "permissions", "connect", "setup", "uninstall", "endpoint", "doctor", "diagnostics", "boundary", "verify-boundary",
   "app", "deploy", "serve", "validate-config", "verify-audit", "compare-capabilities", "authorization-report",
   "trust-report", "approve-restart", "approve-deploy", "approve-rollback", "print-mcp-config", "print-remote-mcp-url",
 ]);
-const COMMANDS_WITHOUT_LOCAL_CONFIG = new Set(["init", "setup", "uninstall", "endpoint", "doctor", "diagnostics", "compare-capabilities"]);
+const COMMANDS_WITHOUT_LOCAL_CONFIG = new Set(["init", "workspace", "permissions", "connect", "setup", "uninstall", "endpoint", "doctor", "diagnostics", "compare-capabilities"]);
+const REMOTE_INIT_FLAGS = ["--host", "--host-key-sha256", "--admin-user", "--admin-identity", "--known-hosts", "--privilege", "--source-sha"];
 
 function flag(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -22,64 +24,65 @@ function explicitConfigPath(): string { return flag("--config") ?? process.env.O
 function help(): string {
   const color = colorEnabled();
   return `${heading("OpsHaven Operator CLI", color)}
-OpsHaven human CLI for secure Linux operations.
+OpsHaven human CLI for context-rich local engineering workspaces, with mature remote operations available when needed.
 
 ${section("Usage", color)}
   opshaven <command> [options]
 
-${section("Start here", color)}
-  init                     Configure this operator machine
-  app add                  Register a supported application locally
-  setup remote             Install or synchronize the remote target
-  setup repair             Inspect or repair a failed synchronization
-  doctor                   Diagnose canonical local and remote readiness
-  boundary verify          Verify the installed deployment boundary
+${section("Start", color)}
+  init                              Initialize local OpsHaven state
+  workspace add <directory>         Register a local project
+  workspace list                    List local projects and permissions
+  connect                           Show MCP connection instructions
 
-${section("Deploy", color)}
-  deploy plan <app>        Choose and plan an immutable revision
-  deploy apply <plan-id>   Apply only the stored approved plan
+${section("Work", color)}
+  workspace info <id>               Show project metadata and status
+  workspace permissions <id>        View or change AI permissions
+  permissions <id>                  Short alias for workspace permissions
 
-${section("Operate", color)}
-  authorization-report     Explain the current authorization state
-  endpoint expose|status   Manage reviewed endpoint handoff
-  uninstall remote         Remove the recorded remote installation
+${section("Remote / Server", color)}
+  app add                           Register a deployment application
+  setup remote                      Install or synchronize a remote target
+  setup repair                      Inspect or repair failed synchronization
+  doctor                            Diagnose local and remote readiness
+  boundary verify                   Verify the installed deployment boundary
+  deploy plan <app>                 Plan an immutable deployment revision
+  deploy apply <plan-id>            Apply only the stored deployment plan
+  endpoint expose|status            Manage reviewed remote endpoint handoff
+  uninstall remote                  Remove the recorded remote installation
 
 ${section("Advanced", color)}
-  validate-config          Validate generated operator configuration
-  verify-audit             Verify the tamper-evident audit chain
-  compare-capabilities     Compare build authorization declarations
-  print-mcp-config         Print MCP client configuration
-  print-remote-mcp-url     Print the configured remote MCP URL
-  approve-restart          Create a one-time restart approval
-  approve-deploy           Create a one-time deployment approval
-  approve-rollback         Create a one-time rollback approval
-  serve                    Start the explicitly configured HTTP transport
+  diagnostics                       Show deeper diagnostic state
+  validate-config                   Validate generated remote configuration
+  verify-audit                      Verify the tamper-evident audit chain
+  compare-capabilities              Compare build authorization declarations
+  authorization-report              Explain remote authorization state
+  print-mcp-config                  Print legacy MCP client configuration
+  print-remote-mcp-url              Print the configured remote MCP URL
+  approve-restart                   Create a one-time remote restart approval
+  approve-deploy                    Create a one-time remote deployment approval
+  approve-rollback                  Create a one-time remote rollback approval
+  serve                             Start the explicitly configured HTTP transport
 
 ${section("Global options", color)}
-  --help, -h               Show this help
-  --version, -V            Show the CLI version
-  --json                   Produce machine-readable output where supported
-  --debug                  Show sanitized comparison and timing details
+  --help, -h                        Show this help
+  --version, -V                     Show the CLI version
+  --json                            Produce machine-readable output where supported
+  --debug                           Show sanitized comparison and timing details
 
-${paint("Recommended deployment onboarding", "info", color)}
+${paint("Local agent workflow", "info", color)}
   opshaven init
-  opshaven app add
+  opshaven workspace add ~/Projects/example
+  opshaven connect
+
+Workspace onboarding keeps the permission model intentionally small: read project, edit project, run project tasks, and run broader commands. Editing never silently enables command execution.
+
+Remote setup remains available with:
   opshaven setup remote
   opshaven doctor
   opshaven boundary verify
-  opshaven deploy plan sample-api
 
-Later setup runs compare verified content identities. Unchanged state is verified without mutation. Dispatcher-only and authorization-only changes reuse the installed runtime.
-
-After a failed synchronization:
-  opshaven doctor --debug
-  opshaven setup repair
-  opshaven setup repair --approve
-
-Non-interactive planning must supply:
-  opshaven deploy plan sample-api --revision <full-commit-sha>
-
-The opshaven command is for people. MCP clients launch opshaven-mcp.
+The opshaven command is the OpsHaven human CLI. MCP clients launch opshaven-mcp.
 `;
 }
 
@@ -88,14 +91,31 @@ function usageError(message: string): Error { return new Error(message); }
 async function main(): Promise<void> {
   const requested = process.argv[2] ?? "help";
   if (HELP_COMMANDS.has(requested)) { process.stdout.write(help()); return; }
-  if (VERSION_COMMANDS.has(requested)) { process.stdout.write(`OpsHaven ${process.env.npm_package_version ?? "1.1.0"}\n`); return; }
+  if (VERSION_COMMANDS.has(requested)) { process.stdout.write(`OpsHaven ${await getPackageVersion()}\n`); return; }
   if (!KNOWN_COMMANDS.has(requested)) throw usageError(`Unknown command "${requested}".`);
   if (requested === "boundary" && process.argv[3] !== "verify") throw usageError("Unknown boundary command.");
 
   const commandArgs = process.argv.slice(3);
   if (requested === "init") {
     const { runOnePassFirstRunWizard } = await import("./operator-init-one-pass.js");
-    await runOnePassFirstRunWizard(commandArgs);
+    const wantsRemoteInit = REMOTE_INIT_FLAGS.some((name) => commandArgs.includes(name));
+    const initArgs = commandArgs.includes("--local-only") || wantsRemoteInit ? commandArgs : [...commandArgs, "--local-only"];
+    await runOnePassFirstRunWizard(initArgs);
+    return;
+  }
+  if (requested === "workspace") {
+    const { runWorkspaceCommand } = await import("./workspace-cli.js");
+    await runWorkspaceCommand(commandArgs);
+    return;
+  }
+  if (requested === "permissions") {
+    const { runPermissionsCommand } = await import("./workspace-cli.js");
+    await runPermissionsCommand(commandArgs);
+    return;
+  }
+  if (requested === "connect") {
+    const { runConnectCommand } = await import("./workspace-cli.js");
+    runConnectCommand(commandArgs);
     return;
   }
 
@@ -128,7 +148,7 @@ async function main(): Promise<void> {
   }
 
   const requiresLocalConfig = !COMMANDS_WITHOUT_LOCAL_CONFIG.has(requested);
-  if (requiresLocalConfig && !path) throw usageError("Setup is not initialized. Operator setup is not initialized.");
+  if (requiresLocalConfig && !path) throw new OpsHavenError("CONFIG_INVALID", "Setup is not initialized.");
   if (requiresLocalConfig && path && !explicit) process.argv.push("--config", path);
 
   if (requested === "app") {

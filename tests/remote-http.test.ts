@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { McpServer, type ToolExecutor } from "../src/mcp.js";
+import { getToolDefinitions, McpServer, type ToolExecutor } from "../src/mcp.js";
 import { CURRENT_MCP_PROTOCOL, StreamableHttpServer, type PrincipalVerifier } from "../src/remote-mcp/http.js";
+import { getPackageVersion } from "../src/version.js";
 
 const executor: ToolExecutor = { async execute(operation) { return { ok: true, requestId: "req", operation, data: { safe: true }, meta: { startedAt: "start", finishedAt: "end", dryRun: false, mutation: false, truncated: false, redactions: 0, auditRecorded: true } }; } };
 const verifier: PrincipalVerifier = { async verify() { return Object.freeze({ id: "subject", transport: "streamable-http" as const, allowedTools: new Set(["get_host_summary"]), allowedResources: new Set(["host.main"]) }); } };
@@ -13,7 +14,7 @@ function modern(method: string, params: Record<string, unknown> = {}): Record<st
   return { jsonrpc: "2.0", id: 1, method, params: { ...params, _meta: { "io.modelcontextprotocol/protocolVersion": CURRENT_MCP_PROTOCOL, "io.modelcontextprotocol/clientCapabilities": {} } } };
 }
 
-test("native Streamable HTTP handles discovery, calls, notifications, malformed input, and shutdown", async () => {
+test("native Streamable HTTP handles stable discovery, invocation authorization, notifications, malformed input, and shutdown", async () => {
   const transport = new StreamableHttpServer({ mcp: new McpServer(executor), verifier });
   const started = await transport.start();
   try {
@@ -21,11 +22,17 @@ test("native Streamable HTTP handles discovery, calls, notifications, malformed 
 
     const discovery = await post(started.url, modern("server/discover"), { "mcp-protocol-version": CURRENT_MCP_PROTOCOL, "mcp-method": "server/discover" });
     assert.equal(discovery.status, 200);
-    assert.equal((await discovery.json() as any).result.protocolVersion, CURRENT_MCP_PROTOCOL);
+    const discovered = await discovery.json() as any;
+    assert.equal(discovered.result.protocolVersion, CURRENT_MCP_PROTOCOL);
+    assert.equal(discovered.result.serverInfo.version, await getPackageVersion());
 
     const list = await post(started.url, modern("tools/list"), { "mcp-protocol-version": CURRENT_MCP_PROTOCOL, "mcp-method": "tools/list" });
     assert.equal(list.status, 200);
-    assert.deepEqual((await list.json() as any).result.tools.map((tool: any) => tool.name), ["get_host_summary"]);
+    assert.deepEqual((await list.json() as any).result.tools.map((tool: any) => tool.name), getToolDefinitions().map((tool) => tool.name));
+
+    const denied = await post(started.url, modern("tools/call", { name: "workspace_info", arguments: { workspaceId: "project" } }), { "mcp-protocol-version": CURRENT_MCP_PROTOCOL, "mcp-method": "tools/call", "mcp-name": "workspace_info" });
+    assert.equal(denied.status, 200);
+    assert.equal((await denied.json() as any).error.code, -32602);
 
     const call = await post(started.url, modern("tools/call", { name: "get_host_summary", arguments: { resourceId: "host.main" } }), { "mcp-protocol-version": CURRENT_MCP_PROTOCOL, "mcp-method": "tools/call", "mcp-name": "get_host_summary" });
     assert.equal(call.status, 200);
@@ -58,7 +65,9 @@ test("legacy initialization remains available over native HTTP", async () => {
   try {
     const response = await post(started.url, { jsonrpc: "2.0", id: 9, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "fixture", version: "1" } } });
     assert.equal(response.status, 200);
-    assert.equal((await response.json() as any).result.protocolVersion, "2025-03-26");
+    const body = await response.json() as any;
+    assert.equal(body.result.protocolVersion, "2025-03-26");
+    assert.equal(body.result.serverInfo.version, await getPackageVersion());
   } finally {
     await transport.close();
   }

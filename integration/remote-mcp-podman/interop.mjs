@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { CapabilityBoundPrincipalVerifier } from "../../dist/src/remote-mcp/capability.js";
 import { CURRENT_MCP_PROTOCOL, RemoteAuthenticationError, StreamableHttpServer } from "../../dist/src/remote-mcp/http.js";
-import { McpServer } from "../../dist/src/mcp.js";
+import { getToolDefinitions, McpServer } from "../../dist/src/mcp.js";
 
 const disposableToken = "disposable-remote-mcp-token";
 let operations = 0;
@@ -83,18 +83,21 @@ try {
 
   const list = await post(message("tools/list"));
   const listed = await list.json();
-  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["get_host_summary"]);
+  assert.deepEqual(listed.result.tools.map((tool) => tool.name), getToolDefinitions().map((tool) => tool.name));
 
-  const call = await post(message("tools/call", { name: "get_host_summary", arguments: { resourceId: "host.synthetic" } }, 2));
+  const deniedLocal = await post(message("tools/call", { name: "workspace_info", arguments: { workspaceId: "project" } }, 2));
+  assert.equal((await deniedLocal.json()).error.code, -32602);
+
+  const call = await post(message("tools/call", { name: "get_host_summary", arguments: { resourceId: "host.synthetic" } }, 3));
   const called = await call.json();
   assert.equal(called.result.structuredContent.ok, true);
   assert.equal(called.result.structuredContent.data.synthetic, true);
 
-  const mutation = await post(message("tools/call", { name: "restart_service", arguments: { resourceId: "svc.synthetic", dryRun: true } }, 3));
+  const mutation = await post(message("tools/call", { name: "restart_service", arguments: { resourceId: "svc.synthetic", dryRun: true } }, 4));
   assert.equal((await mutation.json()).error.code, -32602);
   assert.equal(operations, 1);
 } finally {
   await server.close();
 }
 await assert.rejects(fetch(started.url));
-process.stdout.write("remote-mcp-podman: rootless localhost transport, trusted proxy boundary, disposable authentication, read-only capability, tool call, mutation denial, and shutdown passed\n");
+process.stdout.write("remote-mcp-podman: stable discovery, rootless localhost transport, trusted proxy boundary, disposable authentication, invocation authorization, mutation denial, and shutdown passed\n");

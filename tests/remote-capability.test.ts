@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { VerifiedCapability } from "../src/capabilities.js";
-import { McpServer, type ToolExecutor } from "../src/mcp.js";
+import { getToolDefinitions, McpServer, type ToolExecutor } from "../src/mcp.js";
 import { CapabilityBoundPrincipalVerifier } from "../src/remote-mcp/capability.js";
 import type { PrincipalVerifier } from "../src/remote-mcp/http.js";
 
@@ -31,18 +31,20 @@ test("signed read-only capability intersects profile tools and resources exactly
   assert.equal(principal.allowedTools?.has("restart_service"), false);
 });
 
-test("remote discovery excludes mutations and calls enforce per-tool resources", async () => {
+test("remote discovery is the compiled catalogue while invocation enforces capability tools and per-tool resources", async () => {
   let calls = 0;
   const executor: ToolExecutor = { async execute(operation) { calls += 1; return { ok: true, requestId: "req", operation, data: {}, meta: { startedAt: "s", finishedAt: "f", dryRun: false, mutation: false, truncated: false, redactions: 0, auditRecorded: true } }; } };
   const principal = await new CapabilityBoundPrincipalVerifier(base, capability).verify(identity);
   const server = new McpServer(executor);
   const listed = await server.handle({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }, principal);
-  assert.deepEqual(((listed?.result as any).tools as any[]).map((tool) => tool.name), ["get_host_summary", "get_service_status"]);
+  assert.deepEqual(((listed?.result as any).tools as any[]).map((tool) => tool.name), getToolDefinitions().map((tool) => tool.name));
   const deniedMutation = await server.handle({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "restart_service", arguments: { resourceId: "svc.web", dryRun: true } } }, principal);
   assert.equal((deniedMutation?.error as any).code, -32602);
-  const deniedWrongResource = await server.handle({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "get_host_summary", arguments: { resourceId: "host.other" } } }, principal);
+  const deniedLocal = await server.handle({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "workspace_info", arguments: { workspaceId: "project" } } }, principal);
+  assert.equal((deniedLocal?.error as any).code, -32602);
+  const deniedWrongResource = await server.handle({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "get_host_summary", arguments: { resourceId: "host.other" } } }, principal);
   assert.equal((deniedWrongResource?.error as any).code, -32602);
-  const allowed = await server.handle({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "get_host_summary", arguments: { resourceId: "host.main" } } }, principal);
+  const allowed = await server.handle({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "get_host_summary", arguments: { resourceId: "host.main" } } }, principal);
   assert.equal((allowed?.result as any).structuredContent.ok, true);
   assert.equal(calls, 1);
 });
