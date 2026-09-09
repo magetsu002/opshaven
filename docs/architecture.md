@@ -62,7 +62,26 @@ A stolen restricted SSH key cannot produce a valid unsigned request or escape th
 - `redaction.ts`: binary rejection, credential and fingerprint redaction, control-character handling, and line and byte bounds.
 - `audit.ts`: append-only hash chain and verifier.
 - `mcp.ts`: local stdio MCP adapter with strict schemas.
+- `workspace-verification.ts`: owner-only evidence that binds discovered task outcomes to an exact local Git source state.
+- `continuity.ts`: bounded composition of workspace evidence with the existing application/deployment planner for source-to-runtime comparison and verified plan preparation.
 - `cli.ts`: operator commands including `verify-boundary`, capability comparison, and `trust-report`.
+
+
+## Source-to-runtime continuity
+
+V1.3 composes the local workspace boundary with the existing deployment boundary instead of creating a second runtime model. The local side distinguishes `HEAD`, working-tree state, discovered verification tasks, and persisted verification evidence. The deployment side remains authoritative for the registered application, observed deployed revision, service state, health probe, exact deployment plan, and rollback release.
+
+```text
+registered workspace
+→ exact HEAD + working-tree fingerprint
+→ current passing primary verification evidence
+→ registered deployment application
+→ observed deployed revision + health + rollback
+→ Git relationship between local and deployed revisions
+→ existing immutable deployment plan for verified clean HEAD
+```
+
+Uncommitted contents never become a deployment revision. A task run counts as current evidence only when the source state is unchanged across the run. Deployment preparation still uses `DeploymentPlanner.createPlan`, so remote revision verification, pinned target identity, health preconditions, stale-plan checks, authorization, and rollback guarantees remain unchanged.
 
 ## Deployment state machine
 

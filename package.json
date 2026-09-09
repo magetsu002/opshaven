@@ -39,6 +39,7 @@
     "release:check": "npm run format:check && npm run check && npm run package:check && npm run docs:check && npm run lockfile:check && npm run workflow:check && npm run wrapper:check",
     "reproducible:check": "scripts/check-reproducible-build.sh",
     "remote:integration": "bash integration/remote-mcp-podman/run.sh",
+    "source-runtime:integration": "bash integration/source-runtime-continuity/run.sh",
     "security": "node scripts/security-scan.mjs",
     "certify": "scripts/certify-release.sh"
   },

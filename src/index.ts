@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline";
 import { AgentToolExecutor } from "./agent-executor.js";
+import { ContinuityToolExecutor } from "./continuity.js";
+import { DeploymentPlanner } from "./deployment/planning.js";
 import { loadConfig } from "./config.js";
 import { McpServer } from "./mcp.js";
 import { OperationService } from "./operations.js";
@@ -39,8 +41,15 @@ async function main(): Promise<void> {
   const explicit = explicitConfigPath();
   const configPath = explicit || await resolveLocalConfigPath(process.argv.slice(2)) || "";
   let remote: OperationService | undefined;
-  if (configPath) remote = new OperationService(await loadConfig(configPath), undefined, configPath);
-  const server = new McpServer(new AgentToolExecutor(new WorkspaceToolExecutor(), remote));
+  let planner: DeploymentPlanner | undefined;
+  if (configPath) {
+    const config = await loadConfig(configPath);
+    remote = new OperationService(config, undefined, configPath);
+    planner = new DeploymentPlanner(config, configPath, { client: remote });
+  }
+  const workspace = new WorkspaceToolExecutor();
+  const continuity = new ContinuityToolExecutor(workspace, planner);
+  const server = new McpServer(new AgentToolExecutor(workspace, remote, continuity));
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity, terminal: false });
   for await (const line of lines) {
     if (typeof line !== "string" || line.trim().length === 0) continue;

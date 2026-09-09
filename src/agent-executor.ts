@@ -1,4 +1,5 @@
 import { OpsHavenError } from "./errors.js";
+import { ContinuityToolExecutor } from "./continuity.js";
 import type { ToolExecutor } from "./mcp.js";
 import type { ResultEnvelope } from "./operations.js";
 import { WorkspaceToolExecutor } from "./workspace-tools.js";
@@ -19,10 +20,12 @@ export class AgentToolExecutor implements ToolExecutor {
   constructor(
     private readonly workspace: WorkspaceToolExecutor,
     private readonly remote?: ToolExecutor,
+    private readonly continuity = new ContinuityToolExecutor(workspace),
   ) {}
 
   async execute(operation: string, args: unknown, approvalToken?: string, actor?: string, signal?: AbortSignal): Promise<ResultEnvelope> {
     if (WorkspaceToolExecutor.handles(operation)) return await this.workspace.execute(operation, args, approvalToken, actor, signal);
+    if (ContinuityToolExecutor.handles(operation)) return await this.continuity.execute(operation, args, approvalToken, actor, signal);
     if (!this.remote) return unavailable(operation);
     return await this.remote.execute(operation, args, approvalToken, actor, signal);
   }

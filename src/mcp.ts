@@ -1,6 +1,7 @@
 import type { OperationService, ResultEnvelope } from "./operations.js";
 import { getPackageVersion } from "./version.js";
 import { WORKSPACE_TOOL_DEFINITIONS } from "./workspace-tools.js";
+import { CONTINUITY_TOOL_DEFINITIONS } from "./continuity.js";
 
 interface JsonRpcRequest { jsonrpc: "2.0"; id?: string | number | null; method: string; params?: unknown }
 export interface ToolDefinition { name: string; description: string; inputSchema: Record<string, unknown> }
@@ -38,7 +39,7 @@ const REMOTE_TOOLS: readonly ToolDefinition[] = [
   { name: "deploy_commit", description: "Dry-run or deploy one exact allowlisted Git commit using configured trusted steps.", inputSchema: schema({ resourceId: resource, commit: { type: "string", pattern: "^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$" }, expectedCurrentCommit: { type: "string", pattern: "^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$" }, dryRun, approvalToken: approval }, ["resourceId", "commit", "dryRun"]) },
   { name: "rollback_deployment", description: "Dry-run or activate a known recorded release with exact human approval.", inputSchema: schema({ resourceId: resource, releaseId: { type: "string", pattern: "^[A-Za-z0-9._-]{1,128}$" }, dryRun, approvalToken: approval }, ["resourceId", "releaseId", "dryRun"]) },
 ];
-const TOOLS: readonly ToolDefinition[] = Object.freeze([...REMOTE_TOOLS, ...WORKSPACE_TOOL_DEFINITIONS]);
+const TOOLS: readonly ToolDefinition[] = Object.freeze([...REMOTE_TOOLS, ...WORKSPACE_TOOL_DEFINITIONS, ...CONTINUITY_TOOL_DEFINITIONS]);
 const TOOL_NAMES = new Set(TOOLS.map((tool) => tool.name));
 const REMOTE_TOOL_NAMES = new Set(REMOTE_TOOLS.map((tool) => tool.name));
 export const MUTATION_TOOL_NAMES: ReadonlySet<string> = new Set(["restart_service", "deploy_commit", "rollback_deployment"]);
@@ -79,7 +80,7 @@ export class McpServer {
       return failure(message.id, -32602, "Invalid params");
     }
     if (message.method === "ping") return emptyParams(message.params) ? success(message.id, {}) : failure(message.id, -32602, "Invalid params");
-    if (message.method === "initialize") return success(message.id, { protocolVersion: "2025-03-26", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "opshaven", version: await getPackageVersion() }, instructions: "Use registered workspaces for bounded project context, Git inspection, edits, project tasks, and commands explicitly enabled by the user. Remote operations remain available when configured." });
+    if (message.method === "initialize") return success(message.id, { protocolVersion: "2025-03-26", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "opshaven", version: await getPackageVersion() }, instructions: "Use registered workspaces for bounded project context, exact source and verification evidence, source-to-runtime comparison, edits, and explicitly enabled project execution. Prepare deployment only from a clean committed revision with current passing verification evidence. Remote operations remain bounded by configured applications and environments." });
     if (message.method === "tools/list") return emptyParams(message.params) ? success(message.id, { tools: TOOLS }) : failure(message.id, -32602, "Invalid params");
     if (message.method === "tools/call") {
       if (!message.params || typeof message.params !== "object" || Array.isArray(message.params)) return failure(message.id, -32602, "Invalid params");

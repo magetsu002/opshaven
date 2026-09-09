@@ -81,16 +81,18 @@ Reads, trees, searches, logs, diffs, and process output are bounded. Common gene
 
 `replace_file`, `edit_file`, and `edit_files` use the SHA-256 file identity returned by read/hash operations. If the file changed after the agent read it, the edit reports a conflict instead of overwriting newer content. `create_file` uses exclusive creation so it cannot overwrite a file that appeared concurrently.
 
-## Project tasks
+## Project tasks and verification evidence
 
-`discover_tasks` derives commands from project metadata rather than inventing them. V1.2 recognizes:
+`discover_tasks` derives commands from project metadata rather than inventing them. V1.3 preserves every project-defined task while ranking it as primary verification, development, advanced/maintenance, or other. Recognized task sources include:
 
 - npm, pnpm, and yarn scripts declared in `package.json`;
 - `cargo check` and `cargo test` for Cargo projects;
 - `pytest` when Python project metadata indicates pytest;
 - `go test ./...` for Go modules.
 
-`run_task` requires the workspace's project-task permission. `run_command` is separate and requires broader command execution to be enabled. Both use argv-based subprocess execution without a shell.
+Primary verification favors tests, type checking, linting, and the project build. Development tasks such as `dev` and `start` remain discoverable, while release, security, certification, integration, installation, and similar maintenance tasks remain available without being presented as equivalent day-to-day verification.
+
+`run_task` requires the workspace's project-task permission. Each Git-backed task run records whether the exact pre-run source state remained unchanged and whether the task passed. Evidence is bound to the complete `HEAD` commit plus a digest of the working-tree status, so evidence becomes stale when either the commit or working tree changes. `run_command` remains separate and requires broader command execution to be enabled. Both use argv-based subprocess execution without a shell.
 
 Broader command execution is deliberately not an arbitrary executable-path primitive. V1.2 accepts these developer command names:
 
@@ -103,6 +105,17 @@ Absolute executable paths are denied except for the currently running Node execu
 Child processes receive only a minimal environment: `PATH`, `LANG`, `LC_ALL`, and, when present, `HOME` and `TMPDIR`. Arbitrary operator environment variables and secrets are not inherited by project tasks or broader commands.
 
 Project tasks may themselves execute commands declared by the project's own build metadata. That is why task execution remains a separate permission from read/edit access.
+
+## Source-to-runtime continuity
+
+V1.3 adds four structured agent operations without replacing the existing bounded tools:
+
+- `project_state` returns the exact local revision, dirty/clean state, ranked tasks, and verification evidence current for that source state.
+- `verify_workspace` runs only discovered primary verification tasks and records their exact source-bound outcomes.
+- `source_runtime_state` joins one workspace to one registered deployment application and reports local revision, deployed revision, service/health state, rollback state, and Git ancestry relationship.
+- `prepare_verified_deployment` prepares the existing immutable deployment plan only when the workspace is clean, `HEAD` is a committed exact revision, and every discovered primary verification task has current passing evidence.
+
+These operations do not commit files, invent deployment commands, or bypass V1.1 deployment authorization. A dirty working tree remains distinct from `HEAD`, and deployment planning still re-verifies the target revision through the configured application source before producing an exact plan.
 
 ## MCP connection
 
@@ -139,6 +152,10 @@ inspect project
 → inspect failure output
 → revise
 → rerun verification
+→ compare exact local revision with configured environment
+→ prepare immutable deployment plan from verified committed HEAD
+→ apply through the existing deployment path when explicitly approved
+→ verify health and retain rollback evidence
 → report result
 ```
 
